@@ -418,6 +418,34 @@ def _expand_files(pattern):
     return [p for p in sorted(glob.glob(pattern, recursive=True)) if os.path.isfile(p)]
 
 
+def _run_over_patterns(patterns, check_one):
+    """Expand ``patterns`` and run ``check_one`` over every file they match.
+
+    The pattern-expansion half of the file-checking modes: adopter and
+    ``--source`` differ *only* in their per-file check, so expansion, the loud
+    no-match diagnostic and exit-code aggregation are owned here once rather
+    than copied into each mode (which is how :func:`_expand_files` came to be
+    back-filled into some call sites and not others).
+
+    ``check_one(filepath)`` prints its own report and returns truthy when that
+    file failed. Returns the aggregate exit code: ``1`` if any file failed *or*
+    any pattern matched nothing, else ``0``.
+    """
+    exit_code = 0
+    for pattern in patterns:
+        files = _expand_files(pattern)
+        if not files:
+            # Never a silent pass: a pattern that matches nothing (or only
+            # directories) is an error the caller must see.
+            print("error: no file(s) match %r" % pattern, file=sys.stderr)
+            exit_code = 1
+            continue
+        for filepath in files:
+            if check_one(filepath):
+                exit_code = 1
+    return exit_code
+
+
 # --------------------------------------------------------------------------- #
 # modes
 # --------------------------------------------------------------------------- #
@@ -462,8 +490,8 @@ def run_self_test(schema):
     mismatches = 0
     checked = 0
 
-    valid_files = sorted(glob.glob(VALID_EXAMPLES_GLOB))
-    invalid_files = sorted(glob.glob(INVALID_EXAMPLES_GLOB))
+    valid_files = _expand_files(VALID_EXAMPLES_GLOB)
+    invalid_files = _expand_files(INVALID_EXAMPLES_GLOB)
     invalid_sources = _expand_files(INVALID_SOURCES_GLOB)
     # `sources/*` yields the invalid/ directory entry, not its contents, and
     # _expand_files drops directories — so the two sets are already disjoint.
@@ -518,30 +546,20 @@ def run_self_test(schema):
 
 def run_adopter(patterns, schema):
     """Validate the given path(s)/glob(s) as valid intent JSON."""
-    exit_code = 0
-    checked = 0
+    def check_one(filepath):
+        valid, errors, parse_error = check_file(filepath, schema)
+        if parse_error:
+            print("FAIL  %s — %s" % (filepath, parse_error))
+            return True
+        if valid:
+            print("PASS  %s" % filepath)
+            return False
+        print("FAIL  %s" % filepath)
+        for err in errors:
+            print("        -> %s" % err)
+        return True
 
-    for pattern in patterns:
-        files = _expand_files(pattern)
-        if not files:
-            print("error: no file(s) match %r" % pattern, file=sys.stderr)
-            exit_code = 1
-            continue
-        for filepath in files:
-            checked += 1
-            valid, errors, parse_error = check_file(filepath, schema)
-            if parse_error:
-                print("FAIL  %s — %s" % (filepath, parse_error))
-                exit_code = 1
-            elif valid:
-                print("PASS  %s" % filepath)
-            else:
-                print("FAIL  %s" % filepath)
-                for err in errors:
-                    print("        -> %s" % err)
-                exit_code = 1
-
-    return exit_code
+    return _run_over_patterns(patterns, check_one)
 
 
 def run_source(patterns, schema):
@@ -551,34 +569,27 @@ def run_source(patterns, schema):
     reports each finding at its ``file:line``. A file with no annotations is
     reported and skipped, not failed — the protocol allows unannotated tests.
     """
-    exit_code = 0
-
-    for pattern in patterns:
-        files = _expand_files(pattern)
-        if not files:
-            print("error: no file(s) match %r" % pattern, file=sys.stderr)
-            exit_code = 1
-            continue
-        for filepath in files:
-            findings, read_error = check_source_file(filepath, schema)
-            if read_error:
-                print("FAIL  %s — %s" % (filepath, read_error))
-                exit_code = 1
+    def check_one(filepath):
+        findings, read_error = check_source_file(filepath, schema)
+        if read_error:
+            print("FAIL  %s — %s" % (filepath, read_error))
+            return True
+        if not findings:
+            print("----  %s — no @intent annotations" % filepath)
+            return False
+        failed = False
+        for line_no, valid, errors, problem in findings:
+            where = "%s:%d" % (filepath, line_no)
+            if valid:
+                print("PASS  %s" % where)
                 continue
-            if not findings:
-                print("----  %s — no @intent annotations" % filepath)
-                continue
-            for line_no, valid, errors, problem in findings:
-                where = "%s:%d" % (filepath, line_no)
-                if valid:
-                    print("PASS  %s" % where)
-                    continue
-                print("FAIL  %s%s" % (where, (" — %s" % problem) if problem else ""))
-                for err in errors:
-                    print("        -> %s" % err)
-                exit_code = 1
+            print("FAIL  %s%s" % (where, (" — %s" % problem) if problem else ""))
+            for err in errors:
+                print("        -> %s" % err)
+            failed = True
+        return failed
 
-    return exit_code
+    return _run_over_patterns(patterns, check_one)
 
 
 def run_stdin(schema):
