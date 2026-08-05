@@ -43,6 +43,20 @@ echo '{ "entity": "Order", "action": "checkout", "behavior": "returns 402 on exp
 ./bin/validate-intent 'specs/**/*.json'
 ```
 
+## Running the tests
+
+The validator's own regression suite is zero-dependency too — stdlib `unittest`, no
+pytest, no `requirements.txt`. It covers the pure validation core (`validate` and its
+type helpers), including the draft-07 keywords the shipped schema does not yet use.
+
+```sh
+python3 tests/test_validate_intent.py     # or: python3 -m unittest discover -s tests
+```
+
+Note that `./bin/validate-intent` (self-test mode) and this suite check different things:
+the self-test verifies the **fixtures** still match their expected outcome, while the
+suite verifies the **validator logic** — run both.
+
 ## Versioning
 
 Current: **v1**. Breaking changes (renamed/removed fields, narrowed enums) bump to `v2` under a new
