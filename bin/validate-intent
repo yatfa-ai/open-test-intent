@@ -215,19 +215,32 @@ def validate(instance, schema, path=""):
 def check_file(filepath, schema):
     """Validate a single JSON file.
 
-    Returns ``(valid, errors, parse_error)``:
+    Returns ``(valid, errors, parse_error, kind)``:
       * ``parse_error`` is a string when the file could not be read or parsed
-        (``valid`` is then ``False`` and ``errors`` empty).
-      * otherwise ``valid`` reflects the schema outcome and ``errors`` lists
-        the violations.
+        (``valid`` is then ``False`` and ``errors`` empty), and ``kind`` says
+        which of the two it was: ``KIND_PARSE`` for a file that opened and
+        decoded but holds malformed JSON, ``KIND_READ`` for one that could not
+        be read at all (missing, unreadable, non-UTF-8). The two are one
+        failure in prose but different failures to a consumer: an author fixes
+        the first, an operator the second.
+      * otherwise ``valid`` reflects the schema outcome, ``errors`` lists the
+        violations and ``kind`` is ``None``.
+
+    The ``parse_error`` message is deliberately identical for both kinds so the
+    text renderers stay byte-for-byte unchanged; the distinction travels in
+    ``kind``, not in the prose.
     """
     try:
         with open(filepath, "r", encoding="utf-8") as handle:
             instance = json.load(handle)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        return False, [], "could not read/parse JSON: %s" % exc
+    except json.JSONDecodeError as exc:
+        # Must precede UnicodeDecodeError: both subclass ValueError, and a
+        # decoded-but-malformed document is a parse failure, not a read one.
+        return False, [], "could not read/parse JSON: %s" % exc, KIND_PARSE
+    except (OSError, UnicodeDecodeError) as exc:
+        return False, [], "could not read/parse JSON: %s" % exc, KIND_READ
     errors = validate(instance, schema)
-    return not errors, errors, None
+    return not errors, errors, None, None
 
 
 def load_schema():
@@ -504,6 +517,12 @@ class _JsonReport:
     finding is not line-scoped (adopter, stdin, no-match), ``kind`` is ``null``
     on a passing finding, and ``errors`` is always a list of strings so a
     consumer never has to branch on its type.
+
+    ``summary.annotations`` counts **annotation sites examined**, and counts
+    them the same way in every mode: a site whose payload could not be captured
+    or parsed still counts (it was there, it was bad), but a file that could not
+    be read contributes no sites at all. Summing ``annotations`` across modes is
+    therefore meaningful rather than mode-dependent.
     """
 
     def __init__(self, mode):
@@ -525,8 +544,13 @@ class _JsonReport:
         return not ok
 
     def no_match(self, pattern):
-        """The ``on_no_match`` hook: a pattern matching nothing is a finding too."""
-        self.add(pattern, None, False, KIND_NO_MATCH, ["no file(s) match %r" % pattern])
+        """The ``on_no_match`` hook: a pattern matching nothing is a finding too.
+
+        Formatted with ``%s``, not the text path's ``%r``: inside a JSON string
+        a Python repr's quoting is noise a consumer has to strip, and ``file``
+        already carries the pattern verbatim.
+        """
+        self.add(pattern, None, False, KIND_NO_MATCH, ["no file(s) match %s" % pattern])
 
     def emit(self, exit_code):
         """Print the document and pass ``exit_code`` straight through.
@@ -606,7 +630,7 @@ def run_self_test(schema):
     for filepath in valid_files:
         checked += 1
         rel = os.path.relpath(filepath, REPO_ROOT)
-        valid, errors, parse_error = check_file(filepath, schema)
+        valid, errors, parse_error, _kind = check_file(filepath, schema)
         if parse_error:
             print("FAIL  %s — unexpectedly invalid (%s)" % (rel, parse_error))
             mismatches += 1
@@ -622,7 +646,7 @@ def run_self_test(schema):
     for filepath in invalid_files:
         checked += 1
         rel = os.path.relpath(filepath, REPO_ROOT)
-        valid, _errors, parse_error = check_file(filepath, schema)
+        valid, _errors, parse_error, _kind = check_file(filepath, schema)
         if parse_error:
             # Malformed JSON is a rejection too — but flag it so it's visible.
             print("PASS  %s (correctly rejected — %s)" % (rel, parse_error))
@@ -651,7 +675,7 @@ def run_self_test(schema):
 def run_adopter(patterns, schema):
     """Validate the given path(s)/glob(s) as valid intent JSON."""
     def check_one(filepath):
-        valid, errors, parse_error = check_file(filepath, schema)
+        valid, errors, parse_error, _kind = check_file(filepath, schema)
         if parse_error:
             print("FAIL  %s — %s" % (filepath, parse_error))
             return True
@@ -667,15 +691,24 @@ def run_adopter(patterns, schema):
 
 
 def run_adopter_json(patterns, schema):
-    """``--json`` renderer for adopter mode — one finding per file checked."""
+    """``--json`` renderer for adopter mode — one finding per file checked.
+
+    ``summary.annotations`` counts *annotation sites examined*, the same rule
+    ``--source`` mode uses: in adopter mode each file is one site, so a file
+    holding malformed JSON still counts (the site existed, its payload was
+    unparseable — exactly how ``--source`` counts a ``parse`` finding), while a
+    file that could not be read contributes none.
+    """
     report = _JsonReport("adopter")
 
     def check_one(filepath):
         report.files += 1
-        report.annotations += 1  # in adopter mode each file *is* one annotation
-        valid, errors, parse_error = check_file(filepath, schema)
+        valid, errors, parse_error, kind = check_file(filepath, schema)
         if parse_error:
-            return report.add(filepath, None, False, KIND_READ, [parse_error])
+            if kind != KIND_READ:
+                report.annotations += 1
+            return report.add(filepath, None, False, kind, [parse_error])
+        report.annotations += 1
         return report.add(filepath, None, valid, None if valid else KIND_SCHEMA, errors)
 
     return report.emit(_run_over_patterns(patterns, check_one, report.no_match))

@@ -341,12 +341,14 @@ class NonUtf8InputTest(unittest.TestCase):
         with open(path, "wb") as handle:
             handle.write(self.LATIN1_JSON)
 
-        valid, errors, parse_error = check_file(path, self.schema)
+        valid, errors, parse_error, kind = check_file(path, self.schema)
 
         self.assertFalse(valid)
         self.assertEqual(errors, [])
         self.assertIsInstance(parse_error, str)
         self.assertIn("could not read/parse JSON", parse_error)
+        # Non-UTF-8 is a *read* failure: the bytes never became a document.
+        self.assertEqual(kind, "read")
 
     def test_run_stdin_reports_a_parse_error_instead_of_raising(self):
         stdin = io.TextIOWrapper(io.BytesIO(self.LATIN1_JSON), encoding="utf-8")
@@ -562,10 +564,56 @@ class JsonOutputTest(unittest.TestCase):
         self.assertEqual([f["line"] for f in document["findings"]], [None, None])
         self.assertEqual(document["findings"][1]["kind"], "schema")
 
-    def test_adopter_mode_unparseable_json_is_kind_read(self):
+    def test_adopter_mode_unparseable_json_is_kind_parse_not_read(self):
+        # The file opened and decoded fine — only its *content* was malformed.
+        # Calling that `read` would send an author chasing a checkout problem.
         path = self._write("garbage.json", "this is not json")
         document = self._document(["--json", path])
+        self.assertEqual([f["kind"] for f in document["findings"]], ["parse"])
+
+    def test_adopter_mode_an_unreadable_file_is_kind_read(self):
+        # The other direction, so the distinction is pinned from both sides:
+        # bytes that never decoded into a document are `read`, never `parse`.
+        path = os.path.join(self.root, "latin1.json")
+        with open(path, "wb") as handle:
+            handle.write(b'{"behavior": "caf\xe9"}')
+        document = self._document(["--json", path])
         self.assertEqual([f["kind"] for f in document["findings"]], ["read"])
+
+    def test_the_same_malformed_payload_is_kind_parse_in_every_mode(self):
+        # The cross-mode invariant the document exists to provide: one failure
+        # class gets one `kind`, so a consumer never branches on which mode
+        # produced the finding. This is what regressed when adopter mode
+        # reported malformed JSON as `read`.
+        # The literal is balanced so `--source` *captures* it (an uncapturable
+        # one would be `extraction`) and only then fails to parse it.
+        malformed = '{"entity": }'
+        adopter = self._document(["--json", self._write("bad.json", malformed)])
+        stdin = self._document(["--json", "-"], stdin=malformed)
+        source = self._document(
+            ["--json", "--source", self._write("x_spec.rb", "# @intent: %s\n" % malformed)])
+
+        for label, document in (("adopter", adopter), ("stdin", stdin), ("source", source)):
+            kinds = [f["kind"] for f in document["findings"]]
+            self.assertEqual(kinds, ["parse"], "%s mode reported %r" % (label, kinds))
+
+    def test_annotations_counts_sites_examined_the_same_way_in_every_mode(self):
+        # A malformed payload is still a site that was examined; a file that
+        # could not be read is not. Both modes must agree, or summing
+        # `annotations` across a run means nothing.
+        malformed = self._document(["--json", self._write("bad.json", "{not json")])
+        self.assertEqual(malformed["summary"]["annotations"], 1)
+
+        path = os.path.join(self.root, "latin1.json")
+        with open(path, "wb") as handle:
+            handle.write(b'{"behavior": "caf\xe9"}')
+        unreadable = self._document(["--json", path])
+        self.assertEqual(unreadable["summary"]["annotations"], 0)
+
+    def test_no_match_error_text_carries_no_python_repr_quoting(self):
+        pattern = os.path.join(self.root, "*.nope")
+        document = self._document(["--json", pattern])
+        self.assertEqual(document["findings"][0]["errors"], ["no file(s) match %s" % pattern])
 
     # -- no-match ---------------------------------------------------------- #
 

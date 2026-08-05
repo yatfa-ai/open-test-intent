@@ -108,6 +108,11 @@ Every finding has the same five keys in every mode, so a consumer never branches
 which mode produced it (the envelope's `mode` is `"stdin"`, `"adopter"` or `"source"`;
 `ok` mirrors the exit code, and `summary` counts what was checked):
 
+`summary.annotations` counts **annotation sites examined**, the same way in every mode: a
+site whose payload could not be captured or parsed still counts (it was there, it was
+bad), while a file that could not be read contributes none. In `FILE...` mode each file
+is one site.
+
 | field    | meaning |
 | -------- | ------- |
 | `file`   | the path checked — or `"-"` for stdin, or the pattern itself for a `no-match` |
@@ -123,9 +128,15 @@ report distinguishable as data:
 | ------ | ----- |
 | `schema` | parsed fine, violated `schemas/open-test-intent.v1.json` |
 | `extraction` | an `@intent:` token whose object literal could not be captured (missing/unbalanced braces, spread across lines) |
-| `parse` | a captured payload — or a stdin document — that is not parseable JSON |
-| `read` | the file could not be read (missing, unreadable, not UTF-8) |
+| `parse` | anything that reached the JSON parser and was rejected by it — a captured payload, a stdin document, or a `FILE...` argument |
+| `read` | the file could not be read at all (missing, unreadable, not UTF-8) |
 | `no-match` | a path/glob argument that matched no file |
+
+A given failure gets the **same `kind` in every mode**: malformed JSON is `parse` whether
+it arrived via stdin, a `--source` annotation, or a named file, so a consumer branching on
+`kind` never has to know which mode produced the finding. `parse` and `read` are worth
+telling apart because they route differently — `parse` is the author's file to fix, `read`
+is the checkout or the encoding.
 
 Two things worth knowing:
 
