@@ -17,7 +17,10 @@ Deliberately **out of scope**: the CLI surface (argv parsing, stdin, exit codes,
 file reads). This file locks the stable pure core only — plus ``_expand_files``,
 the one path-layer helper that is itself pure (pattern in, list of paths out)
 and is shared by every glob-expanding mode, so a regression there silently
-breaks all of them at once.
+breaks all of them at once. ``OneGlobExpanderTest`` is the narrow exception to
+the CLI exclusion: the helper is only worth anything if every mode actually
+*routes* through it, and twice now a mode was left behind on a raw
+``glob.glob``, so that wiring is pinned here too.
 
 Zero dependencies, like the validator itself — stdlib ``unittest`` only.
 
@@ -26,7 +29,10 @@ Run:
     python3 -m unittest discover -s tests
 """
 
+import contextlib
 import importlib.util
+import io
+import json
 import os
 import sys
 import tempfile
@@ -114,6 +120,71 @@ class ExpandFilesTest(unittest.TestCase):
 
     def test_pattern_matching_nothing_expands_to_nothing(self):
         self.assertEqual(_expand_files(os.path.join(self.root, "*.nope")), [])
+
+
+class OneGlobExpanderTest(unittest.TestCase):
+    """Every mode routes its globs through ``_expand_files`` — no exceptions.
+
+    ``_expand_files`` only protects the modes that actually call it, and the
+    back-fill has now been incomplete twice (the ``--source`` mode arrived after
+    the helper; the later fix routed adopter and ``--source`` but left
+    ``run_self_test`` on a raw ``glob.glob``, so the *same* glob filtered a
+    directory in one mode and FAILed on it in another). Pinned two ways:
+    structurally, one expander in the script; behaviourally, self-test agrees
+    with adopter mode about directories.
+    """
+
+    def test_glob_glob_is_called_in_exactly_one_place(self):
+        with open(VALIDATOR_PATH, encoding="utf-8") as handle:
+            calls = [line.strip() for line in handle if "glob.glob(" in line]
+        self.assertEqual(
+            len(calls),
+            1,
+            "expected the only glob.glob call to be _expand_files'; found: %r" % (calls,),
+        )
+        # ...and it is the helper's own — recursive, so `**` keeps working.
+        self.assertIn("recursive=True", calls[0])
+
+    def test_self_test_filters_a_directory_matching_an_examples_glob(self):
+        """A directory named ``*.json`` is skipped, not reported as a broken fixture."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+
+        fixture = os.path.join(tmp.name, "an-intent.json")
+        with open(fixture, "w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "entity": "Order",
+                    "action": "checkout",
+                    "behavior": "returns 402 payment required on expired card",
+                    "layer": "request",
+                },
+                handle,
+            )
+        # The regression: `*.json` matches this directory too.
+        os.mkdir(os.path.join(tmp.name, "legacy.json"))
+
+        empty = os.path.join(tmp.name, "empty")
+        os.mkdir(empty)
+        globs = {
+            "VALID_EXAMPLES_GLOB": os.path.join(tmp.name, "*.json"),
+            "INVALID_EXAMPLES_GLOB": os.path.join(empty, "*.json"),
+            "VALID_SOURCES_GLOB": os.path.join(empty, "*"),
+            "INVALID_SOURCES_GLOB": os.path.join(empty, "*"),
+        }
+        for name, value in globs.items():
+            original = getattr(validate_intent, name)
+            self.addCleanup(setattr, validate_intent, name, original)
+            setattr(validate_intent, name, value)
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            exit_code = validate_intent.run_self_test(validate_intent.load_schema())
+        report = out.getvalue()
+
+        self.assertEqual(exit_code, 0, report)
+        self.assertNotIn("legacy.json", report)
+        self.assertIn("1/1 fixtures matched expectation.", report)
 
 
 class TypeMatchesTest(unittest.TestCase):
