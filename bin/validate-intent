@@ -1,0 +1,291 @@
+#!/usr/bin/env python3
+"""
+OpenTestIntent schema validator.
+
+Validates an ``@intent`` annotation (as a parsed JSON object) against
+``schemas/open-test-intent.v1.json`` — the canonical JSON Schema (draft-07) the
+protocol ships.
+
+It is deliberately **vendor-neutral and zero-dependency**: it uses only the
+Python 3 standard library, so any adopter (pytest, jest, Go, …) can clone this
+repo and run it with nothing to install.
+
+Two modes:
+
+  * **Self-test** (no arguments): loads the in-repo schema and checks every
+    example fixture against its expected outcome — every ``examples/*.json``
+    must validate, every ``examples/invalid/*.json`` must be rejected. Exits
+    ``0`` only if every fixture matches its expectation; non-zero otherwise.
+    Fixture directories are globbed, so adding new examples never requires
+    touching this script.
+
+  * **Adopter** (one or more path/glob arguments): validates the given file(s)
+    as *valid* intent JSON. Exits ``0`` if every file conforms; exits non-zero
+    with the specific violated rule per file otherwise.
+
+Exit codes:
+  0  all checks passed
+  1  one or more files failed validation (or did not match expectation)
+  2  usage error / could not load the schema
+"""
+
+import glob
+import json
+import os
+import re
+import sys
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SCHEMA_PATH = os.path.join(REPO_ROOT, "schemas", "open-test-intent.v1.json")
+VALID_EXAMPLES_GLOB = os.path.join(REPO_ROOT, "examples", "*.json")
+INVALID_EXAMPLES_GLOB = os.path.join(REPO_ROOT, "examples", "invalid", "*.json")
+
+
+# --------------------------------------------------------------------------- #
+# draft-07 subset validator
+# --------------------------------------------------------------------------- #
+def _type_matches(value, allowed):
+    """Return True if ``value`` matches any of the draft-07 ``type`` strings."""
+    for kind in allowed:
+        if kind == "object" and isinstance(value, dict):
+            return True
+        if kind == "array" and isinstance(value, list):
+            return True
+        if kind == "string" and isinstance(value, str):
+            return True
+        # bool is a subclass of int in Python — exclude it from number/integer.
+        if kind == "integer" and isinstance(value, int) and not isinstance(value, bool):
+            return True
+        if kind == "number" and isinstance(value, (int, float)) and not isinstance(value, bool):
+            return True
+        if kind == "boolean" and isinstance(value, bool):
+            return True
+        if kind == "null" and value is None:
+            return True
+    return False
+
+
+def _type_of(value):
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, (int, float)):
+        return "number"
+    if value is None:
+        return "null"
+    return type(value).__name__
+
+
+def validate(instance, schema, path=""):
+    """Validate ``instance`` against a draft-07 ``schema`` (subset).
+
+    Implements every keyword the shipped schema uses plus the common neighbours
+    so it keeps working if the schema grows (minLength/maxLength/pattern,
+    enum, minItems/maxItems, items, minimum/maximum, nested objects/arrays).
+
+    Returns a list of human-readable error strings — empty means valid.
+    """
+    errors = []
+    if not isinstance(schema, dict):
+        # A boolean schema (true/false) or unknown form — nothing to enforce.
+        return errors
+
+    where = path or "<root>"
+
+    # type --------------------------------------------------------------- #
+    if "type" in schema:
+        allowed = schema["type"]
+        allowed = [allowed] if isinstance(allowed, str) else list(allowed)
+        if not _type_matches(instance, allowed):
+            errors.append(
+                "%s: expected type %s, got %s" % (where, "|".join(allowed), _type_of(instance))
+            )
+            return errors  # a type mismatch makes the remaining keywords moot
+
+    # enum --------------------------------------------------------------- #
+    if "enum" in schema and instance not in schema["enum"]:
+        errors.append("%s: value %r is not one of %s" % (where, instance, schema["enum"]))
+
+    # object keywords ---------------------------------------------------- #
+    if isinstance(instance, dict):
+        for key in schema.get("required", []):
+            if key not in instance:
+                errors.append("%s: missing required property '%s'" % (where, key))
+
+        props = schema.get("properties", {})
+        additional = schema.get("additionalProperties", True)
+        for name, value in instance.items():
+            child = "%s.%s" % (path, name) if path else name
+            if name in props:
+                errors.extend(validate(value, props[name], child))
+            elif additional is False:
+                errors.append("%s: additional property '%s' is not allowed" % (where, name))
+            elif isinstance(additional, dict):
+                errors.extend(validate(value, additional, child))
+
+    # array keywords ----------------------------------------------------- #
+    if isinstance(instance, list):
+        if "minItems" in schema and len(instance) < schema["minItems"]:
+            errors.append("%s: array has %d item(s), minimum is %d"
+                          % (where, len(instance), schema["minItems"]))
+        if "maxItems" in schema and len(instance) > schema["maxItems"]:
+            errors.append("%s: array has %d item(s), maximum is %d"
+                          % (where, len(instance), schema["maxItems"]))
+        items = schema.get("items")
+        if isinstance(items, dict):
+            for index, item in enumerate(instance):
+                errors.extend(validate(item, items, "%s[%d]" % (path, index)))
+
+    # string keywords ---------------------------------------------------- #
+    if isinstance(instance, str):
+        if "minLength" in schema and len(instance) < schema["minLength"]:
+            errors.append("%s: string is %d char(s), minLength is %d"
+                          % (where, len(instance), schema["minLength"]))
+        if "maxLength" in schema and len(instance) > schema["maxLength"]:
+            errors.append("%s: string is %d char(s), maxLength is %d"
+                          % (where, len(instance), schema["maxLength"]))
+        if "pattern" in schema and re.search(schema["pattern"], instance) is None:
+            errors.append("%s: string does not match pattern %r" % (where, schema["pattern"]))
+
+    # number keywords ---------------------------------------------------- #
+    if isinstance(instance, (int, float)) and not isinstance(instance, bool):
+        if "minimum" in schema and instance < schema["minimum"]:
+            errors.append("%s: value %r is below minimum %r" % (where, instance, schema["minimum"]))
+        if "maximum" in schema and instance > schema["maximum"]:
+            errors.append("%s: value %r is above maximum %r" % (where, instance, schema["maximum"]))
+
+    return errors
+
+
+# --------------------------------------------------------------------------- #
+# file checking
+# --------------------------------------------------------------------------- #
+def check_file(filepath, schema):
+    """Validate a single JSON file.
+
+    Returns ``(valid, errors, parse_error)``:
+      * ``parse_error`` is a string when the file could not be read or parsed
+        (``valid`` is then ``False`` and ``errors`` empty).
+      * otherwise ``valid`` reflects the schema outcome and ``errors`` lists
+        the violations.
+    """
+    try:
+        with open(filepath, "r", encoding="utf-8") as handle:
+            instance = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        return False, [], "could not read/parse JSON: %s" % exc
+    errors = validate(instance, schema)
+    return not errors, errors, None
+
+
+def load_schema():
+    with open(SCHEMA_PATH, "r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+# --------------------------------------------------------------------------- #
+# modes
+# --------------------------------------------------------------------------- #
+def run_self_test(schema):
+    """Validate the in-repo example fixtures against their expected outcomes."""
+    mismatches = 0
+    checked = 0
+
+    valid_files = sorted(glob.glob(VALID_EXAMPLES_GLOB))
+    invalid_files = sorted(glob.glob(INVALID_EXAMPLES_GLOB))
+
+    # expected-valid fixtures
+    for filepath in valid_files:
+        checked += 1
+        rel = os.path.relpath(filepath, REPO_ROOT)
+        valid, errors, parse_error = check_file(filepath, schema)
+        if parse_error:
+            print("FAIL  %s — unexpectedly invalid (%s)" % (rel, parse_error))
+            mismatches += 1
+        elif valid:
+            print("PASS  %s" % rel)
+        else:
+            print("FAIL  %s — unexpectedly invalid" % rel)
+            for err in errors:
+                print("        -> %s" % err)
+            mismatches += 1
+
+    # expected-invalid fixtures
+    for filepath in invalid_files:
+        checked += 1
+        rel = os.path.relpath(filepath, REPO_ROOT)
+        valid, _errors, parse_error = check_file(filepath, schema)
+        if parse_error:
+            # Malformed JSON is a rejection too — but flag it so it's visible.
+            print("PASS  %s (correctly rejected — %s)" % (rel, parse_error))
+        elif valid:
+            print("FAIL  %s — unexpectedly valid" % rel)
+            mismatches += 1
+        else:
+            print("PASS  %s (correctly invalid)" % rel)
+
+    matched = checked - mismatches
+    print("\n%d/%d fixtures matched expectation." % (matched, checked))
+    return 0 if mismatches == 0 else 1
+
+
+def run_adopter(patterns, schema):
+    """Validate the given path(s)/glob(s) as valid intent JSON."""
+    exit_code = 0
+    checked = 0
+
+    for pattern in patterns:
+        files = sorted(glob.glob(pattern, recursive=True))
+        if not files:
+            print("error: no file(s) match %r" % pattern, file=sys.stderr)
+            exit_code = 1
+            continue
+        for filepath in files:
+            checked += 1
+            valid, errors, parse_error = check_file(filepath, schema)
+            if parse_error:
+                print("FAIL  %s — %s" % (filepath, parse_error))
+                exit_code = 1
+            elif valid:
+                print("PASS  %s" % filepath)
+            else:
+                print("FAIL  %s" % filepath)
+                for err in errors:
+                    print("        -> %s" % err)
+                exit_code = 1
+
+    return exit_code
+
+
+USAGE = """\
+usage: validate-intent             # self-test the in-repo fixtures
+       validate-intent FILE...      # validate FILE(s)/glob(s) as valid intent
+
+Validates JSON against schemas/open-test-intent.v1.json (zero dependencies).
+"""
+
+
+def main(argv):
+    if any(arg in ("-h", "--help") for arg in argv):
+        sys.stdout.write(USAGE)
+        return 0
+
+    try:
+        schema = load_schema()
+    except (OSError, json.JSONDecodeError) as exc:
+        print("error: could not load schema %s: %s" % (SCHEMA_PATH, exc), file=sys.stderr)
+        return 2
+
+    if not argv:
+        return run_self_test(schema)
+
+    return run_adopter(argv, schema)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
