@@ -29,5 +29,4 @@ schema `$id`. Additive optional fields do not bump the major version, but
 `additionalProperties: false` means unknown keys are rejected — additions are an explicit, versioned
 choice, never silent forward-compatibility.
 
-**Status:** v1, specification stage. Built by yatfa agents — see the
-[master spec](https://github.com/yatfa-ai/specguard/blob/main/docs/02-open-test-intent-protocol.md).
+**Status:** v1, specification stage.
