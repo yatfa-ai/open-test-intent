@@ -10,7 +10,7 @@ It is deliberately **vendor-neutral and zero-dependency**: it uses only the
 Python 3 standard library, so any adopter (pytest, jest, Go, …) can clone this
 repo and run it with nothing to install.
 
-Two modes:
+Three modes:
 
   * **Self-test** (no arguments): loads the in-repo schema and checks every
     example fixture against its expected outcome — every ``examples/*.json``
@@ -19,13 +19,23 @@ Two modes:
     Fixture directories are globbed, so adding new examples never requires
     touching this script.
 
+  * **Stdin** (first argument ``-``): reads **one** JSON annotation object from
+    stdin and validates it against the schema — the programmatic input path for
+    scripts and AI coding agents (``annotation | validate-intent -``). Prints
+    ``PASS``/``FAIL`` (with the specific violated rules on failure) and exits
+    ``0``/``1`` accordingly. This avoids the filesystem round-trip of writing a
+    temp ``.json`` file, and (unlike piping into the no-arg self-test) never
+    reports success for an annotation that is in fact invalid.
+
   * **Adopter** (one or more path/glob arguments): validates the given file(s)
     as *valid* intent JSON. Exits ``0`` if every file conforms; exits non-zero
     with the specific violated rule per file otherwise.
 
 Exit codes:
-  0  all checks passed
-  1  one or more files failed validation (or did not match expectation)
+  0  all checks passed (self-test fixtures matched, stdin annotation valid, or
+     every adopter file conformed)
+  1  one or more checks failed (a fixture mismatch, an invalid stdin annotation,
+     malformed JSON on stdin, or a file that did not conform)
   2  usage error / could not load the schema
 """
 
@@ -262,9 +272,34 @@ def run_adopter(patterns, schema):
     return exit_code
 
 
+def run_stdin(schema):
+    """Validate a single annotation object read from stdin.
+
+    Reads one JSON document from stdin, validates it against ``schema``, prints
+    ``PASS``/``FAIL`` (with the specific violated rules on failure) and returns
+    ``0``/``1`` accordingly. A document that is not valid JSON is a failure
+    (exit ``1``), not a silent success — this is the programmatic input path.
+    """
+    raw = sys.stdin.read()
+    try:
+        instance = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print("FAIL — could not read/parse JSON: %s" % exc)
+        return 1
+    errors = validate(instance, schema)
+    if errors:
+        print("FAIL")
+        for err in errors:
+            print("        -> %s" % err)
+        return 1
+    print("PASS")
+    return 0
+
+
 USAGE = """\
 usage: validate-intent             # self-test the in-repo fixtures
-       validate-intent FILE...      # validate FILE(s)/glob(s) as valid intent
+       validate-intent -           # validate one annotation JSON read from stdin
+       validate-intent FILE...     # validate FILE(s)/glob(s) as valid intent
 
 Validates JSON against schemas/open-test-intent.v1.json (zero dependencies).
 """
@@ -283,6 +318,9 @@ def main(argv):
 
     if not argv:
         return run_self_test(schema)
+
+    if argv[0] == "-":
+        return run_stdin(schema)
 
     return run_adopter(argv, schema)
 
