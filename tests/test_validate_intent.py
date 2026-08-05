@@ -14,7 +14,10 @@ the shipped schema and its fixtures, so they are exercised here with synthetic
 mini-schemas.
 
 Deliberately **out of scope**: the CLI surface (argv parsing, stdin, exit codes,
-file reads). This file locks the stable pure core only.
+file reads). This file locks the stable pure core only — plus ``_expand_files``,
+the one path-layer helper that is itself pure (pattern in, list of paths out)
+and is shared by every glob-expanding mode, so a regression there silently
+breaks all of them at once.
 
 Zero dependencies, like the validator itself — stdlib ``unittest`` only.
 
@@ -26,6 +29,7 @@ Run:
 import importlib.util
 import os
 import sys
+import tempfile
 import unittest
 from importlib.machinery import SourceFileLoader
 
@@ -58,6 +62,58 @@ validate_intent = _load_validator()
 validate = validate_intent.validate
 _type_matches = validate_intent._type_matches
 _type_of = validate_intent._type_of
+_expand_files = validate_intent._expand_files
+
+
+class ExpandFilesTest(unittest.TestCase):
+    """``_expand_files`` — glob expansion shared by every file-reading mode.
+
+    A bare ``glob.glob`` also yields *directories*, which the readers then try to
+    ``open()`` — turning ``intents/*`` into a FAIL per subdirectory with a bogus
+    "could not read/parse JSON" diagnostic. Every mode must expand through here.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = self._tmp.name
+
+        self.intent = os.path.join(self.root, "an-intent.json")
+        with open(self.intent, "w", encoding="utf-8") as handle:
+            handle.write("{}\n")
+
+        self.subdir = os.path.join(self.root, "a-subdir")
+        os.mkdir(self.subdir)
+        self.nested = os.path.join(self.subdir, "nested.json")
+        with open(self.nested, "w", encoding="utf-8") as handle:
+            handle.write("{}\n")
+
+    def test_directories_are_dropped_and_files_are_kept(self):
+        # The regression: `*` matches both an-intent.json and a-subdir/.
+        matched = _expand_files(os.path.join(self.root, "*"))
+        self.assertEqual(matched, [self.intent])
+        self.assertNotIn(self.subdir, matched)
+
+    def test_results_are_sorted(self):
+        for name in ("z.json", "a.json", "m.json"):
+            with open(os.path.join(self.root, name), "w", encoding="utf-8") as handle:
+                handle.write("{}\n")
+        matched = _expand_files(os.path.join(self.root, "*.json"))
+        self.assertEqual(matched, sorted(matched))
+
+    def test_recursive_glob_still_reaches_nested_files(self):
+        # `recursive=True` is what makes `**` meaningful; the isfile filter must
+        # not cost us the nested match, only the directory entries.
+        matched = _expand_files(os.path.join(self.root, "**", "*.json"))
+        self.assertIn(self.nested, matched)
+
+    def test_pattern_matching_only_directories_expands_to_nothing(self):
+        # Empty — NOT a silent pass: each caller turns this into the loud
+        # "error: no file(s) match ..." branch with a non-zero exit code.
+        self.assertEqual(_expand_files(self.subdir), [])
+
+    def test_pattern_matching_nothing_expands_to_nothing(self):
+        self.assertEqual(_expand_files(os.path.join(self.root, "*.nope")), [])
 
 
 class TypeMatchesTest(unittest.TestCase):

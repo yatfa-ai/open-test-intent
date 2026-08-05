@@ -408,8 +408,13 @@ def check_source_file(filepath, schema):
     return findings, None
 
 
-def _source_files(pattern):
-    """Expand ``pattern`` to the files it matches (directories filtered out)."""
+def _expand_files(pattern):
+    """Expand ``pattern`` to the files it matches (directories filtered out).
+
+    Mode-agnostic: every glob-expanding mode goes through here so that a pattern
+    like ``intents/*`` never hands a directory to a reader, which would report it
+    as an unreadable/unparseable *file* rather than as something to skip.
+    """
     return [p for p in sorted(glob.glob(pattern, recursive=True)) if os.path.isfile(p)]
 
 
@@ -459,11 +464,11 @@ def run_self_test(schema):
 
     valid_files = sorted(glob.glob(VALID_EXAMPLES_GLOB))
     invalid_files = sorted(glob.glob(INVALID_EXAMPLES_GLOB))
-    invalid_sources = _source_files(INVALID_SOURCES_GLOB)
+    invalid_sources = _expand_files(INVALID_SOURCES_GLOB)
     # `sources/*` yields the invalid/ directory entry, not its contents, and
-    # _source_files drops directories — so the two sets are already disjoint.
+    # _expand_files drops directories — so the two sets are already disjoint.
     # The subtraction keeps them disjoint if the glob is ever widened to `**`.
-    valid_sources = [p for p in _source_files(VALID_SOURCES_GLOB) if p not in invalid_sources]
+    valid_sources = [p for p in _expand_files(VALID_SOURCES_GLOB) if p not in invalid_sources]
 
     # expected-valid fixtures
     for filepath in valid_files:
@@ -517,7 +522,7 @@ def run_adopter(patterns, schema):
     checked = 0
 
     for pattern in patterns:
-        files = sorted(glob.glob(pattern, recursive=True))
+        files = _expand_files(pattern)
         if not files:
             print("error: no file(s) match %r" % pattern, file=sys.stderr)
             exit_code = 1
@@ -549,7 +554,7 @@ def run_source(patterns, schema):
     exit_code = 0
 
     for pattern in patterns:
-        files = _source_files(pattern)
+        files = _expand_files(pattern)
         if not files:
             print("error: no file(s) match %r" % pattern, file=sys.stderr)
             exit_code = 1
