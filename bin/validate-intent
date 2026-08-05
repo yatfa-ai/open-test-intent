@@ -202,7 +202,7 @@ def check_file(filepath, schema):
     try:
         with open(filepath, "r", encoding="utf-8") as handle:
             instance = json.load(handle)
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         return False, [], "could not read/parse JSON: %s" % exc
     errors = validate(instance, schema)
     return not errors, errors, None
@@ -600,10 +600,10 @@ def run_stdin(schema):
     ``0``/``1`` accordingly. A document that is not valid JSON is a failure
     (exit ``1``), not a silent success — this is the programmatic input path.
     """
-    raw = sys.stdin.read()
     try:
+        raw = sys.stdin.read()
         instance = json.loads(raw)
-    except json.JSONDecodeError as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         print("FAIL — could not read/parse JSON: %s" % exc)
         return 1
     errors = validate(instance, schema)
