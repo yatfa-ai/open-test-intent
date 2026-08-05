@@ -25,11 +25,14 @@ SpecGuard platform.
 ## How to validate
 
 The repo ships a zero-dependency validator (`bin/validate-intent` — Python 3 standard library only,
-nothing to install) that checks a parsed annotation against `schemas/open-test-intent.v1.json`.
+nothing to install) that checks an annotation against `schemas/open-test-intent.v1.json`, either as
+parsed JSON or straight out of your test source.
 
 ```sh
 # Self-test the in-repo fixtures (no arguments): every examples/*.json must pass
-# and every examples/invalid/*.json must fail. Exits 0 only if all match.
+# and every examples/invalid/*.json must fail, and every @intent in
+# examples/sources/* must pass while every one in examples/sources/invalid/*
+# must fail. Exits 0 only if all match.
 ./bin/validate-intent
 
 # Validate a single annotation from stdin (the `-` sentinel) — the programmatic
@@ -41,7 +44,36 @@ echo '{ "entity": "Order", "action": "checkout", "behavior": "returns 402 on exp
 # non-zero with the specific violated rule otherwise.
 ./bin/validate-intent path/to/intent.json
 ./bin/validate-intent 'specs/**/*.json'
+
+# Validate @intent annotations *in place* inside test source files (--source,
+# or -s). Each finding is reported at its file:line — the location the other
+# modes can't give you. Exits 0 if every annotation found conforms.
+./bin/validate-intent --source spec/models/order_spec.rb
+./bin/validate-intent --source 'spec/**/*_spec.rb' 'tests/**/*.py'
 ```
+
+The first three paths take **strict JSON**. `--source` is the one that reads the
+annotation as you actually write it — it finds each `@intent:` token, captures the
+object literal that follows it, and normalizes the protocol's permissive syntax
+(unquoted keys, single-quoted strings, arbitrary whitespace — see
+[Equivalent forms](PROTOCOL.md#equivalent-forms)) into strict JSON before validating.
+Capture is string-aware, so a brace or apostrophe inside a `behavior` sentence is safe.
+
+```
+$ ./bin/validate-intent --source spec/models/order_spec.rb
+PASS  spec/models/order_spec.rb:10
+FAIL  spec/models/order_spec.rb:24
+        -> <root>: additional property 'entiity' is not allowed
+```
+
+A source file with no annotations is reported and skipped, not failed — the protocol
+treats unannotated tests as legitimate. But an `@intent:` token whose payload can't be
+captured (unbalanced or missing braces, or spread across lines — annotations are
+single-line) **is** reported, so a typo'd annotation fails loudly instead of silently
+counting as "unannotated".
+
+Worked source fixtures exercising all three equivalent forms live in
+[`examples/sources/`](examples/sources).
 
 ## Running the tests
 

@@ -10,14 +10,15 @@ It is deliberately **vendor-neutral and zero-dependency**: it uses only the
 Python 3 standard library, so any adopter (pytest, jest, Go, …) can clone this
 repo and run it with nothing to install.
 
-Three modes:
+Four modes:
 
   * **Self-test** (no arguments): loads the in-repo schema and checks every
     example fixture against its expected outcome — every ``examples/*.json``
-    must validate, every ``examples/invalid/*.json`` must be rejected. Exits
-    ``0`` only if every fixture matches its expectation; non-zero otherwise.
-    Fixture directories are globbed, so adding new examples never requires
-    touching this script.
+    must validate, every ``examples/invalid/*.json`` must be rejected, every
+    annotation in ``examples/sources/*`` must validate and every annotation in
+    ``examples/sources/invalid/*`` must be rejected. Exits ``0`` only if every
+    fixture matches its expectation; non-zero otherwise. Fixture directories
+    are globbed, so adding new examples never requires touching this script.
 
   * **Stdin** (first argument ``-``): reads **one** JSON annotation object from
     stdin and validates it against the schema — the programmatic input path for
@@ -31,11 +32,23 @@ Three modes:
     as *valid* intent JSON. Exits ``0`` if every file conforms; exits non-zero
     with the specific violated rule per file otherwise.
 
+  * **Source** (``--source``/``-s`` followed by one or more path/glob
+    arguments): validates ``@intent`` annotations *in place* inside test source
+    files (``.rb``, ``.py``, ``.js``, …) rather than as standalone ``.json``.
+    Each line is scanned for an ``@intent:`` token, the trailing object literal
+    is captured brace-balanced, normalized from the protocol's permissive
+    syntax (unquoted keys, single-quoted strings, arbitrary whitespace) into
+    strict JSON, and validated against the schema. Every finding is reported at
+    its ``file:line`` — the location information the other modes cannot give.
+    A source file with no annotations is not a failure (the protocol allows
+    unannotated tests). Exits ``0`` if every annotation found conforms.
+
 Exit codes:
   0  all checks passed (self-test fixtures matched, stdin annotation valid, or
-     every adopter file conformed)
+     every adopter/source file conformed)
   1  one or more checks failed (a fixture mismatch, an invalid stdin annotation,
-     malformed JSON on stdin, or a file that did not conform)
+     malformed JSON on stdin, a file that did not conform, or an in-source
+     annotation that could not be extracted/normalized or did not conform)
   2  usage error / could not load the schema
 """
 
@@ -49,6 +62,8 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCHEMA_PATH = os.path.join(REPO_ROOT, "schemas", "open-test-intent.v1.json")
 VALID_EXAMPLES_GLOB = os.path.join(REPO_ROOT, "examples", "*.json")
 INVALID_EXAMPLES_GLOB = os.path.join(REPO_ROOT, "examples", "invalid", "*.json")
+VALID_SOURCES_GLOB = os.path.join(REPO_ROOT, "examples", "sources", "*")
+INVALID_SOURCES_GLOB = os.path.join(REPO_ROOT, "examples", "sources", "invalid", "*")
 
 
 # --------------------------------------------------------------------------- #
@@ -199,8 +214,244 @@ def load_schema():
 
 
 # --------------------------------------------------------------------------- #
+# in-source annotation extraction + permissive-syntax normalization
+# --------------------------------------------------------------------------- #
+INTENT_TOKEN = "@intent:"
+
+_BARE_WORD_RE = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*")
+_OPENERS = {"}": "{", "]": "["}
+
+
+def _scan_string(text, start, quote):
+    """Return the index just past the closing ``quote`` of a string literal.
+
+    ``text[start]`` must be the opening quote. Backslash escapes are honoured so
+    a quote or brace *inside* the string never terminates the scan.
+    """
+    i = start + 1
+    length = len(text)
+    while i < length:
+        char = text[i]
+        if char == "\\":
+            i += 2
+            continue
+        if char == quote:
+            return i + 1
+        i += 1
+    raise ValueError("unterminated %s-quoted string" % quote)
+
+
+def _scan_object(text, start):
+    """Return the index just past the ``}`` matching the ``{`` at ``text[start]``.
+
+    Bracket-balanced and string-aware, so a brace inside a quoted value (a
+    ``behavior`` sentence, say) does not end the payload early. Annotations are
+    single-line per PROTOCOL.md §1, so ``text`` is one line.
+    """
+    stack = []
+    i = start
+    length = len(text)
+    while i < length:
+        char = text[i]
+        if char in "\"'":
+            i = _scan_string(text, i, char)
+            continue
+        if char in "{[":
+            stack.append(char)
+        elif char in "}]":
+            if not stack or stack[-1] != _OPENERS[char]:
+                raise ValueError("unbalanced brackets in the annotation payload")
+            stack.pop()
+            if not stack:
+                return i + 1
+        i += 1
+    raise ValueError("unterminated object literal (an annotation must fit on one line)")
+
+
+def extract_intents(text):
+    """Yield ``(line_no, raw_payload, problem)`` for every ``@intent:`` in ``text``.
+
+    ``raw_payload`` is the object literal exactly as written in the source
+    (still permissive syntax — see :func:`normalize_payload`); it is ``None``
+    when ``problem`` describes why the annotation could not be captured. An
+    ``@intent:`` token that carries no extractable payload is reported rather
+    than skipped, so a typo'd annotation fails loudly instead of silently
+    counting as "unannotated".
+    """
+    for line_no, line in enumerate(text.splitlines(), start=1):
+        pos = 0
+        while True:
+            token_at = line.find(INTENT_TOKEN, pos)
+            if token_at == -1:
+                break
+            brace_at = line.find("{", token_at + len(INTENT_TOKEN))
+            if brace_at == -1:
+                yield line_no, None, "no '{...}' object literal follows the @intent: token"
+                break
+            try:
+                end = _scan_object(line, brace_at)
+            except ValueError as exc:
+                yield line_no, None, str(exc)
+                break
+            yield line_no, line[brace_at:end], None
+            pos = end
+
+
+def _requote(body):
+    """Re-emit the body of a single-quoted string as a double-quoted JSON string."""
+    out = []
+    i = 0
+    length = len(body)
+    while i < length:
+        char = body[i]
+        if char == "\\":
+            nxt = body[i + 1] if i + 1 < length else ""
+            # \' is meaningless in JSON — unescape it; keep every other escape.
+            out.append("'" if nxt == "'" else char + nxt)
+            i += 2
+            continue
+        out.append('\\"' if char == '"' else char)
+        i += 1
+    return '"' + "".join(out) + '"'
+
+
+def normalize_payload(raw):
+    """Relax the protocol's permissive annotation syntax into strict JSON.
+
+    PROTOCOL.md §1 promises "the linter normalizes before validating" and lists
+    three equivalent forms. This converts all of them to strict JSON:
+
+      * unquoted keys           ``{entity:"Order"}``  -> ``{"entity":"Order"}``
+      * single-quoted strings   ``{'entity':'Order'}``-> ``{"entity":"Order"}``
+      * arbitrary whitespace    (``json.loads`` already tolerates it)
+
+    plus a trailing comma before ``}``/``]`` as a courtesy. It is a
+    character-scanner rather than a regex substitution so quoted content is
+    never rewritten — a ``behavior`` sentence containing ``it's`` or ``{`` is
+    passed through untouched. (``ast.literal_eval`` cannot serve here: it
+    accepts single-quoted strings but rejects unquoted keys.)
+
+    Raises ``ValueError`` on an unterminated string literal.
+    """
+    out = []
+    i = 0
+    length = len(raw)
+    while i < length:
+        char = raw[i]
+
+        if char == '"':
+            end = _scan_string(raw, i, '"')
+            out.append(raw[i:end])
+            i = end
+            continue
+
+        if char == "'":
+            end = _scan_string(raw, i, "'")
+            out.append(_requote(raw[i + 1:end - 1]))
+            i = end
+            continue
+
+        match = _BARE_WORD_RE.match(raw, i)
+        if match:
+            word = match.group(0)
+            after = match.end()
+            probe = after
+            while probe < length and raw[probe].isspace():
+                probe += 1
+            # Quote a bare word only in *key* position. A bare word used as a
+            # value (`{layer: request}`) is left alone so it still fails — the
+            # protocol only relaxes keys and quote style, not value quoting.
+            out.append(json.dumps(word) if probe < length and raw[probe] == ":" else word)
+            i = after
+            continue
+
+        if char == ",":
+            probe = i + 1
+            while probe < length and raw[probe].isspace():
+                probe += 1
+            if probe < length and raw[probe] in "}]":
+                i += 1  # drop the trailing comma
+                continue
+
+        out.append(char)
+        i += 1
+
+    return "".join(out)
+
+
+def check_source_file(filepath, schema):
+    """Validate every ``@intent`` annotation embedded in a source file.
+
+    Returns ``(findings, read_error)``. ``read_error`` is a string when the file
+    could not be read (``findings`` is then ``None``). Otherwise ``findings`` is
+    a list of ``(line_no, valid, errors, problem)`` — one entry per annotation
+    found, in source order; an empty list means the file carries none.
+    """
+    try:
+        with open(filepath, "r", encoding="utf-8") as handle:
+            text = handle.read()
+    except (OSError, UnicodeDecodeError) as exc:
+        return None, "could not read file: %s" % exc
+
+    findings = []
+    for line_no, raw, problem in extract_intents(text):
+        if problem:
+            findings.append((line_no, False, [], problem))
+            continue
+        try:
+            instance = json.loads(normalize_payload(raw))
+        except ValueError as exc:  # covers json.JSONDecodeError
+            findings.append((line_no, False, [], "could not parse annotation: %s" % exc))
+            continue
+        errors = validate(instance, schema)
+        findings.append((line_no, not errors, errors, None))
+    return findings, None
+
+
+def _source_files(pattern):
+    """Expand ``pattern`` to the files it matches (directories filtered out)."""
+    return [p for p in sorted(glob.glob(pattern, recursive=True)) if os.path.isfile(p)]
+
+
+# --------------------------------------------------------------------------- #
 # modes
 # --------------------------------------------------------------------------- #
+def _self_test_source_fixture(filepath, schema, expect_valid):
+    """Check one source fixture end-to-end (extraction -> normalization -> validation).
+
+    Returns ``True`` when the fixture matched its expectation. A fixture with
+    **zero** extractable annotations is a mismatch either way: that is what a
+    silently-broken extractor looks like, and it must not read as green.
+    """
+    rel = os.path.relpath(filepath, REPO_ROOT)
+    findings, read_error = check_source_file(filepath, schema)
+    if read_error:
+        print("FAIL  %s — %s" % (rel, read_error))
+        return False
+    if not findings:
+        print("FAIL  %s — no @intent annotations extracted" % rel)
+        return False
+
+    matched = True
+    for line_no, valid, errors, problem in findings:
+        where = "%s:%d" % (rel, line_no)
+        if valid == expect_valid:
+            if expect_valid:
+                print("PASS  %s" % where)
+            else:
+                detail = problem or (errors[0] if errors else "invalid")
+                print("PASS  %s (correctly rejected — %s)" % (where, detail))
+            continue
+        matched = False
+        if expect_valid:
+            print("FAIL  %s — unexpectedly invalid%s" % (where, (" (%s)" % problem) if problem else ""))
+            for err in errors:
+                print("        -> %s" % err)
+        else:
+            print("FAIL  %s — unexpectedly valid" % where)
+    return matched
+
+
 def run_self_test(schema):
     """Validate the in-repo example fixtures against their expected outcomes."""
     mismatches = 0
@@ -208,6 +459,11 @@ def run_self_test(schema):
 
     valid_files = sorted(glob.glob(VALID_EXAMPLES_GLOB))
     invalid_files = sorted(glob.glob(INVALID_EXAMPLES_GLOB))
+    invalid_sources = _source_files(INVALID_SOURCES_GLOB)
+    # `sources/*` yields the invalid/ directory entry, not its contents, and
+    # _source_files drops directories — so the two sets are already disjoint.
+    # The subtraction keeps them disjoint if the glob is ever widened to `**`.
+    valid_sources = [p for p in _source_files(VALID_SOURCES_GLOB) if p not in invalid_sources]
 
     # expected-valid fixtures
     for filepath in valid_files:
@@ -238,6 +494,17 @@ def run_self_test(schema):
             mismatches += 1
         else:
             print("PASS  %s (correctly invalid)" % rel)
+
+    # in-source fixtures — extraction + normalization + validation end-to-end
+    for filepath in valid_sources:
+        checked += 1
+        if not _self_test_source_fixture(filepath, schema, expect_valid=True):
+            mismatches += 1
+
+    for filepath in invalid_sources:
+        checked += 1
+        if not _self_test_source_fixture(filepath, schema, expect_valid=False):
+            mismatches += 1
 
     matched = checked - mismatches
     print("\n%d/%d fixtures matched expectation." % (matched, checked))
@@ -272,6 +539,43 @@ def run_adopter(patterns, schema):
     return exit_code
 
 
+def run_source(patterns, schema):
+    """Validate ``@intent`` annotations in place inside test source file(s).
+
+    Mirrors :func:`run_adopter` but reads *source* rather than strict JSON, and
+    reports each finding at its ``file:line``. A file with no annotations is
+    reported and skipped, not failed — the protocol allows unannotated tests.
+    """
+    exit_code = 0
+
+    for pattern in patterns:
+        files = _source_files(pattern)
+        if not files:
+            print("error: no file(s) match %r" % pattern, file=sys.stderr)
+            exit_code = 1
+            continue
+        for filepath in files:
+            findings, read_error = check_source_file(filepath, schema)
+            if read_error:
+                print("FAIL  %s — %s" % (filepath, read_error))
+                exit_code = 1
+                continue
+            if not findings:
+                print("----  %s — no @intent annotations" % filepath)
+                continue
+            for line_no, valid, errors, problem in findings:
+                where = "%s:%d" % (filepath, line_no)
+                if valid:
+                    print("PASS  %s" % where)
+                    continue
+                print("FAIL  %s%s" % (where, (" — %s" % problem) if problem else ""))
+                for err in errors:
+                    print("        -> %s" % err)
+                exit_code = 1
+
+    return exit_code
+
+
 def run_stdin(schema):
     """Validate a single annotation object read from stdin.
 
@@ -297,9 +601,12 @@ def run_stdin(schema):
 
 
 USAGE = """\
-usage: validate-intent             # self-test the in-repo fixtures
-       validate-intent -           # validate one annotation JSON read from stdin
-       validate-intent FILE...     # validate FILE(s)/glob(s) as valid intent
+usage: validate-intent                    # self-test the in-repo fixtures
+       validate-intent -                  # validate one annotation JSON read from stdin
+       validate-intent FILE...            # validate FILE(s)/glob(s) as valid intent JSON
+       validate-intent --source FILE...   # validate @intent annotations inside test
+                                          #   source files (.rb/.py/.js/...), reported
+                                          #   per finding as file:line. Alias: -s
 
 Validates JSON against schemas/open-test-intent.v1.json (zero dependencies).
 """
@@ -321,6 +628,13 @@ def main(argv):
 
     if argv[0] == "-":
         return run_stdin(schema)
+
+    if argv[0] in ("-s", "--source"):
+        if not argv[1:]:
+            print("error: %s requires at least one FILE/glob argument" % argv[0], file=sys.stderr)
+            sys.stderr.write(USAGE)
+            return 2
+        return run_source(argv[1:], schema)
 
     return run_adopter(argv, schema)
 
