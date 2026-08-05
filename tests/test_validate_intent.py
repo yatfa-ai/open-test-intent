@@ -24,7 +24,13 @@ the CLI exclusion: the helper is only worth anything if every mode actually
 the other half of that path layer for the same reason: ``_run_over_patterns`` is
 where the modes' expansion, no-match diagnostic and exit-code aggregation were
 centralized, so it is now the single place a silent regression would reach every
-file-checking mode at once.
+file-checking mode at once. ``NonUtf8InputTest`` is pinned here on the same
+grounds: the readers open adopter input as strict UTF-8, so a mis-encoded file
+raises ``UnicodeDecodeError`` — a ``ValueError``, caught by neither ``OSError``
+nor ``json.JSONDecodeError``. Uncaught, it does not merely print badly: it
+unwinds ``_run_over_patterns`` and every file sorting after the bad one goes
+unchecked behind an exit code that reads as "one file failed". These tests
+assert the readers *report* the bad encoding instead of raising it.
 
 Zero dependencies, like the validator itself — stdlib ``unittest`` only.
 
@@ -74,6 +80,8 @@ _type_matches = validate_intent._type_matches
 _type_of = validate_intent._type_of
 _expand_files = validate_intent._expand_files
 _run_over_patterns = validate_intent._run_over_patterns
+check_file = validate_intent.check_file
+run_stdin = validate_intent.run_stdin
 
 
 class ExpandFilesTest(unittest.TestCase):
@@ -282,6 +290,68 @@ class RunOverPatternsTest(unittest.TestCase):
         self.assertEqual(exit_code, 1)  # the no-match still counts
         self.assertIn("no file(s) match", err)
         self.assertEqual(seen, _expand_files(self.pattern))
+
+
+class NonUtf8InputTest(unittest.TestCase):
+    """Mis-encoded adopter input is *reported*, never raised.
+
+    ``behavior`` is a free-text English sentence, so accented characters and
+    smart quotes are exactly what adopters type — and an editor saving
+    latin-1/cp1252 is the ordinary way such a file arrives. The readers open
+    strict UTF-8, so those bytes raise ``UnicodeDecodeError``. It is a
+    ``ValueError``: neither ``OSError`` nor ``json.JSONDecodeError`` catches it.
+
+    Both entry points are pinned because both have a caller that a raise would
+    damage beyond the ugly output: ``check_file`` runs under
+    ``_run_over_patterns``, where an escaping exception skips every remaining
+    file; ``run_stdin`` is the documented programmatic path for scripts and AI
+    coding agents, which parse the ``FAIL`` line and would instead get a
+    traceback on stderr.
+
+    The stdin case wraps its bytes in an explicitly strict UTF-8
+    ``TextIOWrapper`` rather than leaning on the ambient locale: under C/POSIX,
+    Python decodes stdin with ``surrogateescape`` and the read silently
+    succeeds, so a locale-dependent probe passes against the *unpatched* script
+    and proves nothing.
+    """
+
+    # 0xe9 is 'é' in latin-1 and never a valid UTF-8 lead byte on its own.
+    LATIN1_JSON = (
+        '{"entity": "Caf\xe9", "action": "serves", '
+        '"behavior": "serves coffee to the caller", "layer": "unit"}'
+    ).encode("latin-1")
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = self._tmp.name
+        self.schema = validate_intent.load_schema()
+
+    def test_check_file_reports_a_parse_error_instead_of_raising(self):
+        path = os.path.join(self.root, "latin1.json")
+        with open(path, "wb") as handle:
+            handle.write(self.LATIN1_JSON)
+
+        valid, errors, parse_error = check_file(path, self.schema)
+
+        self.assertFalse(valid)
+        self.assertEqual(errors, [])
+        self.assertIsInstance(parse_error, str)
+        self.assertIn("could not read/parse JSON", parse_error)
+
+    def test_run_stdin_reports_a_parse_error_instead_of_raising(self):
+        stdin = io.TextIOWrapper(io.BytesIO(self.LATIN1_JSON), encoding="utf-8")
+        original = sys.stdin
+        sys.stdin = stdin
+        self.addCleanup(setattr, sys, "stdin", original)
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            exit_code = run_stdin(self.schema)
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("FAIL — could not read/parse JSON", out.getvalue())
+        self.assertEqual(err.getvalue(), "")
 
 
 class TypeMatchesTest(unittest.TestCase):
