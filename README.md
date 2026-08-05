@@ -32,6 +32,11 @@ nothing to install) that checks a parsed annotation against `schemas/open-test-i
 # and every examples/invalid/*.json must fail. Exits 0 only if all match.
 ./bin/validate-intent
 
+# Validate a single annotation from stdin (the `-` sentinel) — the programmatic
+# path for scripts and AI agents. Prints PASS/FAIL and exits 0/1 accordingly.
+echo '{ "entity": "Order", "action": "checkout", "behavior": "returns 402 on expired card", "layer": "request" }' \
+  | ./bin/validate-intent -
+
 # Validate your own annotation file(s) or glob — exits 0 if every file conforms,
 # non-zero with the specific violated rule otherwise.
 ./bin/validate-intent path/to/intent.json
