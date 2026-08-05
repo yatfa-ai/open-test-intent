@@ -20,7 +20,11 @@ and is shared by every glob-expanding mode, so a regression there silently
 breaks all of them at once. ``OneGlobExpanderTest`` is the narrow exception to
 the CLI exclusion: the helper is only worth anything if every mode actually
 *routes* through it, and twice now a mode was left behind on a raw
-``glob.glob``, so that wiring is pinned here too.
+``glob.glob``, so that wiring is pinned here too. ``RunOverPatternsTest`` covers
+the other half of that path layer for the same reason: ``_run_over_patterns`` is
+where the modes' expansion, no-match diagnostic and exit-code aggregation were
+centralized, so it is now the single place a silent regression would reach every
+file-checking mode at once.
 
 Zero dependencies, like the validator itself — stdlib ``unittest`` only.
 
@@ -69,6 +73,7 @@ validate = validate_intent.validate
 _type_matches = validate_intent._type_matches
 _type_of = validate_intent._type_of
 _expand_files = validate_intent._expand_files
+_run_over_patterns = validate_intent._run_over_patterns
 
 
 class ExpandFilesTest(unittest.TestCase):
@@ -135,6 +140,12 @@ class OneGlobExpanderTest(unittest.TestCase):
     """
 
     def test_glob_glob_is_called_in_exactly_one_place(self):
+        # Deliberately a textual, line-wise scan of the script: the point is to
+        # fail loudly the moment a *new* `glob.glob(` is typed anywhere in the
+        # file, including in a comment or docstring that would mislead the next
+        # reader. Do not "fix" this into an AST walk that only counts real calls
+        # — the false positives are the feature, and a call split across lines
+        # is not a shape this file uses.
         with open(VALIDATOR_PATH, encoding="utf-8") as handle:
             calls = [line.strip() for line in handle if "glob.glob(" in line]
         self.assertEqual(
@@ -185,6 +196,92 @@ class OneGlobExpanderTest(unittest.TestCase):
         self.assertEqual(exit_code, 0, report)
         self.assertNotIn("legacy.json", report)
         self.assertIn("1/1 fixtures matched expectation.", report)
+
+
+class RunOverPatternsTest(unittest.TestCase):
+    """``_run_over_patterns`` — the shared expand/report/aggregate driver.
+
+    Centralizing the modes' pattern loop removed the duplication that let a fix
+    land in some copies and not others — but it also means every file-checking
+    mode now inherits this one function's bugs. Two invariants an adopter's CI
+    actually depends on are pinned here, because neither is visible from the
+    per-file checks the modes supply:
+
+    * a pattern matching nothing (or only directories) is **loud** — a message
+      on stderr and a non-zero exit, never a silent pass;
+    * a per-file failure **reaches** the exit code.
+
+    ``check_one`` is a plain callable, so this needs no CLI parsing, no argv and
+    no subprocess: pass a stub and assert on what the driver did with it.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = self._tmp.name
+
+        for name in ("b.json", "a.json"):
+            with open(os.path.join(self.root, name), "w", encoding="utf-8") as handle:
+                handle.write("{}\n")
+        os.mkdir(os.path.join(self.root, "a-subdir"))
+
+        self.pattern = os.path.join(self.root, "*.json")
+        self.no_match = os.path.join(self.root, "*.nope")
+        self.dirs_only = os.path.join(self.root, "a-subdir")
+
+    @staticmethod
+    def _run(patterns, check_one):
+        """Run the driver, returning ``(exit_code, stdout, stderr)``."""
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            exit_code = _run_over_patterns(patterns, check_one)
+        return exit_code, out.getvalue(), err.getvalue()
+
+    def test_no_match_is_loud_and_non_zero(self):
+        exit_code, _, err = self._run([self.no_match], lambda path: False)
+        self.assertEqual(exit_code, 1)
+        self.assertIn("no file(s) match", err)
+        self.assertIn(self.no_match, err)
+
+    def test_directory_only_pattern_is_loud_and_non_zero(self):
+        # _expand_files drops the directory, so this reaches the driver as a
+        # no-match. It must NOT read as "nothing to check, all good".
+        exit_code, _, err = self._run([self.dirs_only], lambda path: False)
+        self.assertEqual(exit_code, 1)
+        self.assertIn("no file(s) match", err)
+
+    def test_a_failing_file_sets_the_exit_code(self):
+        exit_code, _, err = self._run([self.pattern], lambda path: True)
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(err, "")
+
+    def test_all_passing_files_exit_zero_and_say_nothing_on_stderr(self):
+        exit_code, _, err = self._run([self.pattern], lambda path: False)
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(err, "")
+
+    def test_one_failure_among_many_still_fails(self):
+        # The aggregate is a logical OR, not "the last file wins".
+        seen = []
+        exit_code, _, _ = self._run(
+            [self.pattern], lambda path: seen.append(path) or len(seen) == 1
+        )
+        self.assertEqual(exit_code, 1)
+
+    def test_all_matched_files_are_visited_once_each_in_expansion_order(self):
+        seen = []
+        exit_code, _, _ = self._run([self.pattern], lambda path: seen.append(path))
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(seen, _expand_files(self.pattern))
+
+    def test_a_no_match_pattern_does_not_stop_the_remaining_patterns(self):
+        seen = []
+        exit_code, _, err = self._run(
+            [self.no_match, self.pattern], lambda path: seen.append(path)
+        )
+        self.assertEqual(exit_code, 1)  # the no-match still counts
+        self.assertIn("no file(s) match", err)
+        self.assertEqual(seen, _expand_files(self.pattern))
 
 
 class TypeMatchesTest(unittest.TestCase):

@@ -546,7 +546,6 @@ def run_self_test(schema):
 
 def run_adopter(patterns, schema):
     """Validate the given path(s)/glob(s) as valid intent JSON."""
-
     def check_one(filepath):
         valid, errors, parse_error = check_file(filepath, schema)
         if parse_error:
@@ -570,7 +569,6 @@ def run_source(patterns, schema):
     reports each finding at its ``file:line``. A file with no annotations is
     reported and skipped, not failed — the protocol allows unannotated tests.
     """
-
     def check_one(filepath):
         findings, read_error = check_source_file(filepath, schema)
         if read_error:
