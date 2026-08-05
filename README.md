@@ -22,6 +22,22 @@ SpecGuard is the **reference consumer**; this repo is intentionally SpecGuard-in
 test frameworks — pytest, jest, Go, … — can adopt the same annotation without coupling to the
 SpecGuard platform.
 
+## How to validate
+
+The repo ships a zero-dependency validator (`bin/validate-intent` — Python 3 standard library only,
+nothing to install) that checks a parsed annotation against `schemas/open-test-intent.v1.json`.
+
+```sh
+# Self-test the in-repo fixtures (no arguments): every examples/*.json must pass
+# and every examples/invalid/*.json must fail. Exits 0 only if all match.
+./bin/validate-intent
+
+# Validate your own annotation file(s) or glob — exits 0 if every file conforms,
+# non-zero with the specific violated rule otherwise.
+./bin/validate-intent path/to/intent.json
+./bin/validate-intent 'specs/**/*.json'
+```
+
 ## Versioning
 
 Current: **v1**. Breaking changes (renamed/removed fields, narrowed enums) bump to `v2` under a new
