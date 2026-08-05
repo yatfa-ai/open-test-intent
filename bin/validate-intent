@@ -84,7 +84,7 @@ INVALID_SOURCES_GLOB = os.path.join(REPO_ROOT, "examples", "sources", "invalid",
 KIND_SCHEMA = "schema"          # parsed fine, violated the JSON Schema
 KIND_EXTRACTION = "extraction"  # an @intent: token whose payload could not be captured
 KIND_PARSE = "parse"            # a payload/document that is not parseable JSON
-KIND_READ = "read"              # the file could not be read (missing, unreadable, non-UTF-8)
+KIND_READ = "read"              # the input could not be read (missing, unreadable, non-UTF-8)
 KIND_NO_MATCH = "no-match"      # a path/glob argument that matched no file
 
 
@@ -520,8 +520,9 @@ class _JsonReport:
 
     ``summary.annotations`` counts **annotation sites examined**, and counts
     them the same way in every mode: a site whose payload could not be captured
-    or parsed still counts (it was there, it was bad), but a file that could not
-    be read contributes no sites at all. Summing ``annotations`` across modes is
+    or parsed still counts (it was there, it was bad), but input that could not
+    be read at all — an unreadable file, or a stdin stream whose bytes never
+    decoded — contributes no sites. Summing ``annotations`` across modes is
     therefore meaningful rather than mode-dependent.
     """
 
@@ -802,12 +803,25 @@ def run_stdin_json(schema):
     The finding's ``file`` is ``"-"``, the same sentinel the caller passed, so a
     consumer aggregating findings across invocations still has a non-null key
     for the stdin document.
+
+    The read is deliberately hoisted out of the ``json.loads`` ``try`` so the
+    two failures stay distinguishable, matching :func:`check_file`: bytes that
+    never decoded never reached the parser, so they are ``KIND_READ`` — the
+    same kind the identical bytes get from a file — and the site they would
+    have been is not counted in ``summary.annotations``, exactly as an
+    unreadable adopter file contributes none. Only a stream that decoded and
+    was then rejected by the parser is ``KIND_PARSE``.
     """
     report = _JsonReport("stdin")
+    try:
+        raw = sys.stdin.read()
+    except UnicodeDecodeError as exc:
+        report.add("-", None, False, KIND_READ, ["could not read/parse JSON: %s" % exc])
+        return report.emit(1)
     report.annotations = 1
     try:
-        instance = json.loads(sys.stdin.read())
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        instance = json.loads(raw)
+    except json.JSONDecodeError as exc:
         report.add("-", None, False, KIND_PARSE, ["could not read/parse JSON: %s" % exc])
         return report.emit(1)
     errors = validate(instance, schema)

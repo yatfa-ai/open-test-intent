@@ -391,6 +391,10 @@ class JsonOutputTest(unittest.TestCase):
                  '"behavior": "returns 402 payment required on expired card", ' \
                  '"layer": "request"}'
 
+    # Shared with NonUtf8InputTest so the text and JSON renderers are pinned
+    # against the *same* mis-encoded bytes rather than two look-alike literals.
+    LATIN1_JSON = NonUtf8InputTest.LATIN1_JSON
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -402,24 +406,35 @@ class JsonOutputTest(unittest.TestCase):
             handle.write(content)
         return path
 
-    def _run(self, argv, stdin=None):
-        """Run ``main(argv)``, returning ``(exit_code, stdout, stderr)``."""
+    def _run(self, argv, stdin=None, stdin_bytes=None):
+        """Run ``main(argv)``, returning ``(exit_code, stdout, stderr)``.
+
+        ``stdin_bytes`` feeds raw bytes through an explicitly strict UTF-8
+        ``TextIOWrapper``, for the same reason :class:`NonUtf8InputTest`
+        documents: under a C/POSIX locale Python decodes stdin with
+        ``surrogateescape``, so a locale-dependent probe of mis-encoded input
+        proves nothing.
+        """
+        if stdin_bytes is not None:
+            stdin = io.TextIOWrapper(io.BytesIO(stdin_bytes), encoding="utf-8")
+        elif stdin is not None:
+            stdin = io.StringIO(stdin)
         if stdin is not None:
             original = sys.stdin
-            sys.stdin = io.StringIO(stdin)
+            sys.stdin = stdin
             self.addCleanup(setattr, sys, "stdin", original)
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             exit_code = main(argv)
         return exit_code, out.getvalue(), err.getvalue()
 
-    def _document(self, argv, stdin=None):
+    def _document(self, argv, stdin=None, stdin_bytes=None):
         """Run ``main`` under ``--json`` and return the parsed stdout document.
 
         Asserts stdout is *exactly one* JSON document — a stray print alongside
         it is the failure mode that breaks every consumer at once.
         """
-        exit_code, out, _err = self._run(argv, stdin=stdin)
+        exit_code, out, _err = self._run(argv, stdin=stdin, stdin_bytes=stdin_bytes)
         try:
             document = json.loads(out)
         except json.JSONDecodeError as exc:
@@ -580,6 +595,35 @@ class JsonOutputTest(unittest.TestCase):
         document = self._document(["--json", path])
         self.assertEqual([f["kind"] for f in document["findings"]], ["read"])
 
+    def test_stdin_mode_undecodable_bytes_are_kind_read_not_parse(self):
+        # `sys.stdin.read()` raises before anything reaches `json.loads`, so
+        # the bytes never became a document — the same failure a file gets, and
+        # the same kind. Reporting it as `parse` sent a consumer to fix the
+        # payload when the producer's *encoding* is what is wrong.
+        document = self._document(["--json", "-"], stdin_bytes=self.LATIN1_JSON)
+        self.assertEqual(self.document_exit_code, 1)
+        self.assertFalse(document["ok"])
+        self.assertEqual([f["kind"] for f in document["findings"]], ["read"])
+        self.assertIn("could not read/parse JSON", document["findings"][0]["errors"][0])
+        # Coupled to the kind by the documented rule: a site whose payload was
+        # never captured is not a site examined, exactly as for an unreadable
+        # adopter file.
+        self.assertEqual(document["summary"]["annotations"], 0)
+
+    def test_the_same_undecodable_bytes_are_kind_read_in_every_mode(self):
+        # The encoding twin of the malformed-payload invariant below: latin-1
+        # bytes are a `read` failure whether they arrive as a file or on stdin.
+        path = os.path.join(self.root, "latin1.json")
+        with open(path, "wb") as handle:
+            handle.write(self.LATIN1_JSON)
+        adopter = self._document(["--json", path])
+        stdin = self._document(["--json", "-"], stdin_bytes=self.LATIN1_JSON)
+
+        for label, document in (("adopter", adopter), ("stdin", stdin)):
+            kinds = [f["kind"] for f in document["findings"]]
+            self.assertEqual(kinds, ["read"], "%s mode reported %r" % (label, kinds))
+            self.assertEqual(document["summary"]["annotations"], 0, label)
+
     def test_the_same_malformed_payload_is_kind_parse_in_every_mode(self):
         # The cross-mode invariant the document exists to provide: one failure
         # class gets one `kind`, so a consumer never branches on which mode
@@ -609,6 +653,14 @@ class JsonOutputTest(unittest.TestCase):
             handle.write(b'{"behavior": "caf\xe9"}')
         unreadable = self._document(["--json", path])
         self.assertEqual(unreadable["summary"]["annotations"], 0)
+
+        # Stdin obeys the same rule: an unparseable payload is a site, an
+        # undecodable stream is not.
+        self.assertEqual(
+            self._document(["--json", "-"], stdin="{not json")["summary"]["annotations"], 1)
+        self.assertEqual(
+            self._document(["--json", "-"],
+                           stdin_bytes=self.LATIN1_JSON)["summary"]["annotations"], 0)
 
     def test_no_match_error_text_carries_no_python_repr_quoting(self):
         pattern = os.path.join(self.root, "*.nope")
