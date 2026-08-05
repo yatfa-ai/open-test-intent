@@ -43,6 +43,17 @@ Four modes:
     A source file with no annotations is not a failure (the protocol allows
     unannotated tests). Exits ``0`` if every annotation found conforms.
 
+The ``--json`` flag (accepted anywhere on the command line) switches the three
+adopter-facing modes — stdin, ``FILE...`` and ``--source`` — from the human
+report to **one JSON document on stdout**, so a script or AI agent gets which
+file, which line and which rule as data instead of having to parse prose. Every
+finding carries a ``kind`` (``schema``/``extraction``/``parse``/``read``/
+``no-match``) naming how it failed, and a pattern matching nothing appears as a
+finding rather than only as a line on stderr. Exit codes are unchanged, and so
+is the default (non-``--json``) output. Self-test mode is the in-repo fixture
+harness rather than an adopter surface, so it has no ``--json`` form; asking for
+one is a usage error (exit ``2``) rather than a silent fallback to prose.
+
 Exit codes:
   0  all checks passed (self-test fixtures matched, stdin annotation valid, or
      every adopter/source file conformed)
@@ -64,6 +75,17 @@ VALID_EXAMPLES_GLOB = os.path.join(REPO_ROOT, "examples", "*.json")
 INVALID_EXAMPLES_GLOB = os.path.join(REPO_ROOT, "examples", "invalid", "*.json")
 VALID_SOURCES_GLOB = os.path.join(REPO_ROOT, "examples", "sources", "*")
 INVALID_SOURCES_GLOB = os.path.join(REPO_ROOT, "examples", "sources", "invalid", "*")
+
+# Machine-readable failure taxonomy (the ``kind`` field of a ``--json`` finding).
+# Text mode renders two visually different shapes — an indented "-> rule" list and
+# an inline "— problem" — with no field telling them apart; these names are what
+# make that distinction data rather than something a consumer must re-derive by
+# lookahead over prose.
+KIND_SCHEMA = "schema"          # parsed fine, violated the JSON Schema
+KIND_EXTRACTION = "extraction"  # an @intent: token whose payload could not be captured
+KIND_PARSE = "parse"            # a payload/document that is not parseable JSON
+KIND_READ = "read"              # the file could not be read (missing, unreadable, non-UTF-8)
+KIND_NO_MATCH = "no-match"      # a path/glob argument that matched no file
 
 
 # --------------------------------------------------------------------------- #
@@ -384,8 +406,13 @@ def check_source_file(filepath, schema):
 
     Returns ``(findings, read_error)``. ``read_error`` is a string when the file
     could not be read (``findings`` is then ``None``). Otherwise ``findings`` is
-    a list of ``(line_no, valid, errors, problem)`` — one entry per annotation
-    found, in source order; an empty list means the file carries none.
+    a list of ``(line_no, valid, errors, problem, kind)`` — one entry per
+    annotation found, in source order; an empty list means the file carries none.
+
+    ``kind`` names *how* the annotation failed and is ``None`` when it passed. It
+    is carried here rather than reconstructed by the caller because a failed
+    extraction and an unparseable payload both land in ``problem``, so the two
+    are indistinguishable downstream once the tuple is flattened to prose.
     """
     try:
         with open(filepath, "r", encoding="utf-8") as handle:
@@ -396,15 +423,17 @@ def check_source_file(filepath, schema):
     findings = []
     for line_no, raw, problem in extract_intents(text):
         if problem:
-            findings.append((line_no, False, [], problem))
+            findings.append((line_no, False, [], problem, KIND_EXTRACTION))
             continue
         try:
             instance = json.loads(normalize_payload(raw))
         except ValueError as exc:  # covers json.JSONDecodeError
-            findings.append((line_no, False, [], "could not parse annotation: %s" % exc))
+            findings.append(
+                (line_no, False, [], "could not parse annotation: %s" % exc, KIND_PARSE)
+            )
             continue
         errors = validate(instance, schema)
-        findings.append((line_no, not errors, errors, None))
+        findings.append((line_no, not errors, errors, None, KIND_SCHEMA if errors else None))
     return findings, None
 
 
@@ -418,7 +447,7 @@ def _expand_files(pattern):
     return [p for p in sorted(glob.glob(pattern, recursive=True)) if os.path.isfile(p)]
 
 
-def _run_over_patterns(patterns, check_one):
+def _run_over_patterns(patterns, check_one, on_no_match=None):
     """Expand ``patterns`` and run ``check_one`` over every file they match.
 
     The pattern-expansion half of the file-checking modes: adopter and
@@ -427,9 +456,15 @@ def _run_over_patterns(patterns, check_one):
     than copied into each mode (which is how :func:`_expand_files` came to be
     back-filled into some call sites and not others).
 
-    ``check_one(filepath)`` prints its own report and returns truthy when that
-    file failed. Returns the aggregate exit code: ``1`` if any file failed *or*
-    any pattern matched nothing, else ``0``.
+    ``check_one(filepath)`` reports its own finding (printing it, or collecting
+    it under ``--json``) and returns truthy when that file failed. Returns the
+    aggregate exit code: ``1`` if any file failed *or* any pattern matched
+    nothing, else ``0``.
+
+    ``on_no_match(pattern)`` replaces the default stderr diagnostic when given —
+    ``--json`` routes the no-match into the document as a finding on stdout, so
+    a stdout-only consumer is not left with a clean pass list and an unexplained
+    non-zero exit. Either way the no-match still drives the exit code.
     """
     exit_code = 0
     for pattern in patterns:
@@ -437,13 +472,82 @@ def _run_over_patterns(patterns, check_one):
         if not files:
             # Never a silent pass: a pattern that matches nothing (or only
             # directories) is an error the caller must see.
-            print("error: no file(s) match %r" % pattern, file=sys.stderr)
+            if on_no_match is None:
+                print("error: no file(s) match %r" % pattern, file=sys.stderr)
+            else:
+                on_no_match(pattern)
             exit_code = 1
             continue
         for filepath in files:
             if check_one(filepath):
                 exit_code = 1
     return exit_code
+
+
+# --------------------------------------------------------------------------- #
+# machine-readable reporting (--json)
+# --------------------------------------------------------------------------- #
+JSON_SCHEMA_ID = "open-test-intent.v1.json"
+
+
+class _JsonReport:
+    """Collects findings for ``--json`` and emits the single stdout document.
+
+    Text mode flattens the structured result — which file, which line, which
+    rule — into prose at the print site, leaving a consumer only the exit code.
+    This collects the same findings instead of printing them, so the ``--json``
+    modes are the *same* checks with a different renderer, not a second
+    implementation that could drift.
+
+    Every finding has the same shape regardless of mode:
+    ``{"file", "line", "ok", "kind", "errors"}`` — ``line`` is ``null`` where a
+    finding is not line-scoped (adopter, stdin, no-match), ``kind`` is ``null``
+    on a passing finding, and ``errors`` is always a list of strings so a
+    consumer never has to branch on its type.
+    """
+
+    def __init__(self, mode):
+        self.mode = mode
+        self.files = 0
+        self.annotations = 0
+        self.findings = []
+
+    def add(self, filepath, line, ok, kind, errors):
+        """Record one finding. Returns truthy when it failed (the ``check_one``
+        contract of :func:`_run_over_patterns`)."""
+        self.findings.append({
+            "file": filepath,
+            "line": line,
+            "ok": bool(ok),
+            "kind": kind,
+            "errors": list(errors),
+        })
+        return not ok
+
+    def no_match(self, pattern):
+        """The ``on_no_match`` hook: a pattern matching nothing is a finding too."""
+        self.add(pattern, None, False, KIND_NO_MATCH, ["no file(s) match %r" % pattern])
+
+    def emit(self, exit_code):
+        """Print the document and pass ``exit_code`` straight through.
+
+        ``ok`` is derived from the exit code the *text* path would also have
+        produced, rather than recomputed from the findings, so the two renderers
+        cannot disagree about whether the run passed.
+        """
+        document = {
+            "schema": JSON_SCHEMA_ID,
+            "mode": self.mode,
+            "ok": exit_code == 0,
+            "summary": {
+                "files": self.files,
+                "annotations": self.annotations,
+                "failed": sum(1 for finding in self.findings if not finding["ok"]),
+            },
+            "findings": self.findings,
+        }
+        print(json.dumps(document, indent=2))
+        return exit_code
 
 
 # --------------------------------------------------------------------------- #
@@ -466,7 +570,7 @@ def _self_test_source_fixture(filepath, schema, expect_valid):
         return False
 
     matched = True
-    for line_no, valid, errors, problem in findings:
+    for line_no, valid, errors, problem, _kind in findings:
         where = "%s:%d" % (rel, line_no)
         if valid == expect_valid:
             if expect_valid:
@@ -562,6 +666,21 @@ def run_adopter(patterns, schema):
     return _run_over_patterns(patterns, check_one)
 
 
+def run_adopter_json(patterns, schema):
+    """``--json`` renderer for adopter mode — one finding per file checked."""
+    report = _JsonReport("adopter")
+
+    def check_one(filepath):
+        report.files += 1
+        report.annotations += 1  # in adopter mode each file *is* one annotation
+        valid, errors, parse_error = check_file(filepath, schema)
+        if parse_error:
+            return report.add(filepath, None, False, KIND_READ, [parse_error])
+        return report.add(filepath, None, valid, None if valid else KIND_SCHEMA, errors)
+
+    return report.emit(_run_over_patterns(patterns, check_one, report.no_match))
+
+
 def run_source(patterns, schema):
     """Validate ``@intent`` annotations in place inside test source file(s).
 
@@ -578,7 +697,7 @@ def run_source(patterns, schema):
             print("----  %s — no @intent annotations" % filepath)
             return False
         failed = False
-        for line_no, valid, errors, problem in findings:
+        for line_no, valid, errors, problem, _kind in findings:
             where = "%s:%d" % (filepath, line_no)
             if valid:
                 print("PASS  %s" % where)
@@ -590,6 +709,34 @@ def run_source(patterns, schema):
         return failed
 
     return _run_over_patterns(patterns, check_one)
+
+
+def run_source_json(patterns, schema):
+    """``--json`` renderer for ``--source`` mode — one finding per annotation.
+
+    A file carrying no annotations contributes to ``summary.files`` and no
+    findings: text mode's ``----`` line is the absence of anything to report,
+    not a result, and emitting it as a finding would inflate the annotation
+    count with rows a consumer has to filter back out.
+    """
+    report = _JsonReport("source")
+
+    def check_one(filepath):
+        report.files += 1
+        findings, read_error = check_source_file(filepath, schema)
+        if read_error:
+            return report.add(filepath, None, False, KIND_READ, [read_error])
+        failed = False
+        for line_no, valid, errors, problem, kind in findings:
+            report.annotations += 1
+            # `problem` and `errors` are the same thing to a consumer: why this
+            # annotation failed. `kind` is what tells them apart, so both are
+            # normalized into the one `errors` list.
+            if report.add(filepath, line_no, valid, kind, [problem] if problem else errors):
+                failed = True
+        return failed
+
+    return report.emit(_run_over_patterns(patterns, check_one, report.no_match))
 
 
 def run_stdin(schema):
@@ -616,6 +763,25 @@ def run_stdin(schema):
     return 0
 
 
+def run_stdin_json(schema):
+    """``--json`` renderer for stdin mode — always exactly one finding.
+
+    The finding's ``file`` is ``"-"``, the same sentinel the caller passed, so a
+    consumer aggregating findings across invocations still has a non-null key
+    for the stdin document.
+    """
+    report = _JsonReport("stdin")
+    report.annotations = 1
+    try:
+        instance = json.loads(sys.stdin.read())
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        report.add("-", None, False, KIND_PARSE, ["could not read/parse JSON: %s" % exc])
+        return report.emit(1)
+    errors = validate(instance, schema)
+    report.add("-", None, not errors, KIND_SCHEMA if errors else None, errors)
+    return report.emit(1 if errors else 0)
+
+
 USAGE = """\
 usage: validate-intent                    # self-test the in-repo fixtures
        validate-intent -                  # validate one annotation JSON read from stdin
@@ -623,6 +789,10 @@ usage: validate-intent                    # self-test the in-repo fixtures
        validate-intent --source FILE...   # validate @intent annotations inside test
                                           #   source files (.rb/.py/.js/...), reported
                                           #   per finding as file:line. Alias: -s
+
+       --json   emit one machine-readable JSON document on stdout instead of the
+                human report — for the stdin, FILE... and --source modes only.
+                Position-independent. Exit codes are identical either way.
 
 Validates JSON against schemas/open-test-intent.v1.json (zero dependencies).
 """
@@ -633,6 +803,11 @@ def main(argv):
         sys.stdout.write(USAGE)
         return 0
 
+    # Strip --json before the positional dispatch below, so it may be written
+    # anywhere on the command line (`--json -`, `--source F --json`, ...).
+    as_json = "--json" in argv
+    argv = [arg for arg in argv if arg != "--json"]
+
     try:
         schema = load_schema()
     except (OSError, json.JSONDecodeError) as exc:
@@ -640,19 +815,27 @@ def main(argv):
         return 2
 
     if not argv:
+        if as_json:
+            # Self-test is the in-repo fixture harness, not an adopter surface.
+            # Falling back to its prose report would answer a --json request
+            # with text a consumer then fails to parse — refuse instead.
+            print("error: --json is not supported in self-test mode "
+                  "(it needs -, FILE... or --source FILE...)", file=sys.stderr)
+            sys.stderr.write(USAGE)
+            return 2
         return run_self_test(schema)
 
     if argv[0] == "-":
-        return run_stdin(schema)
+        return run_stdin_json(schema) if as_json else run_stdin(schema)
 
     if argv[0] in ("-s", "--source"):
         if not argv[1:]:
             print("error: %s requires at least one FILE/glob argument" % argv[0], file=sys.stderr)
             sys.stderr.write(USAGE)
             return 2
-        return run_source(argv[1:], schema)
+        return run_source_json(argv[1:], schema) if as_json else run_source(argv[1:], schema)
 
-    return run_adopter(argv, schema)
+    return run_adopter_json(argv, schema) if as_json else run_adopter(argv, schema)
 
 
 if __name__ == "__main__":

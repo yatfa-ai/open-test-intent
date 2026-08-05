@@ -50,6 +50,10 @@ echo '{ "entity": "Order", "action": "checkout", "behavior": "returns 402 on exp
 # modes can't give you. Exits 0 if every annotation found conforms.
 ./bin/validate-intent --source spec/models/order_spec.rb
 ./bin/validate-intent --source 'spec/**/*_spec.rb' 'tests/**/*.py'
+
+# Any of the three above, as one JSON document on stdout instead of prose
+# (--json goes anywhere on the line). Same checks, same exit code.
+./bin/validate-intent --json --source 'spec/**/*_spec.rb'
 ```
 
 The first three paths take **strict JSON**. `--source` is the one that reads the
@@ -74,6 +78,65 @@ counting as "unannotated".
 
 Worked source fixtures exercising all three equivalent forms live in
 [`examples/sources/`](examples/sources).
+
+## Machine-readable output (`--json`)
+
+The human report is for humans. `--json` emits **one JSON document on stdout** instead,
+for the three adopter-facing modes — stdin (`-`), `FILE...`, and `--source` — so a
+script, a CI job, or an AI agent gets *which file, which line, which rule* as data
+rather than having to parse prose. The flag can go anywhere on the command line.
+
+```sh
+$ ./bin/validate-intent --json --source spec/models/order_spec.rb
+```
+```json
+{
+  "schema": "open-test-intent.v1.json",
+  "mode": "source",
+  "ok": false,
+  "summary": { "files": 1, "annotations": 2, "failed": 2 },
+  "findings": [
+    { "file": "spec/models/order_spec.rb", "line": 24, "ok": false, "kind": "schema",
+      "errors": ["<root>: additional property 'entiity' is not allowed"] },
+    { "file": "spec/models/order_spec.rb", "line": 31, "ok": false, "kind": "extraction",
+      "errors": ["unterminated object literal (an annotation must fit on one line)"] }
+  ]
+}
+```
+
+Every finding has the same five keys in every mode, so a consumer never branches on
+which mode produced it (the envelope's `mode` is `"stdin"`, `"adopter"` or `"source"`;
+`ok` mirrors the exit code, and `summary` counts what was checked):
+
+| field    | meaning |
+| -------- | ------- |
+| `file`   | the path checked — or `"-"` for stdin, or the pattern itself for a `no-match` |
+| `line`   | the annotation's line number; `null` where the finding is not line-scoped (stdin, `FILE...`, `no-match`) |
+| `ok`     | whether this finding passed |
+| `kind`   | *how* it failed; `null` when it passed |
+| `errors` | every violated rule (or the single problem), always a list of strings |
+
+`kind` is the field that makes the two visually different failure shapes of the text
+report distinguishable as data:
+
+| `kind` | means |
+| ------ | ----- |
+| `schema` | parsed fine, violated `schemas/open-test-intent.v1.json` |
+| `extraction` | an `@intent:` token whose object literal could not be captured (missing/unbalanced braces, spread across lines) |
+| `parse` | a captured payload — or a stdin document — that is not parseable JSON |
+| `read` | the file could not be read (missing, unreadable, not UTF-8) |
+| `no-match` | a path/glob argument that matched no file |
+
+Two things worth knowing:
+
+- **A pattern matching nothing is a `no-match` finding on stdout**, not only the stderr
+  line the text mode prints. Without it, a stdout-only consumer would see a clean pass
+  list next to an unexplained non-zero exit.
+- **Exit codes are identical with and without the flag**, and the default (non-`--json`)
+  output is unchanged — `--json` is a second renderer over the same checks, not a second
+  code path. Self-test mode has no `--json` form: it is the in-repo fixture harness
+  rather than an adopter surface, so asking for one is a usage error (exit `2`) rather
+  than a silent fallback to prose.
 
 ## Running the tests
 

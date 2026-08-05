@@ -31,6 +31,14 @@ nor ``json.JSONDecodeError``. Uncaught, it does not merely print badly: it
 unwinds ``_run_over_patterns`` and every file sorting after the bad one goes
 unchecked behind an exit code that reads as "one file failed". These tests
 assert the readers *report* the bad encoding instead of raising it.
+``JsonOutputTest`` is admitted on the same terms from the opposite direction:
+``--json`` is not a nicer rendering of the human report, it is the *only*
+machine-readable surface the tool has, so its document shape, its per-finding
+``kind``, its exit-code parity with text mode, and its promise that the default
+output did not move are the contract every non-Python adopter writes against.
+All of it lives in the CLI layer, so nothing below the CLI can pin it — and a
+regression is silent by construction: the document still parses, it just says
+something else.
 
 Zero dependencies, like the validator itself — stdlib ``unittest`` only.
 
@@ -82,6 +90,7 @@ _expand_files = validate_intent._expand_files
 _run_over_patterns = validate_intent._run_over_patterns
 check_file = validate_intent.check_file
 run_stdin = validate_intent.run_stdin
+main = validate_intent.main
 
 
 class ExpandFilesTest(unittest.TestCase):
@@ -352,6 +361,350 @@ class NonUtf8InputTest(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertIn("FAIL — could not read/parse JSON", out.getvalue())
         self.assertEqual(err.getvalue(), "")
+
+
+class JsonOutputTest(unittest.TestCase):
+    """``--json`` — the machine-readable contract adopters write against.
+
+    Text mode discards the structured result at the print site: a consumer gets
+    one exit code and prose whose two failure shapes (an indented ``-> rule``
+    list; an inline em-dash ``— problem``) are told apart only by lookahead,
+    with the no-match diagnostic on a *different stream* than the findings. The
+    ``--json`` document is what replaces that, so what is pinned here is the
+    document itself — the envelope, the per-finding ``kind`` taxonomy, the
+    no-match finding landing on stdout, exit-code parity with text mode, and the
+    hard promise that adding all of it moved the default output by not one byte.
+
+    Driven through ``main`` with ``redirect_stdout`` rather than a subprocess:
+    the flag is stripped in ``main`` before a positional dispatch, so argv is
+    part of what is being tested and calling the ``run_*`` functions directly
+    would skip it.
+    """
+
+    BROKEN = os.path.join(REPO_ROOT, "examples", "sources", "invalid", "broken_intent_spec.rb")
+    VALID_SOURCE = os.path.join(REPO_ROOT, "examples", "sources", "order_spec.rb")
+    VALID_JSON = os.path.join(REPO_ROOT, "examples", "unit-order-total.json")
+
+    ANNOTATION = '{"entity": "Order", "action": "checkout", ' \
+                 '"behavior": "returns 402 payment required on expired card", ' \
+                 '"layer": "request"}'
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = self._tmp.name
+
+    def _write(self, name, content):
+        path = os.path.join(self.root, name)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        return path
+
+    def _run(self, argv, stdin=None):
+        """Run ``main(argv)``, returning ``(exit_code, stdout, stderr)``."""
+        if stdin is not None:
+            original = sys.stdin
+            sys.stdin = io.StringIO(stdin)
+            self.addCleanup(setattr, sys, "stdin", original)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            exit_code = main(argv)
+        return exit_code, out.getvalue(), err.getvalue()
+
+    def _document(self, argv, stdin=None):
+        """Run ``main`` under ``--json`` and return the parsed stdout document.
+
+        Asserts stdout is *exactly one* JSON document — a stray print alongside
+        it is the failure mode that breaks every consumer at once.
+        """
+        exit_code, out, _err = self._run(argv, stdin=stdin)
+        try:
+            document = json.loads(out)
+        except json.JSONDecodeError as exc:
+            self.fail("stdout was not one JSON document (%s): %r" % (exc, out))
+        self.document_exit_code = exit_code
+        return document
+
+    # -- envelope ---------------------------------------------------------- #
+
+    def test_document_envelope_names_the_schema_mode_and_summary(self):
+        document = self._document(["--json", "--source", self.BROKEN])
+        self.assertEqual(document["schema"], "open-test-intent.v1.json")
+        self.assertEqual(document["mode"], "source")
+        self.assertFalse(document["ok"])
+        self.assertEqual(document["summary"], {"files": 1, "annotations": 5, "failed": 5})
+
+    def test_every_finding_has_the_same_keys_in_every_mode(self):
+        # A consumer must never have to branch on which mode produced a finding.
+        keys = {"file", "line", "ok", "kind", "errors"}
+        runs = [
+            (["--json", "--source", self.BROKEN], None),
+            (["--json", self.VALID_JSON], None),
+            (["--json", "-"], self.ANNOTATION),
+            (["--json", os.path.join(self.root, "*.nope")], None),
+        ]
+        for argv, stdin in runs:
+            with self.subTest(argv=argv):
+                for finding in self._document(argv, stdin=stdin)["findings"]:
+                    self.assertEqual(set(finding), keys)
+                    self.assertIsInstance(finding["errors"], list)
+                    self.assertIsInstance(finding["ok"], bool)
+
+    def test_ok_is_true_and_findings_pass_for_a_conforming_run(self):
+        document = self._document(["--json", "--source", self.VALID_SOURCE])
+        self.assertEqual(self.document_exit_code, 0)
+        self.assertTrue(document["ok"])
+        self.assertEqual(document["summary"]["failed"], 0)
+        self.assertTrue(document["findings"])  # the fixture does carry annotations
+        for finding in document["findings"]:
+            self.assertTrue(finding["ok"])
+            self.assertIsNone(finding["kind"])
+            self.assertEqual(finding["errors"], [])
+
+    # -- source mode ------------------------------------------------------- #
+
+    def test_source_mode_reports_every_annotation_at_its_line(self):
+        document = self._document(["--json", "--source", self.BROKEN])
+        self.assertEqual(self.document_exit_code, 1)
+        self.assertEqual([f["line"] for f in document["findings"]], [9, 15, 21, 28, 34])
+        self.assertTrue(all(f["file"] == self.BROKEN for f in document["findings"]))
+        self.assertTrue(all(f["ok"] is False for f in document["findings"]))
+
+    def test_kind_distinguishes_the_two_prose_failure_shapes(self):
+        # The whole point of the field: lines 28/34 are the inline em-dash shape
+        # in text mode, 9/15/21 the indented rule list, and nothing in the text
+        # output names the difference.
+        document = self._document(["--json", "--source", self.BROKEN])
+        kinds = {f["line"]: f["kind"] for f in document["findings"]}
+        self.assertEqual(kinds, {9: "schema", 15: "schema", 21: "schema",
+                                 28: "extraction", 34: "extraction"})
+
+    def test_extraction_problems_arrive_as_errors_not_as_a_separate_field(self):
+        document = self._document(["--json", "--source", self.BROKEN])
+        by_line = {f["line"]: f for f in document["findings"]}
+        self.assertEqual(
+            by_line[28]["errors"],
+            ["unterminated object literal (an annotation must fit on one line)"],
+        )
+        self.assertEqual(len(by_line[9]["errors"]), 2)  # every violated rule, not just the first
+
+    def test_an_unparseable_payload_is_kind_parse_not_kind_extraction(self):
+        # Captured fine, but `Order` is a bare word in *value* position, so the
+        # normalizer leaves it and json.loads rejects it. Both failures land in
+        # the same prose slot today — only `kind` separates them.
+        path = self._write("bad_payload_spec.rb", "# @intent: { entity: Order }\n")
+        document = self._document(["--json", "--source", path])
+        self.assertEqual([f["kind"] for f in document["findings"]], ["parse"])
+        self.assertIn("could not parse annotation", document["findings"][0]["errors"][0])
+
+    def test_an_unreadable_source_file_is_kind_read(self):
+        path = os.path.join(self.root, "gone_spec.rb")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("# @intent: %s\n" % self.ANNOTATION)
+        os.chmod(path, 0o000)
+        self.addCleanup(os.chmod, path, 0o644)
+        if os.access(path, os.R_OK):
+            self.skipTest("running as root — the mode bits do not deny the read")
+
+        document = self._document(["--json", "--source", path])
+        self.assertEqual(self.document_exit_code, 1)
+        self.assertEqual([f["kind"] for f in document["findings"]], ["read"])
+        self.assertIsNone(document["findings"][0]["line"])
+
+    def test_a_file_with_no_annotations_is_counted_but_yields_no_finding(self):
+        path = self._write("bare_spec.rb", "def test_nothing:\n    pass\n")
+        document = self._document(["--json", "--source", path])
+        self.assertEqual(self.document_exit_code, 0)
+        self.assertTrue(document["ok"])
+        self.assertEqual(document["findings"], [])
+        self.assertEqual(document["summary"], {"files": 1, "annotations": 0, "failed": 0})
+
+    # -- stdin mode -------------------------------------------------------- #
+
+    def test_stdin_mode_reports_every_violated_rule_separately(self):
+        document = self._document(
+            ["--json", "-"],
+            stdin='{"entity":"Order","action":"checkout","behavior":"x","layer":"nope"}',
+        )
+        self.assertEqual(self.document_exit_code, 1)
+        self.assertEqual(document["mode"], "stdin")
+        self.assertFalse(document["ok"])
+        self.assertEqual(len(document["findings"]), 1)
+        finding = document["findings"][0]
+        self.assertEqual(finding["kind"], "schema")
+        self.assertEqual(len(finding["errors"]), 2)  # bad layer AND short behavior
+        joined = " | ".join(finding["errors"])
+        self.assertIn("minLength is 15", joined)
+        self.assertIn("is not one of", joined)
+
+    def test_stdin_mode_passes_a_conforming_annotation(self):
+        document = self._document(["--json", "-"], stdin=self.ANNOTATION)
+        self.assertEqual(self.document_exit_code, 0)
+        self.assertTrue(document["ok"])
+        self.assertEqual(document["summary"], {"files": 0, "annotations": 1, "failed": 0})
+
+    def test_malformed_stdin_json_is_kind_parse_and_still_a_document(self):
+        # The failure a consumer is most likely to hit, and the one where a
+        # traceback instead of a document would be worst.
+        document = self._document(["--json", "-"], stdin="{not json at all")
+        self.assertEqual(self.document_exit_code, 1)
+        self.assertEqual(document["findings"][0]["kind"], "parse")
+
+    # -- adopter mode ------------------------------------------------------ #
+
+    def test_adopter_mode_reports_one_finding_per_file_with_a_null_line(self):
+        bad = self._write("bad.json", '{"entity": "Order"}')
+        document = self._document(["--json", self.VALID_JSON, bad])
+        self.assertEqual(self.document_exit_code, 1)
+        self.assertEqual(document["mode"], "adopter")
+        self.assertEqual([f["file"] for f in document["findings"]], [self.VALID_JSON, bad])
+        self.assertEqual([f["ok"] for f in document["findings"]], [True, False])
+        self.assertEqual([f["line"] for f in document["findings"]], [None, None])
+        self.assertEqual(document["findings"][1]["kind"], "schema")
+
+    def test_adopter_mode_unparseable_json_is_kind_read(self):
+        path = self._write("garbage.json", "this is not json")
+        document = self._document(["--json", path])
+        self.assertEqual([f["kind"] for f in document["findings"]], ["read"])
+
+    # -- no-match ---------------------------------------------------------- #
+
+    def test_a_pattern_matching_nothing_is_a_finding_on_stdout(self):
+        # The regression this closes: text mode puts it on *stderr*, so a
+        # stdout-only consumer saw a clean pass list and an unexplained exit 1.
+        pattern = os.path.join(self.root, "*.nope")
+        exit_code, out, err = self._run(["--json", pattern])
+        document = json.loads(out)
+
+        self.assertEqual(exit_code, 1)
+        self.assertFalse(document["ok"])
+        self.assertEqual(len(document["findings"]), 1)
+        finding = document["findings"][0]
+        self.assertEqual(finding["kind"], "no-match")
+        self.assertEqual(finding["file"], pattern)
+        self.assertFalse(finding["ok"])
+        self.assertEqual(err, "")  # ...and it is no longer split across streams
+
+    def test_a_no_match_does_not_hide_the_findings_of_the_other_patterns(self):
+        document = self._document(
+            ["--json", "--source", os.path.join(self.root, "*.nope"), self.BROKEN]
+        )
+        kinds = [f["kind"] for f in document["findings"]]
+        self.assertEqual(kinds.count("no-match"), 1)
+        self.assertEqual(len([k for k in kinds if k != "no-match"]), 5)
+
+    # -- flag handling ----------------------------------------------------- #
+
+    def test_the_flag_is_accepted_anywhere_on_the_command_line(self):
+        # There is no option parser — the flag is stripped before a *positional*
+        # dispatch, so every position has to reach the same place.
+        for argv in (["--json", "--source", self.BROKEN],
+                     ["--source", "--json", self.BROKEN],
+                     ["--source", self.BROKEN, "--json"],
+                     ["--json", "-s", self.BROKEN]):
+            with self.subTest(argv=argv):
+                document = self._document(argv)
+                self.assertEqual(document["mode"], "source")
+                self.assertEqual(len(document["findings"]), 5)
+
+    def test_the_flag_is_accepted_anywhere_for_stdin_mode(self):
+        for argv in (["--json", "-"], ["-", "--json"]):
+            with self.subTest(argv=argv):
+                document = self._document(argv, stdin=self.ANNOTATION)
+                self.assertEqual(document["mode"], "stdin")
+                self.assertTrue(document["ok"])
+
+    def test_json_in_self_test_mode_is_a_usage_error_not_a_prose_fallback(self):
+        # Answering a --json request with the fixture harness's prose would hand
+        # a consumer text it then fails to parse. Refuse loudly instead.
+        exit_code, out, err = self._run(["--json"])
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(out, "")
+        self.assertIn("--json is not supported in self-test mode", err)
+
+    def test_help_still_wins_over_the_flag_and_documents_it(self):
+        exit_code, out, _err = self._run(["--json", "--help"])
+        self.assertEqual(exit_code, 0)
+        self.assertIn("--json", out)
+
+    # -- parity with text mode --------------------------------------------- #
+
+    def _parity_cases(self):
+        return [
+            ["--source", self.BROKEN],
+            ["--source", self.VALID_SOURCE],
+            ["-s", self.VALID_SOURCE, self.BROKEN],
+            [self.VALID_JSON],
+            [self.VALID_JSON, self._write("bad.json", '{"entity": "Order"}')],
+            [self._write("garbage.json", "nope")],
+            [os.path.join(self.root, "*.nope")],
+            ["--source", os.path.join(self.root, "*.nope")],
+        ]
+
+    def test_json_exit_code_equals_text_exit_code_for_the_same_input(self):
+        for argv in self._parity_cases():
+            with self.subTest(argv=argv):
+                text_code, _, _ = self._run(list(argv))
+                json_code, _, _ = self._run(["--json"] + list(argv))
+                self.assertEqual(json_code, text_code)
+
+    def test_json_stdin_exit_code_equals_text_stdin_exit_code(self):
+        for payload in (self.ANNOTATION, '{"entity": "Order"}', "{not json"):
+            with self.subTest(payload=payload[:20]):
+                text_code, _, _ = self._run(["-"], stdin=payload)
+                json_code, _, _ = self._run(["--json", "-"], stdin=payload)
+                self.assertEqual(json_code, text_code)
+
+    # -- the default output did not move ----------------------------------- #
+
+    def test_source_mode_text_output_is_unchanged_to_the_byte(self):
+        expected = (
+            "FAIL  {p}:9\n"
+            "        -> <root>: missing required property 'entity'\n"
+            "        -> <root>: additional property 'entiity' is not allowed\n"
+            "FAIL  {p}:15\n"
+            "        -> layer: value 'model' is not one of "
+            "['unit', 'integration', 'request', 'system']\n"
+            "FAIL  {p}:21\n"
+            "        -> <root>: missing required property 'layer'\n"
+            "        -> behavior: string is 4 char(s), minLength is 15\n"
+            "FAIL  {p}:28 — unterminated object literal "
+            "(an annotation must fit on one line)\n"
+            "FAIL  {p}:34 — no '{{...}}' object literal follows the @intent: token\n"
+        ).format(p=self.BROKEN)
+
+        exit_code, out, err = self._run(["--source", self.BROKEN])
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(out, expected)
+        self.assertEqual(err, "")
+
+    def test_adopter_mode_text_output_is_unchanged_to_the_byte(self):
+        bad = self._write("bad.json", '{"entity": "Order"}')
+        exit_code, out, _err = self._run([self.VALID_JSON, bad])
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(
+            out,
+            "PASS  %s\n"
+            "FAIL  %s\n"
+            "        -> <root>: missing required property 'action'\n"
+            "        -> <root>: missing required property 'behavior'\n"
+            "        -> <root>: missing required property 'layer'\n" % (self.VALID_JSON, bad),
+        )
+
+    def test_stdin_mode_text_output_is_unchanged_to_the_byte(self):
+        exit_code, out, _err = self._run(["-"], stdin=self.ANNOTATION)
+        self.assertEqual((exit_code, out), (0, "PASS\n"))
+
+        exit_code, out, _err = self._run(["-"], stdin='{"entity": "Order", "layer": "nope"}')
+        self.assertEqual(exit_code, 1)
+        self.assertTrue(out.startswith("FAIL\n        -> "), out)
+
+    def test_the_no_match_diagnostic_still_goes_to_stderr_without_the_flag(self):
+        pattern = os.path.join(self.root, "*.nope")
+        exit_code, out, err = self._run([pattern])
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(out, "")
+        self.assertEqual(err, "error: no file(s) match %r\n" % pattern)
 
 
 class TypeMatchesTest(unittest.TestCase):
