@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      # Report both legs independently — if the old end breaks we want to see
+      # that the new end still passes, not have it cancelled.
+      fail-fast: false
+      matrix:
+        # README pitches the validator as a self-contained script adopters vendor
+        # into arbitrary repos, so the supported range is part of what CI proves.
+        # 3.10 is the oldest Python the runner images still ship (ubuntu-26.04
+        # provides no 3.9 build, and 3.9 has been EOL since Oct 2025); 3.13 is
+        # what local dev runs on. Both are available on ubuntu-24.04 and 26.04,
+        # so this survives the `ubuntu-latest` rollover.
+        python-version: ['3.10', '3.13']
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # Zero dependencies — stdlib only, so there is no install step and nothing
+      # to cache. Both commands below are the gate README.md designates, and they
+      # check different things: the self-test verifies the fixtures still match
+      # their expected outcome, the suite verifies the validator logic. Run both.
+      - name: Fixture conformance (self-test)
+        run: python3 bin/validate-intent
+
+      - name: Validator regression suite
+        run: python3 -m unittest discover -s tests
