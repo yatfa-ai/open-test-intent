@@ -32,39 +32,34 @@
 #
 # Excluded cases, and why
 # -----------------------
-# FIVE groups of inputs are deliberately NOT compared against Python. Each is
+# FOUR groups of inputs are deliberately NOT compared against Python. Each is
 # excluded for a stated reason, and each is still asserted against on the Go
 # side (see "Go-side refusals" at the bottom) so the exclusion cannot quietly
 # become "untested".
 #
-# (Five, and the arithmetic has never gone in one direction, so it is worth
+# (Four, and the arithmetic has never gone in one direction, so it is worth
 # spelling out: slice 1 listed five, slice 2 retired two of them — see RETIRED
 # EXCLUSIONS below — and slice 1's separate "unsupported schema construct"
-# group folded into group 4 when the `pattern` port landed, which left four.
-# Slice 5 (SPGD-131) then ADDED group 5, when the Go binary gained an embedded
-# schema and stopped failing on trees the Python script still cannot run in.
-# The count is right; it just does not arithmetic down from five in one step.)
+# group folded into group 3 when the `pattern` port landed, which left four.
+# Slice 5 (SPGD-131) then ADDED a group, when the Go binary gained an embedded
+# schema and stopped failing on trees the Python script still cannot run in,
+# which made five; slice 4 (SPGD-123) then retired the recursive-glob group
+# when `**` was implemented, which brings it back to four. The count is right;
+# it just does not arithmetic down from five in one step.)
 #
-#   1. Recursive `**` glob patterns.
-#      Python globs with recursive=True; Go's filepath.Glob has no `**` at all,
-#      and the port implements the rest of Python's glob syntax rather than
-#      approximating this one. A `**` component is REFUSED with exit 2, never
-#      silently downgraded to a single `*` — a downgrade would quietly check a
-#      smaller set of files and still report a clean pass.
-#
-#   2. Non-UTF-8 input — the PROSE only.
+#   1. Non-UTF-8 input — the PROSE only.
 #      A file whose bytes do not decode raises UnicodeDecodeError in Python, and
 #      the message names a reason ("invalid start byte", "invalid continuation
 #      byte", ...) that CPython classifies more finely than the port does. The
 #      CLASSIFICATION and the exit code are exact — such a file is a read
 #      failure in both — so only the tail of the message can differ.
 #
-#   3. Modes outside slices 1-2: stdin (`-`), and `--json` for *adopter*
+#   2. Modes outside slices 1-2: stdin (`-`), and `--json` for *adopter*
 #      (FILE...) mode. Not implemented yet. They are refused with exit 2 rather
 #      than falling through, where `-` would be read as a filename and produce a
 #      confident, correctly-formatted, wrong answer.
 #
-#   4. Schemas carrying a `pattern` Go's RE2 engine cannot reproduce exactly.
+#   3. Schemas carrying a `pattern` Go's RE2 engine cannot reproduce exactly.
 #      validate() evaluates `pattern` with re.search (bin/validate-intent:205).
 #      Python's engine and RE2 are different languages even where both compile
 #      the same source: Python's `$` also matches before a trailing newline,
@@ -79,15 +74,15 @@
 #      The port accepts only the constructs that provably agree (rewriting a
 #      trailing `$` to `(?:\n?\z)`, its exact equivalent) and REFUSES the whole
 #      schema with exit 2 otherwise — see cmd/validate-intent/pypattern.go. The
-#      accepted half is compared here, over a grown schema, in section 8 ("a
+#      accepted half is compared here, over a grown schema, in section 9 ("a
 #      grown schema — the validator keywords the shipped one does not
-#      declare"); the refused half is asserted in section 16 ("Go-side
+#      declare"); the refused half is asserted in section 17 ("Go-side
 #      refusals — schemas carrying a pattern RE2 cannot reproduce"), including
 #      a check on what Python does with each of those schemas, so the refusal
 #      is a real divergence being declined rather than a failure both
 #      implementations share.
 #
-#   5. A tree with no schemas/ directory beside the binary.
+#   4. A tree with no schemas/ directory beside the binary.
 #      The Go port embeds schemas/open-test-intent.v1.json (see schema.go at the
 #      module root) and falls back to that copy when — and only when — the file
 #      at <exe>/../schemas/ is ABSENT. That is the entire point of SPGD-131: a
@@ -100,16 +95,16 @@
 #
 #      This exclusion is NARROW, and the narrowness is the design. A schema that
 #      is PRESENT but unreadable, malformed or uncompilable is still compared,
-#      in section 7 ("OS-level failures"): a file that exists is a deliberate
+#      in section 8 ("OS-level failures"): a file that exists is a deliberate
 #      override, and falling back past a broken one would answer the user's own
 #      mistake with a clean green report. Note what that narrowness preserves —
 #      the crossing of "the schema fails to load" with "bare --json" in
-#      section 7 ("OS-level failures"),
+#      section 8 ("OS-level failures"),
 #      the crossing that once caught main.go refusing --json BEFORE LoadSchema,
 #      is NOT lost to this exclusion. It moved from a schema-less tree to a
 #      malformed-schema one and stayed a byte-for-byte comparison.
 #
-#      Asserted on the Go side in section 15 ("Go-side refusals — the excluded
+#      Asserted on the Go side in section 16 ("Go-side refusals — the excluded
 #      surfaces, still asserted"), which pins what the binary does instead for
 #      each of the five argument sets that used to be compared here — including
 #      the two that still FAIL. A bare self-test on such a tree exits 1 with
@@ -126,7 +121,20 @@
 #      separately (./... , not ./cmd/... , or the root package's guard is
 #      skipped and the pin verifies nothing).
 #
-# RETIRED EXCLUSIONS — slice 2 (SPGD-102) closed two of slice 1's five:
+# RETIRED EXCLUSIONS — slice 2 (SPGD-102) closed two of slice 1's five, and
+# slice 4 (SPGD-123) closed a third:
+#
+#   * Recursive `**` glob patterns. Slice 1 refused them with exit 2 rather than
+#     downgrading `**` to a single `*`, because a downgrade would quietly check
+#     a smaller set of files and still report a clean pass. THAT rule has not
+#     changed and is not up for revisiting; what changed is that the port no
+#     longer needs an approximation, because it now implements
+#     `glob.glob(pattern, recursive=True)` itself — zero-segment matches, hidden
+#     directories skipped at every level of the descent, symlinked directories
+#     followed — in cmd/validate-intent/pyglob.go. The refusal was a whole-argv
+#     precheck, so retiring it retires `**` for adopter mode and `--source`
+#     together. Compared here in section 5 ("recursive `**` — the surface a file
+#     COUNT cannot tell apart from a bug").
 #
 #   * Malformed JSON prose. check_file and check_source_file both embed the raw
 #     exception text ("could not read/parse JSON: %s", "could not parse
@@ -135,7 +143,7 @@
 #     typo'd annotation produces, i.e. the case adopters actually hit — so the
 #     port now carries its own CPython-compatible decoder
 #     (cmd/validate-intent/pyjson.go) that reproduces json.JSONDecodeError's
-#     message, line, column and character offset. Compared here in section 11
+#     message, line, column and character offset. Compared here in section 12
 #     ("malformed payloads and documents — the retired exclusions").
 #
 #     Caveat worth stating plainly: that section compares the decoder only
@@ -151,7 +159,7 @@
 #   * `NaN` / `Infinity` / `-Infinity` literals. Python's json accepts them and
 #     encoding/json rejected them, so the two classified such a document
 #     differently (schema violation vs parse failure). The new decoder accepts
-#     them exactly as Python does. Compared here in section 11 ("malformed
+#     them exactly as Python does. Compared here in section 12 ("malformed
 #     payloads and documents — the retired exclusions").
 #
 set -uo pipefail
@@ -198,7 +206,7 @@ fi
 # This suite is cited BY NUMBER from other files -- notably
 # cmd/validate-intent/main.go, which tells a future maintainer not to hoist the
 # self-test `--json` refusal back above LoadSchema(), on the grounds that
-# section 7 ("OS-level failures") proves the hoist breaks parity. Those numbers
+# section 8 ("OS-level failures") proves the hoist breaks parity. Those numbers
 # drift every time a slice inserts a section, and a citation that points at the
 # wrong section is a comment that has quietly stopped being evidence while
 # still reading like it.
@@ -399,7 +407,97 @@ compare "leading ./"               './examples/unit-order-total.json'
 compare "absolute path"            "$REPO_ROOT/examples/unit-order-total.json"
 
 # --------------------------------------------------------------------------- #
-# 5. no-match diagnostics — never a silent pass
+# 5. recursive `**` — the surface a file COUNT cannot tell apart from a bug
+# --------------------------------------------------------------------------- #
+#
+# `**` was excluded from this harness for the first three slices and refused
+# with exit 2 (see RETIRED EXCLUSIONS in the header). It is now compared like
+# everything else, over a committed fixture tree — tests/parity/globtree/ —
+# built to carry the four shapes that separate a real port from a plausible one:
+#
+#   spec/a.json                  `**` expanding to ZERO path segments
+#   spec/requests/admin/d.json   depth 2, and deliberately the only INVALID
+#                                document in the tree — so a port that misses it
+#                                exits 0 where the reference exits 1, instead of
+#                                just printing a shorter list of passes
+#   spec/linked -> real          a SYMLINKED directory, which Python descends
+#   spec/.secret/f.json          a HIDDEN directory, which Python does not
+#
+# The last two are why every case here compares the whole rendered report and
+# never a file count. Both obvious Go implementations were measured against this
+# tree: filepath.Glob("spec/**/*.json") wrongly includes .secret/f.json and
+# misses both spec/a.json and the depth-2 file, while filepath.WalkDir plus a
+# suffix filter returns the SAME NUMBER OF PATHS as Python and a different set —
+# it drops everything under spec/linked, because fs.WalkDir does not follow
+# symlinks and Python does. Sanity-checking by count certifies the second one.
+# cmd/validate-intent/pyglob_test.go pins the sorted path list at the unit
+# level; this section pins what the user actually sees.
+#
+# The cases run from inside the tree, so the reported paths are the relative
+# ones the patterns were written with. Both implementations still resolve their
+# schema from their own location in bin/, which the working directory does not
+# affect.
+echo
+echo "== recursive ** globbing =="
+GLOB_TREE="$REPO_ROOT/tests/parity/globtree"
+
+# compare_tree <label> [args...] — compare from inside the glob fixture tree.
+compare_tree() {
+  local label="$1"
+  shift
+  compare_in "$GLOB_TREE" "$REFERENCE" "$GO_BIN" "$label" "$@"
+}
+
+compare_tree "** across the fixture tree" 'spec/**/*.json'
+# `**` is not "at least one directory" — the case a hand-rolled recursion drops.
+compare_tree "** matching zero segments"  'spec/**/a.json'
+# ... and the same claim where dropping it changes the ANSWER rather than the
+# list: this pattern's only match is the zero-segment one.
+compare_tree "** whose only match is the zero-segment one" 'spec/**/[a].json'
+# A `**` that is not a whole component is an ordinary wildcard and must NOT
+# recurse. Downgrading the recursive form to this is the thing that stayed
+# forbidden when the refusal was lifted.
+compare_tree "non-component ** stays a plain wildcard" 'spec/re**s/*.json'
+# A trailing separator matches directories only; _expand_files then drops all of
+# them, so this is a no-match diagnostic and exit 1 — not an empty clean pass.
+compare_tree "**/ matches directories only" 'spec/**/'
+# A trailing `**` yields the directory itself plus every descendant, files and
+# directories alike; the directories are filtered out downstream.
+compare_tree "trailing **"                'spec/**'
+compare_tree "bare **"                    '**'
+compare_tree "leading **"                 '**/*.json'
+compare_tree "leading ** with a trailing slash" '**/'
+# The hidden rule belongs to the wildcard, not to the path: `**` never descends
+# into spec/.secret, but naming it literally still reaches inside.
+compare_tree "hidden directory named literally" 'spec/**/.secret/*.json'
+# Python does not de-duplicate across two recursive components. Being tidier
+# than the oracle is a divergence like any other.
+compare_tree "two ** components duplicate matches" 'spec/**/**/*.json'
+# The zero-segment match is emitted only when the directory exists, so a missing
+# root stays a no-match rather than becoming a match on `nope/`.
+compare_tree "** under a missing directory" 'nope/**/*.json'
+compare_tree "** mixed with an ordinary pattern" 'spec/**/*.json' 'spec/*.json'
+compare_tree "** mixed with a no-match"   'spec/**/*.json' 'nope/**/*.json'
+
+# _expand_files is mode-agnostic (bin/validate-intent:457-464), so `**` is not
+# an adopter-mode feature: --source globs through the very same expander. These
+# are the README's own quickstart lines (README.md:46, 52, 56), and the second
+# one is where the symlink matters most — capture_spec.rb is reported twice,
+# once by its real path and once through spec/linked.
+compare_tree "** under --source"          --source 'spec/**/*_spec.rb'
+compare_tree "** under -s"                -s 'spec/**/*_spec.rb'
+compare_tree "** under --source --json"   --source 'spec/**/*_spec.rb' --json
+
+# Finally, from the repo root and over the shipped corpus: the exact invocation
+# the README documents, which until this slice answered exit 2 with a refusal
+# where the reference answered exit 1 with a verdict. Note the shape of that
+# old divergence — 2 is "usage error, no verdict produced", so a CI step keyed
+# on "non-zero means violations" read the refusal as a lint failure.
+compare "recursive glob over the shipped examples" 'examples/**/*.json'
+compare "recursive glob, source files"     --source 'examples/**/*.rb'
+
+# --------------------------------------------------------------------------- #
+# 6. no-match diagnostics — never a silent pass
 # --------------------------------------------------------------------------- #
 echo
 echo "== no-match =="
@@ -424,7 +522,7 @@ compare "near-miss of --json"      --jsonx
 compare "near-miss of --source"    --sources 'examples/*.json'
 
 # --------------------------------------------------------------------------- #
-# 6. --help
+# 7. --help
 # --------------------------------------------------------------------------- #
 echo
 echo "== help =="
@@ -434,7 +532,7 @@ compare "--help wins over a file"  'examples/*.json' --help
 compare "--help wins over a missing file" nope.json -h
 
 # --------------------------------------------------------------------------- #
-# 7. OS-level failures
+# 8. OS-level failures
 # --------------------------------------------------------------------------- #
 echo
 echo "== read and schema failures =="
@@ -463,8 +561,8 @@ chmod 644 "$unreadable"
 # This was a tree with NO schemas/ directory at all until SPGD-131. It cannot be
 # any more: the Go port now embeds the schema (schema.go) and falls back to that
 # copy when the file is ABSENT, so a schema-less tree is exactly where the two
-# are supposed to diverge — that is excluded group 5, and what the Go binary
-# does there instead is pinned in section 15 ("Go-side refusals — the excluded
+# are supposed to diverge — that is excluded group 4, and what the Go binary
+# does there instead is pinned in section 16 ("Go-side refusals — the excluded
 # surfaces, still asserted").
 #
 # A MALFORMED schema replaces it, and is a strictly better probe:
@@ -493,7 +591,7 @@ compare_in "$badschema_root" "$badschema_root/bin/validate-intent" \
 # The crossing of the two exit-2 paths, which neither one alone covers.
 #
 # The harness compares schema-load failures (just above) and it compares the
-# self-test `--json` refusal (section 10, "self-test (bare invocation)") — but
+# self-test `--json` refusal (section 11, "self-test (bare invocation)") — but
 # for a long time never both at once, and that is precisely where the port
 # drifted: main.go originally refused `--json` BEFORE loading the schema, so on
 # a tree whose schema would not load it answered "--json is not supported in
@@ -559,7 +657,7 @@ fi
 chmod 644 "$schema_root2/schemas/open-test-intent.v1.json"
 
 # --------------------------------------------------------------------------- #
-# 8. a grown schema — the validator keywords the shipped one does not declare
+# 9. a grown schema — the validator keywords the shipped one does not declare
 # --------------------------------------------------------------------------- #
 #
 # schemas/open-test-intent.v1.json declares no `pattern`, no numeric bounds and
@@ -672,7 +770,7 @@ JSON
 compare_root "$grown" "grown: minLength" lengths.json
 
 # A quantifier on a *grouped* anchor is legal in Python and in RE2 alike, so it
-# must survive the refusal that rejects the bare `^*` form (section 16,
+# must survive the refusal that rejects the bare `^*` form (section 17,
 # "Go-side refusals — schemas carrying a pattern RE2 cannot reproduce"). Both
 # documents are compared, so an over-refusal here is a loud failure rather than
 # a silently smaller accepted language: the port would exit 2 where the
@@ -697,7 +795,7 @@ compare_root "$grown" "grown: key order across the new keywords" key-order.json
 compare_root "$grown" "grown: every fixture in one invocation" '*.json'
 
 # --------------------------------------------------------------------------- #
-# 9. --source over the shipped corpus
+# 10. --source over the shipped corpus
 # --------------------------------------------------------------------------- #
 #
 # The mode's own acceptance criteria: every valid source fixture, every invalid
@@ -735,7 +833,7 @@ compare "--source over a .json file" --source examples/unit-order-total.json
 compare "adopter over a .rb file"    examples/sources/order_spec.rb
 
 # --------------------------------------------------------------------------- #
-# 10. self-test (bare invocation)
+# 11. self-test (bare invocation)
 # --------------------------------------------------------------------------- #
 #
 # 24 PASS lines then "12/12 fixtures matched expectation." Those two numbers
@@ -751,7 +849,7 @@ compare "bare invocation (self-test)"
 compare "self-test refuses --json" --json
 
 # --------------------------------------------------------------------------- #
-# 11. malformed payloads and documents — the retired exclusions
+# 12. malformed payloads and documents — the retired exclusions
 # --------------------------------------------------------------------------- #
 #
 # Slice 1 excluded json.JSONDecodeError's wording and the NaN/Infinity literals.
@@ -816,7 +914,7 @@ printf '\n' > "$malformed/empty.json"
 compare "adopter: an empty document" "$malformed/empty.json"
 
 # --------------------------------------------------------------------------- #
-# 12. --source hazards: the four divergences, the thin ice, the known defect
+# 13. --source hazards: the four divergences, the thin ice, the known defect
 # --------------------------------------------------------------------------- #
 #
 # These fixtures are BUILT HERE with printf rather than checked in, because most
@@ -997,7 +1095,7 @@ fi
 chmod 644 "$unreadable_src"
 
 # --------------------------------------------------------------------------- #
-# 13. --source --json
+# 14. --source --json
 # --------------------------------------------------------------------------- #
 #
 # The whole rendering path is new in slice 2 (slice 1 has no reporter to reuse —
@@ -1035,7 +1133,7 @@ fi
 chmod 644 "$unreadable_src"
 
 # --------------------------------------------------------------------------- #
-# 14. the self-test's empty-fixture-set guard
+# 15. the self-test's empty-fixture-set guard
 # --------------------------------------------------------------------------- #
 #
 # A fixture set matching NOTHING must be an error, not a vacuous pass: dropping
@@ -1089,7 +1187,7 @@ printf 'describe Order do\nend\n' > "$noann_root/examples/sources/unannotated_sp
 compare_root "$noann_root" "self-test: a fixture with no annotations is a mismatch"
 
 # --------------------------------------------------------------------------- #
-# 15. Go-side refusals — the excluded surfaces, still asserted
+# 16. Go-side refusals — the excluded surfaces, still asserted
 # --------------------------------------------------------------------------- #
 #
 # These are the inputs listed as excluded in the header. They are not compared
@@ -1129,13 +1227,10 @@ assert_refusal() {
 assert_refusal "stdin mode" -
 assert_refusal "--json for adopter mode" --json 'examples/*.json'
 assert_refusal "--json for adopter mode, anywhere on the line" 'examples/*.json' --json
-assert_refusal "recursive glob" 'examples/**/*.json'
-assert_refusal "recursive glob, bare" '**'
-assert_refusal "recursive glob under --source" --source 'examples/**/*.rb'
 
 # The mirror of the list above: the surfaces slice 2 IMPLEMENTED must NOT be
 # refused any more. Without this, deleting a mode's dispatch would leave every
-# comparison in sections 9-14 unrun and the refusal assertions still green — a
+# comparison in sections 10-15 unrun and the refusal assertions still green — a
 # suite that got smaller without going red.
 assert_not_refused() {
   local label="$1"
@@ -1158,12 +1253,18 @@ assert_not_refused "self-test mode is implemented"
 assert_not_refused "source mode (--source) is implemented" --source 'examples/sources/*'
 assert_not_refused "source mode (-s) is implemented" -s 'examples/sources/*'
 assert_not_refused "--source --json is implemented" --source 'examples/sources/*' --json
+# Slice 4's own entries. The refusals these replace were a WHOLE-ARGV precheck,
+# so it was never enough to delete one of them: `**` had to stop being refused
+# in adopter mode, in --source, and as a bare argument alike.
+assert_not_refused "recursive glob is implemented" 'examples/**/*.json'
+assert_not_refused "recursive glob under --source is implemented" --source 'examples/**/*.rb'
+assert_not_refused "recursive glob, bare, is implemented" '**'
 
 # --------------------------------------------------------------------------- #
-# Excluded group 5: a tree with no schemas/ directory beside the binary
+# Excluded group 4: a tree with no schemas/ directory beside the binary
 # --------------------------------------------------------------------------- #
 #
-# These five argument sets USED to be compared, in section 7 ("OS-level
+# These five argument sets USED to be compared, in section 8 ("OS-level
 # failures"), against a tree with no schemas/ directory. Since SPGD-131 the Go
 # binary embeds the schema and falls back to it when the file is absent, so it
 # no longer fails there and Python still does. That is a real divergence, and it
@@ -1174,7 +1275,7 @@ assert_not_refused "--source --json is implemented" --source 'examples/sources/*
 # of them — the crossing of a failed schema load with a bare `--json` — is on
 # record as having caught a real ordering drift in main.go, and coverage with a
 # history of catching something is the last coverage to discard quietly. So the
-# crossing stayed a byte-for-byte COMPARISON (section 7, "OS-level failures",
+# crossing stayed a byte-for-byte COMPARISON (section 8, "OS-level failures",
 # now runs it against a
 # malformed schema, which fails to load in both), and what the Go binary does on
 # a schema-less tree is pinned HERE, argument set for argument set.
@@ -1182,7 +1283,7 @@ assert_not_refused "--source --json is implemented" --source 'examples/sources/*
 # "Excluded" must not mean "unchecked", and it must not mean "assumed to work"
 # either: two of the five still fail, and they are asserted failing.
 echo
-echo "== excluded group 5: no schemas/ beside the binary (Go only) =="
+echo "== excluded group 4: no schemas/ beside the binary (Go only) =="
 
 noschema_root="$WORK/noschema"
 mkdir -p "$noschema_root/bin"
@@ -1197,7 +1298,7 @@ cp "$REPO_ROOT/examples/unit-order-total.json" "$noschema_root/thing.json"
 # the quietest way to lose coverage.
 if [ -e "$noschema_root/schemas" ]; then
   failed=$((failed + 1))
-  red "  FAIL  excluded group 5 — this tree must have NO schemas/ directory, and it has one"
+  red "  FAIL  excluded group 4 — this tree must have NO schemas/ directory, and it has one"
 fi
 
 # assert_no_schema_tree <label> <want-rc> <want-stdout> <want-stderr> [args...]
@@ -1278,7 +1379,7 @@ assert_no_schema_tree "--source --json works with no schemas/ (was exit 2)" \
 # Note what this can and cannot prove. It pins the message, so a fall-through
 # would be caught. It does NOT prove the refusal still sits below LoadSchema —
 # on this tree the load succeeds either way. The malformed-schema crossing in
-# section 7 ("OS-level failures")
+# section 8 ("OS-level failures")
 # is what proves the ordering, and it must stay there.
 assert_no_schema_tree "bare --json still refuses: self-test is not a --json surface" \
   2 EMPTY "--json is not supported in self-test mode" --json
@@ -1301,9 +1402,10 @@ assert_no_schema_tree "--source with no argument still refuses" \
 
 # --------------------------------------------------------------------------- #
 # 16. Go-side refusals — schemas carrying a pattern RE2 cannot reproduce
+# 17. Go-side refusals — schemas carrying a pattern RE2 cannot reproduce
 # --------------------------------------------------------------------------- #
 #
-# The other half of excluded group 4. Each case builds a tree whose schema
+# The other half of excluded group 3. Each case builds a tree whose schema
 # declares one divergent `pattern`, and asserts both halves of the claim:
 #
 #   * what python3 does with that schema — either it answers the document
@@ -1433,7 +1535,7 @@ assert_pattern_refusal 'backreference' \
   '(a)\\1' '"aa"' pass
 
 # --------------------------------------------------------------------------- #
-# 17. the reference is untouched
+# 18. the reference is untouched
 # --------------------------------------------------------------------------- #
 #
 # This slice adds only. If the port were "made to pass" by editing the oracle,

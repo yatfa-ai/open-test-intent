@@ -1,0 +1,6 @@
+{
+  "entity": "Order",
+  "action": "total",
+  "behavior": "matched by ** expanding to zero path segments",
+  "layer": "unit"
+}

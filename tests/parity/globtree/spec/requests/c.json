@@ -1,0 +1,6 @@
+{
+  "entity": "Order",
+  "action": "checkout",
+  "behavior": "matched one directory below the ** component, in a sibling tree",
+  "layer": "request"
+}
