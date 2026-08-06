@@ -67,14 +67,20 @@
 #      the same source: Python's `$` also matches before a trailing newline,
 #      `\d`/`\w`/`\s`/`\b` are Unicode-aware in Python and ASCII-only in RE2,
 #      `[[:alpha:]]` and `\p{L}` are RE2-only, and `{,n}` means `{0,n}` to
-#      Python and three literal characters to RE2. The port accepts only the
-#      constructs that provably agree (rewriting a trailing `$` to
-#      `(?:\n?\z)`, its exact equivalent) and REFUSES the whole schema with
-#      exit 2 otherwise — see cmd/validate-intent/pypattern.go. The accepted
-#      half is compared here, over a grown schema, in section 8; the refused
-#      half is asserted in section 10, including a check that Python loads each
-#      of those schemas happily, so the refusal is a real divergence being
-#      declined rather than a failure both implementations share.
+#      Python and three literal characters to RE2. A second, sharper kind sits
+#      alongside those: constructs RE2 compiles that Python cannot parse at
+#      all, where the port would not merely disagree with the reference but
+#      answer a question the reference raises an exception on — `\p{L}`, and a
+#      quantifier applied to a bare `^`/`\A` (`^*`, `\A{2}`), which RE2 reads
+#      as "match empty anywhere" and Python rejects with "nothing to repeat".
+#      The port accepts only the constructs that provably agree (rewriting a
+#      trailing `$` to `(?:\n?\z)`, its exact equivalent) and REFUSES the whole
+#      schema with exit 2 otherwise — see cmd/validate-intent/pypattern.go. The
+#      accepted half is compared here, over a grown schema, in section 8; the
+#      refused half is asserted in section 10, including a check on what Python
+#      does with each of those schemas, so the refusal is a real divergence
+#      being declined rather than a failure both implementations share.
+
 #
 #   5. `NaN` / `Infinity` / `-Infinity` literals in a document.
 #      Python's json accepts them by default; Go's encoding/json rejects them.
@@ -412,6 +418,7 @@ grown="$(make_schema_root grown <<'JSON'
   "properties": {
     "slug":    {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
     "version": {"type": "string", "pattern": "^v[0-9]{1,3}\\.[0-9]+$"},
+    "grouped": {"type": "string", "pattern": "(?:^)+[a-z]+(^)*$"},
     "count":   {"type": "integer", "minimum": 1, "maximum": 10},
     "ratio":   {"type": "number", "minimum": 0.5, "maximum": 2.5},
     "name":    {"type": "string", "minLength": 3, "maxLength": 6},
@@ -502,6 +509,21 @@ cat > "$grown/lengths.json" <<'JSON'
 {"slug": "a", "name": "ab"}
 JSON
 compare_root "$grown" "grown: minLength" lengths.json
+
+# A quantifier on a *grouped* anchor is legal in Python and in RE2 alike, so it
+# must survive the refusal that rejects the bare `^*` form (section 10). Both
+# documents are compared, so an over-refusal here is a loud failure rather than
+# a silently smaller accepted language: the port would exit 2 where the
+# reference answers.
+cat > "$grown/grouped-anchor.json" <<'JSON'
+{"slug": "a", "grouped": "abc"}
+JSON
+compare_root "$grown" "grown: quantified grouped anchor, matching" grouped-anchor.json
+
+cat > "$grown/grouped-anchor-bad.json" <<'JSON'
+{"slug": "a", "grouped": "AB1"}
+JSON
+compare_root "$grown" "grown: quantified grouped anchor, failing" grouped-anchor-bad.json
 
 # Key order again, this time over the grown keyword set: every one of these
 # fails, and the order of the failures must track the document.
@@ -677,6 +699,14 @@ assert_pattern_refusal 'inline flag (?i)' \
 # alone, the port would answer confidently where the reference cannot answer.
 assert_pattern_refusal 'Unicode class \p{L} is RE2-only' \
   '\\p{L}+' '"abc"' error
+# A quantifier on a bare `^`/`\A` is the same shape, and lands in the worst
+# direction: RE2 reads `^*` as "match empty anywhere", so the constraint is
+# satisfied by every input, while Python raises "nothing to repeat" before it
+# can check anything. A silent PASS against an oracle that crashes.
+assert_pattern_refusal 'quantified ^ (nothing to repeat)' \
+  '^*' '"abc"' error
+assert_pattern_refusal 'quantified \A (nothing to repeat)' \
+  '\\A{2}' '"abc"' error
 # The two the old compile-only guard already caught, kept so that narrower
 # failure mode stays covered.
 assert_pattern_refusal 'lookbehind' \

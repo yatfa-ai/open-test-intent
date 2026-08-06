@@ -37,6 +37,15 @@ package main
 // is a loud error a human fixes in a minute; a construct wrongly accepted is a
 // wrong verdict nobody notices.
 //
+// # "Identical meaning" includes having a meaning at all
+//
+// The allow-list has to close two doors, not one. The obvious one is a
+// construct both engines compile and read differently (the table above). The
+// other is a construct RE2 compiles and Python cannot parse: there the port
+// does not merely disagree with the reference, it answers a question the
+// reference raises an exception on. `\p{L}` is refused for exactly that reason,
+// and so is a quantifier on a bare `^`/`\A` — see quantifiedAnchorError.
+//
 // # The one translation
 //
 // A trailing `$` is rewritten to `(?:\n?\z)`. Python's `$` (no re.MULTILINE)
@@ -148,14 +157,35 @@ func translatePattern(pattern string) (string, error) {
 	runes := []rune(pattern)
 	var out strings.Builder
 
+	// The anchor most recently emitted, if the last token was a bare `^` or
+	// `\A` — see quantifiedAnchorError. Reset on every other token, so a
+	// group-wrapped anchor (`(?:^)*`, legal in both engines) stays accepted:
+	// the `)` is what precedes the quantifier there, not the `^`.
+	lastAnchor := ""
+
 	for i := 0; i < len(runes); {
+		anchor := ""
+
 		switch r := runes[i]; r {
 
 		// `^` — start of text in both engines without MULTILINE/(?m).
+		case '^':
+			out.WriteRune(r)
+			anchor = "^"
+			i++
+
 		// `.` — any character except newline in both.
-		// `*`, `+`, `?`, `|`, `)` — identical, including the lazy `*?` forms,
-		// which arrive here as two separate tokens.
-		case '^', '.', '*', '+', '?', '|', ')':
+		// `|`, `)` — identical.
+		case '.', '|', ')':
+			out.WriteRune(r)
+			i++
+
+		// Identical, including the lazy `*?` forms, which arrive here as two
+		// separate tokens — the second `?` sees a quantifier, not an anchor.
+		case '*', '+', '?':
+			if lastAnchor != "" {
+				return "", quantifiedAnchorError(lastAnchor)
+			}
 			out.WriteRune(r)
 			i++
 
@@ -176,15 +206,15 @@ func translatePattern(pattern string) (string, error) {
 			// and mean the same by. `(?i)`, `(?P<n>...)`, `(?=...)`, `(?#...)`
 			// are each either RE2-only, Python-only, or subtly different.
 			if i+1 < len(runes) && runes[i+1] == '?' {
-				if i+2 < len(runes) && runes[i+2] == ':' {
-					out.WriteString("(?:")
-					i += 3
-					continue
+				if i+2 >= len(runes) || runes[i+2] != ':' {
+					return "", errors.New(
+						"`(?` groups other than the non-capturing `(?:` are not supported: " +
+							"inline flags, named groups, lookaround and comments are spelled " +
+							"differently — or mean different things — in Python and Go's RE2")
 				}
-				return "", errors.New(
-					"`(?` groups other than the non-capturing `(?:` are not supported: " +
-						"inline flags, named groups, lookaround and comments are spelled " +
-						"differently — or mean different things — in Python and Go's RE2")
+				out.WriteString("(?:")
+				i += 3
+				break
 			}
 			out.WriteRune('(')
 			i++
@@ -198,6 +228,9 @@ func translatePattern(pattern string) (string, error) {
 					"`{` is only supported as a `{m}`, `{m,}` or `{m,n}` repetition: Python " +
 						"reads `{,n}` as `{0,n}` while Go's RE2 reads it as literal text. " +
 						"Write `\\{` for a literal brace")
+			}
+			if lastAnchor != "" {
+				return "", quantifiedAnchorError(lastAnchor)
 			}
 			out.WriteString(string(runes[i : i+length]))
 			i += length
@@ -216,6 +249,9 @@ func translatePattern(pattern string) (string, error) {
 				return "", err
 			}
 			out.WriteString(text)
+			if text == `\A` {
+				anchor = `\A`
+			}
 			i += length
 
 		case ']', '}':
@@ -233,8 +269,38 @@ func translatePattern(pattern string) (string, error) {
 			out.WriteRune(r)
 			i++
 		}
+
+		lastAnchor = anchor
 	}
 	return out.String(), nil
+}
+
+// quantifiedAnchorError refuses a quantifier applied to a bare `^` or `\A`.
+//
+// This is the one direction that matters most. Go's RE2 happily accepts `^*`;
+// Python's parser rejects the whole pattern with "nothing to repeat", so there
+// is no Python meaning for the port to be faithful to — it would answer where
+// the reference raises. Worse, it answers in the vacuous direction: `^*`
+// matches the empty string at any position, so RE2 matches every input and the
+// constraint is silently satisfied for everything, while the oracle crashes.
+//
+// `\Z`, `\z` and `\b` are quantifiable in RE2 and not in Python too, but the
+// allow-list already refuses all three by name, and a trailing `$` can have
+// nothing after it — so bare `^` and `\A` are the whole family the port can
+// still emit.
+//
+// The check is deliberately narrow: it fires only when the anchor is the token
+// immediately before the quantifier. Wrapping it in a group makes it legal in
+// both engines — `(^)*`, `(?:^)*`, `(?:\A)*`, `()*` all compile in Python — and
+// those stay accepted, because the `)` resets the tracking.
+func quantifiedAnchorError(anchor string) error {
+	return fmt.Errorf(
+		"a quantifier cannot be applied to the bare zero-width anchor `%s`: Go's RE2 "+
+			"accepts it (and then matches the empty string anywhere, satisfying the "+
+			"constraint for every input) while Python's `re` rejects the pattern outright "+
+			"with \"nothing to repeat\" — so the port would answer where the reference "+
+			"cannot. Wrap it in a group (`(?:%s)*`) if that is really what you mean",
+		anchor, anchor)
 }
 
 // translateClass handles a `[...]` character class, returning the runes

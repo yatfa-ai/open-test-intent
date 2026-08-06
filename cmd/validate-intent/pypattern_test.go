@@ -42,6 +42,21 @@ func TestTranslatePatternAccepts(t *testing.T) {
 		// A `$` inside a character class is an ordinary member, not the anchor.
 		{`[$]`, `[$]`},
 		{`\$`, `\$`},
+		// A quantifier on a *grouped* anchor is legal in Python as well as RE2,
+		// so the refusal below must not reach these. Every one of them compiles
+		// under CPython's re.
+		{`(^)*`, `(^)*`},
+		{`(?:^)*`, `(?:^)*`},
+		{`(?:\A)*`, `(?:\A)*`},
+		{`()*`, `()*`},
+		{`(?:)*`, `(?:)*`},
+		{`(^)+abc`, `(^)+abc`},
+		// `^` next to, but not quantified by, the operators.
+		{`^|a`, `^|a`},
+		{`^a*`, `^a*`},
+		{`[a^]*`, `[a^]*`},
+		{`[^a]*`, `[^a]*`},
+		{`\Aab*`, `\Aab*`},
 	}
 	for _, tc := range cases {
 		got, err := translatePattern(tc.pattern)
@@ -109,6 +124,37 @@ func TestTranslatePatternRefuses(t *testing.T) {
 	}
 }
 
+// A quantifier applied to a bare `^` or `\A` compiles under RE2 and is a hard
+// parse error in Python ("nothing to repeat"). Accepting one lets the port
+// return a verdict — a vacuous PASS, since `^*` matches empty everywhere —
+// where the reference raises. Both anchors, both positions, every quantifier
+// spelling; each of the 28 was confirmed to raise re.error under CPython 3.
+func TestTranslatePatternRefusesQuantifiedAnchor(t *testing.T) {
+	for _, anchor := range []string{`^`, `\A`} {
+		for _, quantifier := range []string{`*`, `+`, `?`, `{2}`, `{2,}`, `{1,3}`, `*?`} {
+			for _, pattern := range []string{
+				anchor + quantifier,             // at the start of the pattern
+				"a" + anchor + quantifier + "b", // and in the middle
+			} {
+				got, err := translatePattern(pattern)
+				if err == nil {
+					t.Errorf("translatePattern(%q) = %q, want a refusal (python: nothing to repeat)",
+						pattern, got)
+					continue
+				}
+				if !strings.Contains(err.Error(), "nothing to repeat") {
+					t.Errorf("translatePattern(%q) refused with %q, want it to explain the "+
+						"Python parse error", pattern, err)
+				}
+			}
+		}
+	}
+	// `^^*` quantifies the second `^`, so it is refused too — as Python does.
+	if _, err := translatePattern(`^^*`); err == nil {
+		t.Error("translatePattern(`^^*`) was accepted, want a refusal")
+	}
+}
+
 // The point of the whole exercise: for every pattern the port accepts, its
 // verdict is the one CPython's re.search gives. Each `want` below was produced
 // by running the pair through python3.
@@ -157,6 +203,21 @@ func TestPatternSemanticsMatchPython(t *testing.T) {
 		{`^ab*c$`, "ac", true},
 		{`^(a|b)+$`, "abab", true},
 		{`^\t$`, "\t", true},
+		// The grouped anchors the quantified-anchor refusal must not swallow:
+		// legal in both engines, and agreeing on the verdict.
+		{`(^)*`, "abc", true},
+		{`(^)*`, "", true},
+		{`(?:^)*`, "abc", true},
+		{`(?:\A)*`, "abc", true},
+		{`()*`, "abc", true},
+		{`(^)+abc`, "abc", true},
+		{`(^)+abc`, "xabc", false},
+		{`^|a`, "zz", true},
+		{`^a*`, "b", true},
+		{`[a^]*`, "^", true},
+		{`[^a]*`, "b", true},
+		{`\Aab*`, "abbb", true},
+		{`\Aab*`, "xab", false},
 	}
 	for _, tc := range cases {
 		compiled, err := CompilePythonPattern(tc.pattern)
