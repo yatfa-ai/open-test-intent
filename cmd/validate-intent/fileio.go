@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"syscall"
 	"unicode/utf8"
@@ -20,7 +19,7 @@ import (
 // — it renders a parse failure and a read failure as the same prose — but a
 // consumer of the later --json slice needs to tell them apart, and once the
 // result has been flattened to text the distinction is gone for good.
-func CheckFile(path string, schema Value) (valid bool, errs []string, parseError string, kind string) {
+func CheckFile(path string, schema *Schema) (valid bool, errs []string, parseError string, kind string) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return false, nil, "could not read/parse JSON: " + pyOSError(err), KindRead
@@ -36,7 +35,7 @@ func CheckFile(path string, schema Value) (valid bool, errs []string, parseError
 	if err != nil {
 		return false, nil, "could not read/parse JSON: " + err.Error(), KindParse
 	}
-	errs = Validate(instance, schema, "")
+	errs = schema.Validate(instance)
 	return len(errs) == 0, errs, "", ""
 }
 
@@ -57,7 +56,15 @@ func SchemaPath() (string, error) {
 // LoadSchema is the port of `load_schema` (bin/validate-intent:250-252). It
 // returns the schema path alongside the error so the caller can render the
 // reference's diagnostic verbatim.
-func LoadSchema() (Value, string, error) {
+//
+// It does one thing the reference does not: CompileSchema translates and
+// compiles every `pattern` keyword up front, and refuses the whole schema if
+// any of them cannot be given Python's exact meaning under Go's RE2 engine.
+// That refusal is a Go-only exit 2 — Python would have loaded the schema fine —
+// and it is deliberate. The alternative is a binary that loads happily and then
+// disagrees with the reference about whether a document is valid. See
+// pypattern.go for what is accepted, what is refused, and why.
+func LoadSchema() (*Schema, string, error) {
 	path, err := SchemaPath()
 	if err != nil {
 		return nil, "", err
@@ -69,51 +76,15 @@ func LoadSchema() (Value, string, error) {
 	if !utf8.Valid(data) {
 		return nil, path, errors.New(pyUnicodeDecodeError(data))
 	}
-	schema, err := DecodeOrdered(data)
+	root, err := DecodeOrdered(data)
 	if err != nil {
 		return nil, path, err
 	}
-	if err := checkPatterns(schema); err != nil {
+	schema, err := CompileSchema(root)
+	if err != nil {
 		return nil, path, err
 	}
 	return schema, path, nil
-}
-
-// checkPatterns pre-compiles every `pattern` keyword in the schema.
-//
-// Go's regexp is RE2 and Python's is a backtracking engine, so a schema could
-// carry a pattern (a backreference, a lookahead) that Python accepts and Go
-// cannot compile. Failing at load time makes that a loud, exit-2 "this schema
-// is not usable by the Go port" rather than a silent non-match reported as a
-// validation error against the document — which would blame the wrong thing.
-// The shipped schema declares no patterns, so this is a guard for schema
-// growth, not current behaviour.
-func checkPatterns(node Value) error {
-	switch typed := node.(type) {
-	case *Object:
-		for _, key := range typed.Keys() {
-			child, _ := typed.Get(key)
-			if key == "pattern" {
-				if pattern, isString := child.(string); isString {
-					if _, err := regexp.Compile(pattern); err != nil {
-						return fmt.Errorf(
-							"the Go port cannot compile the %s pattern (RE2): %s",
-							PyReprString(pattern), err)
-					}
-				}
-			}
-			if err := checkPatterns(child); err != nil {
-				return err
-			}
-		}
-	case []Value:
-		for _, child := range typed {
-			if err := checkPatterns(child); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 // --------------------------------------------------------------------------- //

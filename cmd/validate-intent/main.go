@@ -95,7 +95,7 @@ func notImplemented(surface string) int {
 
 // RunAdopter is the port of `run_adopter` (bin/validate-intent:713-728):
 // validate the given path(s)/glob(s) as valid intent JSON.
-func RunAdopter(patterns []string, schema Value) int {
+func RunAdopter(patterns []string, schema *Schema) int {
 	checkOne := func(path string) bool {
 		valid, errs, parseError, _ := CheckFile(path, schema)
 		if parseError != "" {

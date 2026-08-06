@@ -9,7 +9,6 @@ package main
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 	"unicode/utf8"
 )
@@ -89,9 +88,15 @@ func typeOf(value Value) string {
 	return fmt.Sprintf("%T", value)
 }
 
-// Validate checks instance against a draft-07 schema subset and returns the
-// human-readable violations — an empty slice means valid.
-func Validate(instance Value, schema Value, path string) []string {
+// Validate checks instance against the schema and returns the human-readable
+// violations — an empty slice means valid.
+func (s *Schema) Validate(instance Value) []string {
+	return s.validate(instance, s.Root, "")
+}
+
+// validate is the recursive body, carrying the sub-schema and the path to the
+// value being checked.
+func (s *Schema) validate(instance Value, schema Value, path string) []string {
 	errors := []string{}
 
 	schemaObj, ok := schema.(*Object)
@@ -166,14 +171,14 @@ func Validate(instance Value, schema Value, path string) []string {
 				child = path + "." + name
 			}
 			if sub, present := props.Get(name); present {
-				errors = append(errors, Validate(value, sub, child)...)
+				errors = append(errors, s.validate(value, sub, child)...)
 				continue
 			}
 			if allow, isBool := additional.(bool); isBool && !allow {
 				errors = append(errors, fmt.Sprintf(
 					"%s: additional property '%s' is not allowed", where, name))
 			} else if subSchema, isObject := additional.(*Object); isObject {
-				errors = append(errors, Validate(value, subSchema, child)...)
+				errors = append(errors, s.validate(value, subSchema, child)...)
 			}
 		}
 	}
@@ -195,7 +200,7 @@ func Validate(instance Value, schema Value, path string) []string {
 		if raw, present := schemaObj.Get("items"); present {
 			if items, isObject := raw.(*Object); isObject {
 				for index, item := range arr {
-					errors = append(errors, Validate(item, items,
+					errors = append(errors, s.validate(item, items,
 						fmt.Sprintf("%s[%d]", path, index))...)
 				}
 			}
@@ -220,10 +225,23 @@ func Validate(instance Value, schema Value, path string) []string {
 		}
 		if raw, present := schemaObj.Get("pattern"); present {
 			if pattern, isString := raw.(string); isString {
-				// Compiled at schema-load time (see CompilePatterns), so a
-				// pattern Go's engine cannot handle has already been refused
-				// rather than silently reported as a non-match here.
-				if re, err := regexp.Compile(pattern); err == nil && !re.MatchString(str) {
+				// Translated and compiled once at schema-load time by
+				// CompileSchema, which refuses the whole schema if the pattern
+				// cannot be given Python's exact meaning under RE2. There is
+				// therefore no "compile failed, skip the check" branch here for
+				// a divergence to disappear into. See pypattern.go.
+				compiled, known := s.Patterns[pattern]
+				if !known {
+					// Unreachable: collectPatterns walks the entire schema
+					// document. A miss means the tree was mutated after loading,
+					// and guessing (match? non-match?) would be a silent,
+					// verdict-changing answer — the failure this port refuses to
+					// produce anywhere else.
+					panic(fmt.Sprintf(
+						"pattern %s reached validation without being compiled by CompileSchema",
+						PyReprString(pattern)))
+				}
+				if !compiled.MatchString(str) {
 					errors = append(errors, fmt.Sprintf("%s: string does not match pattern %s",
 						where, PyReprString(pattern)))
 				}

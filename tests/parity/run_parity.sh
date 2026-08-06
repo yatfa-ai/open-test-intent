@@ -32,7 +32,7 @@
 #
 # Excluded cases, and why
 # -----------------------
-# Three groups of inputs are deliberately NOT compared against Python. Each is
+# Five groups of inputs are deliberately NOT compared against Python. Each is
 # excluded for a stated reason, and each is still asserted against on the Go
 # side (see "Go-side refusals" at the bottom) so the exclusion cannot quietly
 # become "untested".
@@ -60,6 +60,32 @@
 #      Not implemented yet. They are refused with exit 2 rather than falling
 #      through to adopter mode, where `--source foo.rb` would be read as a
 #      filename glob and produce a confident, correctly-formatted, wrong answer.
+#
+#   4. Schemas carrying a `pattern` Go's RE2 engine cannot reproduce exactly.
+#      validate() evaluates `pattern` with re.search (bin/validate-intent:205).
+#      Python's engine and RE2 are different languages even where both compile
+#      the same source: Python's `$` also matches before a trailing newline,
+#      `\d`/`\w`/`\s`/`\b` are Unicode-aware in Python and ASCII-only in RE2,
+#      `[[:alpha:]]` and `\p{L}` are RE2-only, and `{,n}` means `{0,n}` to
+#      Python and three literal characters to RE2. The port accepts only the
+#      constructs that provably agree (rewriting a trailing `$` to
+#      `(?:\n?\z)`, its exact equivalent) and REFUSES the whole schema with
+#      exit 2 otherwise — see cmd/validate-intent/pypattern.go. The accepted
+#      half is compared here, over a grown schema, in section 8; the refused
+#      half is asserted in section 10, including a check that Python loads each
+#      of those schemas happily, so the refusal is a real divergence being
+#      declined rather than a failure both implementations share.
+#
+#   5. `NaN` / `Infinity` / `-Infinity` literals in a document.
+#      Python's json accepts them by default; Go's encoding/json rejects them.
+#      Both implementations still exit 1 on such a file, but they classify it
+#      differently — Python parses it and reports a schema violation
+#      (KIND_SCHEMA), Go reports a parse failure (KIND_PARSE). Under adopter
+#      text mode that difference is invisible in the prose beyond the reason
+#      after the em dash, which is why it is excluded rather than fixed here.
+#      It stops being cosmetic in the --json slice, where `kind` becomes
+#      machine-readable: that slice must decide deliberately whether to teach
+#      the decoder these literals or to declare them unsupported.
 #
 set -uo pipefail
 
@@ -150,6 +176,36 @@ compare() {
   local label="$1"
   shift
   compare_in "$REPO_ROOT" "$REFERENCE" "$GO_BIN" "$label" "$@"
+}
+
+# --------------------------------------------------------------------------- #
+# self-contained trees with their own schema
+# --------------------------------------------------------------------------- #
+#
+# Both implementations derive the schema path from their own location, so
+# copying both into a tree that carries its own schemas/ directory runs them
+# against a schema of our choosing while everything else stays identical. That
+# is the only way to exercise the validator keywords the shipped schema does not
+# declare — `pattern`, the numeric bounds, `items`, `minItems`/`maxItems` — which
+# would otherwise be a large, untested fraction of validate.go that a green
+# "N/N byte-identical" reads as covering.
+
+# make_schema_root <name> — build $WORK/<name> holding both implementations and
+# a schema read from stdin. Echoes the root path.
+make_schema_root() {
+  local root="$WORK/$1"
+  mkdir -p "$root/bin" "$root/schemas"
+  cp "$REFERENCE" "$root/bin/validate-intent"
+  cp "$GO_BIN" "$root/bin/validate-intent-go"
+  cat > "$root/schemas/open-test-intent.v1.json"
+  printf '%s' "$root"
+}
+
+# compare_root <root> <label> [args...] — compare inside such a tree.
+compare_root() {
+  local root="$1" label="$2"
+  shift 2
+  compare_in "$root" "$root/bin/validate-intent" "$root/bin/validate-intent-go" "$label" "$@"
 }
 
 # --------------------------------------------------------------------------- #
@@ -336,7 +392,128 @@ fi
 chmod 644 "$schema_root2/schemas/open-test-intent.v1.json"
 
 # --------------------------------------------------------------------------- #
-# 8. Go-side refusals — the excluded cases, still asserted
+# 8. a grown schema — the validator keywords the shipped one does not declare
+# --------------------------------------------------------------------------- #
+#
+# schemas/open-test-intent.v1.json declares no `pattern`, no numeric bounds and
+# no `items`, so every case above leaves those branches of validate.go
+# unexecuted. That is the gap the `pattern` divergence hid in: a port can be
+# byte-identical on the whole shipped corpus and still answer differently the
+# first time someone adds a constraint. These cases grow the schema in a
+# throwaway tree and compare the same way — byte for byte, no exceptions.
+echo
+echo "== grown schema: pattern, bounds, items, nested paths =="
+
+grown="$(make_schema_root grown <<'JSON'
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["slug"],
+  "properties": {
+    "slug":    {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+    "version": {"type": "string", "pattern": "^v[0-9]{1,3}\\.[0-9]+$"},
+    "count":   {"type": "integer", "minimum": 1, "maximum": 10},
+    "ratio":   {"type": "number", "minimum": 0.5, "maximum": 2.5},
+    "name":    {"type": "string", "minLength": 3, "maxLength": 6},
+    "tags":    {"type": "array", "minItems": 1, "maxItems": 3,
+                "items": {"type": "string", "minLength": 2}},
+    "nested":  {"type": "object", "required": ["inner"], "additionalProperties": false,
+                "properties": {"inner": {"enum": ["a", "b", 1, null]}}},
+    "any":     {"enum": ["x", 1, 1.5, true, null]},
+    "flag":    {"type": "boolean"},
+    "either":  {"type": ["string", "null"]}
+  }
+}
+JSON
+)"
+
+cat > "$grown/valid.json" <<'JSON'
+{"slug": "abc", "version": "v12.4", "count": 3, "ratio": 1.5, "name": "abcd",
+ "tags": ["aa"], "nested": {"inner": "b"}, "any": 1, "flag": true, "either": null}
+JSON
+compare_root "$grown" "grown: a fully valid document" valid.json
+
+# THE case from the review. Python's `$` matches just before a trailing
+# newline; RE2's does not. Before the port translated a trailing `$` this file
+# was a PASS under python3 and a FAIL under the binary — same input, opposite
+# verdicts, nothing on stderr to say so.
+printf '{"slug": "abc\\n"}\n' > "$grown/trailing-newline.json"
+compare_root "$grown" "grown: pattern, value with a trailing newline" trailing-newline.json
+
+# The pattern is repr'd into the failure message, backslashes and all.
+cat > "$grown/pattern-fail.json" <<'JSON'
+{"slug": "Abc", "version": "v1234.4"}
+JSON
+compare_root "$grown" "grown: pattern failures, repr'd pattern in the message" pattern-fail.json
+
+# Numeric typing: 1.0 is a float in Python and so is not an `integer`, and the
+# bounds messages repr both operands.
+cat > "$grown/numbers.json" <<'JSON'
+{"slug": "a", "count": 1.0, "ratio": 0.25}
+JSON
+compare_root "$grown" "grown: 1.0 is not an integer; minimum is repr'd" numbers.json
+
+cat > "$grown/exponent.json" <<'JSON'
+{"slug": "a", "count": 1e2, "ratio": 3e0}
+JSON
+compare_root "$grown" "grown: exponent literals are floats" exponent.json
+
+# Python ints are unbounded; the message reprs the literal, not a float.
+cat > "$grown/bigint.json" <<'JSON'
+{"slug": "a", "count": 12345678901234567890123456789}
+JSON
+compare_root "$grown" "grown: an integer wider than 64 bits" bigint.json
+
+# bool is a subclass of int in Python — excluded from integer/number there by an
+# explicit isinstance check, and by being a distinct type in Go.
+cat > "$grown/booleans.json" <<'JSON'
+{"slug": "a", "count": true, "flag": 1}
+JSON
+compare_root "$grown" "grown: bool is not a number, 1 is not a bool" booleans.json
+
+cat > "$grown/empty-array.json" <<'JSON'
+{"slug": "a", "tags": []}
+JSON
+compare_root "$grown" "grown: minItems" empty-array.json
+
+# maxItems and a per-item failure at an indexed path, in one document.
+cat > "$grown/array-items.json" <<'JSON'
+{"slug": "a", "tags": ["x", "bb", 3, "dd"]}
+JSON
+compare_root "$grown" "grown: maxItems + items index paths" array-items.json
+
+# A mixed-type enum reprs as a Python list literal — None and True included.
+cat > "$grown/nested.json" <<'JSON'
+{"slug": "a", "nested": {"inner": "c", "extra": 1}, "any": 2}
+JSON
+compare_root "$grown" "grown: nested paths, mixed-type enum repr" nested.json
+
+cat > "$grown/union-type.json" <<'JSON'
+{"slug": 1, "either": 5}
+JSON
+compare_root "$grown" "grown: union type message" union-type.json
+
+cat > "$grown/missing.json" <<'JSON'
+{}
+JSON
+compare_root "$grown" "grown: missing required property" missing.json
+
+cat > "$grown/lengths.json" <<'JSON'
+{"slug": "a", "name": "ab"}
+JSON
+compare_root "$grown" "grown: minLength" lengths.json
+
+# Key order again, this time over the grown keyword set: every one of these
+# fails, and the order of the failures must track the document.
+cat > "$grown/key-order.json" <<'JSON'
+{"zzz": 1, "ratio": 0.1, "aaa": 2, "count": 99, "name": "x", "slug": "A"}
+JSON
+compare_root "$grown" "grown: key order across the new keywords" key-order.json
+
+compare_root "$grown" "grown: every fixture in one invocation" '*.json'
+
+# --------------------------------------------------------------------------- #
+# 9. Go-side refusals — the excluded surfaces, still asserted
 # --------------------------------------------------------------------------- #
 #
 # These are the inputs listed as excluded in the header. They are not compared
@@ -383,7 +560,132 @@ assert_refusal "recursive glob" 'examples/**/*.json'
 assert_refusal "recursive glob, bare" '**'
 
 # --------------------------------------------------------------------------- #
-# 9. the reference is untouched
+# 10. Go-side refusals — schemas carrying a pattern RE2 cannot reproduce
+# --------------------------------------------------------------------------- #
+#
+# The other half of excluded group 4. Each case builds a tree whose schema
+# declares one divergent `pattern`, and asserts both halves of the claim:
+#
+#   * what python3 does with that schema — either it answers the document
+#     cleanly (`pass`), which is what makes the case worth having (without the
+#     refusal the port would answer the same question differently), or it cannot
+#     run the pattern at all (`error`), which the port must not paper over by
+#     accepting it;
+#   * that the Go binary refuses the whole schema with exit 2, names the pattern
+#     on stderr, and writes nothing to stdout.
+#
+# A compile check alone would catch only the last two rows here. Every row above
+# them compiles cleanly in *both* engines and simply means something different —
+# which is why the port allow-lists the constructs it can reproduce instead of
+# deny-listing the ones somebody remembered to look for.
+echo
+echo "== schemas the port refuses (Go only) =="
+pattern_refusals=0
+
+# assert_pattern_refusal <label> <pattern> <value> <pass|error>
+#
+# <pattern> and <value> are written as they appear inside the JSON document, so
+# a regex backslash is spelled with two.
+assert_pattern_refusal() {
+  local label="$1" pattern="$2" value="$3" python_outcome="$4"
+  pattern_refusals=$((pattern_refusals + 1))
+  local root="$WORK/pattern-refusal-$pattern_refusals"
+  mkdir -p "$root/bin" "$root/schemas"
+  cp "$REFERENCE" "$root/bin/validate-intent"
+  cp "$GO_BIN" "$root/bin/validate-intent-go"
+  printf '{"type": "object", "properties": {"s": {"type": "string", "pattern": "%s"}}}\n' \
+    "$pattern" > "$root/schemas/open-test-intent.v1.json"
+  printf '{"s": %s}\n' "$value" > "$root/doc.json"
+
+  local py_rc go_rc
+  (cd "$root" && "$PYTHON" "$root/bin/validate-intent" doc.json \
+      >"$WORK/py.out" 2>"$WORK/py.err")
+  py_rc=$?
+  (cd "$root" && "$root/bin/validate-intent-go" doc.json \
+      >"$WORK/go.out" 2>"$WORK/go.err")
+  go_rc=$?
+
+  case "$python_outcome" in
+    pass)
+      if [ "$py_rc" -ne 0 ] || grep -q Traceback "$WORK/py.err"; then
+        failed=$((failed + 1))
+        red "  FAIL  $label — python was expected to accept this document (rc=$py_rc)"
+        printf '        %s\n' "$(head -1 "$WORK/py.err")"
+        return 1
+      fi
+      ;;
+    error)
+      if ! grep -q Traceback "$WORK/py.err"; then
+        failed=$((failed + 1))
+        red "  FAIL  $label — python was expected to reject this pattern outright (rc=$py_rc)"
+        return 1
+      fi
+      ;;
+    *)
+      failed=$((failed + 1))
+      red "  FAIL  $label — bad python outcome '$python_outcome' in the harness"
+      return 1
+      ;;
+  esac
+
+  if [ "$go_rc" -ne 2 ]; then
+    failed=$((failed + 1))
+    red "  FAIL  $label — expected the Go port to refuse the schema with exit 2, got $go_rc"
+    printf '        go stdout: %s\n' "$(head -1 "$WORK/go.out")"
+    return 1
+  fi
+  if ! grep -q 'pattern' "$WORK/go.err"; then
+    failed=$((failed + 1))
+    red "  FAIL  $label — exit 2 but the diagnostic never names the pattern"
+    printf '        %s\n' "$(head -1 "$WORK/go.err")"
+    return 1
+  fi
+  if [ -s "$WORK/go.out" ]; then
+    failed=$((failed + 1))
+    red "  FAIL  $label — a refusal must not write to stdout"
+    return 1
+  fi
+  passed=$((passed + 1))
+  printf '  ok    %s (python %s, go exit 2)\n' "$label" "$python_outcome"
+  return 0
+}
+
+# Unicode-vs-ASCII character classes: python3 accepts every one of these
+# documents, and RE2 would have failed them.
+assert_pattern_refusal '\d is Unicode-aware in Python' \
+  '^\\d+$' '"٣٤"' pass
+assert_pattern_refusal '\w is Unicode-aware in Python' \
+  '^\\w+$' '"café"' pass
+assert_pattern_refusal '\s is Unicode-aware in Python' \
+  '^\\s+$' '" "' pass
+assert_pattern_refusal '\b is Unicode-aware in Python' \
+  '\\bcaf\\u00e9\\b' '"café"' pass
+# A `$` anywhere but the end cannot be rewritten exactly, so it is refused
+# rather than approximated.
+assert_pattern_refusal '$ in the middle of a pattern' \
+  'a$\\n' '"a\n"' pass
+# Python reads [[:alpha:]] as the class {[ : a l p h} followed by a literal ']',
+# RE2 as a POSIX class: "[]" matches in Python and does not in RE2.
+assert_pattern_refusal 'POSIX class [[:alpha:]]' \
+  '[[:alpha:]]+' '"[]"' pass
+# Python reads {,3} as {0,3}; RE2 reads four literal characters.
+assert_pattern_refusal '{,n} means {0,n} to Python' \
+  'a{,3}' '"aaa"' pass
+assert_pattern_refusal 'inline flag (?i)' \
+  '(?i)^abc$' '"ABC"' pass
+# The mirror image: syntax RE2 accepts that Python cannot compile at all. Left
+# alone, the port would answer confidently where the reference cannot answer.
+assert_pattern_refusal 'Unicode class \p{L} is RE2-only' \
+  '\\p{L}+' '"abc"' error
+# The two the old compile-only guard already caught, kept so that narrower
+# failure mode stays covered.
+assert_pattern_refusal 'lookbehind' \
+  '(?<=a)b' '"ab"' pass
+assert_pattern_refusal 'backreference' \
+  '(a)\\1' '"aa"' pass
+
+# --------------------------------------------------------------------------- #
+# 11. the reference is untouched
 # --------------------------------------------------------------------------- #
 #
 # This slice adds only. If the port were "made to pass" by editing the oracle,

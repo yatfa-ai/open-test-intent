@@ -6,4 +6,6 @@ __pycache__/
 # binary has to sit beside bin/validate-intent for their schema paths to agree.
 /bin/validate-intent-go
 /bin/validate-intent-go.exe
+# `go build ./...` from the repo root drops the binary here under its package name.
+/validate-intent
 *.test

@@ -176,6 +176,16 @@ Every one of those *refuses* with exit `2` and a diagnostic naming itself, rathe
 falling through to adopter mode — where `--source foo.rb` would be read as a filename
 glob and answered with a confident, correctly formatted, wrong result.
 
+The same rule covers the schema's `pattern` keyword. Python's `re` and Go's RE2 are not
+the same regex language even where both accept the same source text — Python's `$` also
+matches before a trailing newline, `\d`/`\w`/`\s`/`\b` are Unicode-aware in Python and
+ASCII-only in RE2, `[[:alpha:]]` and `\p{L}` are RE2-only, and `{,n}` means `{0,n}` to
+Python and four literal characters to RE2. The port accepts only the constructs that
+provably agree (rewriting a trailing `$` to `(?:\n?\z)`, its exact equivalent) and
+refuses the whole schema with exit `2` otherwise, naming the construct. The shipped
+schema declares no patterns, so this affects schema growth rather than current
+behaviour — see `cmd/validate-intent/pypattern.go`.
+
 ```sh
 go build -o bin/validate-intent-go ./cmd/validate-intent
 ./bin/validate-intent-go 'examples/*.json'

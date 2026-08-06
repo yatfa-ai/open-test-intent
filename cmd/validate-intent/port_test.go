@@ -13,6 +13,15 @@ import (
 	"testing"
 )
 
+func mustSchema(t *testing.T, raw string) *Schema {
+	t.Helper()
+	schema, err := CompileSchema(mustDecode(t, raw))
+	if err != nil {
+		t.Fatalf("CompileSchema(%s): %v", raw, err)
+	}
+	return schema
+}
+
 func mustDecode(t *testing.T, raw string) Value {
 	t.Helper()
 	value, err := DecodeOrdered([]byte(raw))
@@ -89,16 +98,16 @@ func TestNumberTyping(t *testing.T) {
 			t.Errorf("%s: IsInt = %v, want %v", tc.raw, number.IsInt, tc.isInt)
 		}
 	}
-	integerSchema := mustDecode(t, `{"type": "integer"}`)
-	if errs := Validate(mustDecode(t, "1"), integerSchema, ""); len(errs) != 0 {
+	integerSchema := mustSchema(t, `{"type": "integer"}`)
+	if errs := integerSchema.Validate(mustDecode(t, "1")); len(errs) != 0 {
 		t.Errorf("1 against type integer: %v", errs)
 	}
-	if errs := Validate(mustDecode(t, "1.5"), integerSchema, ""); len(errs) != 1 {
+	if errs := integerSchema.Validate(mustDecode(t, "1.5")); len(errs) != 1 {
 		t.Errorf("1.5 against type integer: %v, want one error", errs)
 	}
 	// bool is a distinct Go type, so it is excluded from integer/number without
 	// the special case the Python reference needs.
-	if errs := Validate(mustDecode(t, "true"), integerSchema, ""); len(errs) != 1 {
+	if errs := integerSchema.Validate(mustDecode(t, "true")); len(errs) != 1 {
 		t.Errorf("true against type integer: %v, want one error", errs)
 	}
 }
@@ -251,7 +260,7 @@ func TestHasRecursiveComponent(t *testing.T) {
 
 // The message contract, pinned at the unit level as well as differentially.
 func TestValidateMessages(t *testing.T) {
-	schema := mustDecode(t, `{
+	schema := mustSchema(t, `{
 		"type": "object",
 		"additionalProperties": false,
 		"properties": {
@@ -301,7 +310,7 @@ func TestValidateMessages(t *testing.T) {
 			[]string{`name: expected type string, got number`}},
 	}
 	for _, tc := range cases {
-		got := Validate(mustDecode(t, tc.instance), schema, "")
+		got := schema.Validate(mustDecode(t, tc.instance))
 		if strings.Join(got, "\n") != strings.Join(tc.want, "\n") {
 			t.Errorf("Validate(%s):\n got  %q\n want %q", tc.instance, got, tc.want)
 		}
@@ -311,7 +320,7 @@ func TestValidateMessages(t *testing.T) {
 // A non-object schema enforces nothing, matching the reference's early return
 // for boolean schemas.
 func TestValidateIgnoresNonObjectSchema(t *testing.T) {
-	if errs := Validate(mustDecode(t, `{"a": 1}`), mustDecode(t, `true`), ""); len(errs) != 0 {
+	if errs := mustSchema(t, `true`).Validate(mustDecode(t, `{"a": 1}`)); len(errs) != 0 {
 		t.Errorf("boolean schema produced %v, want no errors", errs)
 	}
 }
