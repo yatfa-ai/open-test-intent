@@ -19,6 +19,9 @@ Four modes:
     ``examples/sources/invalid/*`` must be rejected. Exits ``0`` only if every
     fixture matches its expectation; non-zero otherwise. Fixture directories
     are globbed, so adding new examples never requires touching this script.
+    A fixture set that matches *nothing* is an error rather than a vacuous
+    pass: all four sets must be non-empty, so neither a partial checkout nor a
+    ``bin/`` + ``schemas/`` vendoring can report green having checked nothing.
 
   * **Stdin** (first argument ``-``): reads **one** JSON annotation object from
     stdin and validates it against the schema — the programmatic input path for
@@ -57,9 +60,10 @@ one is a usage error (exit ``2``) rather than a silent fallback to prose.
 Exit codes:
   0  all checks passed (self-test fixtures matched, stdin annotation valid, or
      every adopter/source file conformed)
-  1  one or more checks failed (a fixture mismatch, an invalid stdin annotation,
-     malformed JSON on stdin, a file that did not conform, or an in-source
-     annotation that could not be extracted/normalized or did not conform)
+  1  one or more checks failed (a fixture mismatch, an empty fixture set, an
+     invalid stdin annotation, malformed JSON on stdin, a file that did not
+     conform, or an in-source annotation that could not be
+     extracted/normalized or did not conform)
   2  usage error / could not load the schema
 """
 
@@ -626,6 +630,39 @@ def run_self_test(schema):
     # _expand_files drops directories — so the two sets are already disjoint.
     # The subtraction keeps them disjoint if the glob is ever widened to `**`.
     valid_sources = [p for p in _expand_files(VALID_SOURCES_GLOB) if p not in invalid_sources]
+
+    # A fixture set that matched nothing is a failure, not a vacuous pass. With
+    # no fixtures the "checks every example fixture" promise above is kept only
+    # vacuously, while `checked - mismatches` still reports a healthy-looking
+    # count: dropping examples/invalid/ alone turns 12/12 into a *greener*-
+    # reading 8/8, exit 0, with the validator's ability to reject a bad
+    # annotation now wholly unexercised. Guard each set independently — a
+    # `checked == 0` check would sail straight past that case, which is both the
+    # likeliest shape and the most misleading one. Report every empty set, so a
+    # single run names everything that is missing, and fail before checking
+    # anything: an incomplete fixture inventory invalidates the whole run, so
+    # there is no conformance verdict left to report. Same fail-loud convention
+    # as _run_over_patterns' no-match diagnostic, and the same reasoning
+    # _self_test_source_fixture already applies one level down — an empty result
+    # "must not read as green".
+    empty_sets = [
+        (pattern, verifies)
+        for pattern, verifies, files in (
+            (VALID_EXAMPLES_GLOB, "acceptance", valid_files),
+            (INVALID_EXAMPLES_GLOB, "rejection", invalid_files),
+            (VALID_SOURCES_GLOB, "in-source acceptance", valid_sources),
+            (INVALID_SOURCES_GLOB, "in-source rejection", invalid_sources),
+        )
+        if not files
+    ]
+    if empty_sets:
+        for pattern, verifies in empty_sets:
+            print(
+                "error: no fixtures match %r — self-test cannot verify %s"
+                % (os.path.relpath(pattern, REPO_ROOT), verifies),
+                file=sys.stderr,
+            )
+        return 1
 
     # expected-valid fixtures
     for filepath in valid_files:

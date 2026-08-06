@@ -38,7 +38,9 @@ machine-readable surface the tool has, so its document shape, its per-finding
 output did not move are the contract every non-Python adopter writes against.
 All of it lives in the CLI layer, so nothing below the CLI can pin it — and a
 regression is silent by construction: the document still parses, it just says
-something else.
+something else. ``SelfTestFixtureInventoryTest`` is admitted last on the
+narrowest grounds of all: the self-test is the repo's only fixture-conformance
+gate, so what it does when there are *no* fixtures cannot itself go untested.
 
 Zero dependencies, like the validator itself — stdlib ``unittest`` only.
 
@@ -52,6 +54,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -144,6 +147,72 @@ class ExpandFilesTest(unittest.TestCase):
         self.assertEqual(_expand_files(os.path.join(self.root, "*.nope")), [])
 
 
+_ANNOTATION = {
+    "entity": "Order",
+    "action": "checkout",
+    "behavior": "returns 402 payment required on expired card",
+    "layer": "request",
+}
+
+
+def _write_complete_fixture_tree(root):
+    """Build a minimal but *complete* stand-in for the repo's ``examples/`` tree.
+
+    Mirrors the shipped layout — one fixture in each of the four sets the
+    self-test checks — so a test can delete exactly the set it is about and
+    leave the rest populated. Returns the four patterns keyed by the module
+    constant they stand in for, ready for :func:`_patch_globs`.
+    """
+    examples = os.path.join(root, "examples")
+    invalid_examples = os.path.join(examples, "invalid")
+    sources = os.path.join(examples, "sources")
+    invalid_sources = os.path.join(sources, "invalid")
+    for directory in (examples, invalid_examples, sources, invalid_sources):
+        os.makedirs(directory)
+
+    def write(*parts, text):
+        with open(os.path.join(*parts), "w", encoding="utf-8") as handle:
+            handle.write(text)
+
+    write(examples, "an-intent.json", text=json.dumps(_ANNOTATION))
+    # `layer` outside the enum — rejected for a reason the schema itself owns.
+    write(invalid_examples, "bad-layer.json", text=json.dumps(dict(_ANNOTATION, layer="e2e")))
+    write(sources, "an_intent_spec.rb", text="# @intent: %s\n" % json.dumps(_ANNOTATION))
+    # Typo'd key — caught by `additionalProperties: false`.
+    write(invalid_sources, "broken_intent_spec.rb", text="# @intent: { entiity: 'Order' }\n")
+
+    return {
+        "VALID_EXAMPLES_GLOB": os.path.join(examples, "*.json"),
+        "INVALID_EXAMPLES_GLOB": os.path.join(invalid_examples, "*.json"),
+        "VALID_SOURCES_GLOB": os.path.join(sources, "*"),
+        "INVALID_SOURCES_GLOB": os.path.join(invalid_sources, "*"),
+    }
+
+
+def _patch_globs(test, globs):
+    """Point the validator's fixture globs at a throwaway tree for one test.
+
+    The real ``examples/`` tree is never mutated — it is the thing under test
+    everywhere else in this repo.
+    """
+    for name, value in globs.items():
+        original = getattr(validate_intent, name)
+        test.addCleanup(setattr, validate_intent, name, original)
+        setattr(validate_intent, name, value)
+
+
+def _run_self_test():
+    """Run the self-test against the currently patched globs.
+
+    Returns ``(exit_code, stdout, stderr)`` — the two streams kept apart
+    because *which* one a diagnostic lands on is part of the contract.
+    """
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        exit_code = validate_intent.run_self_test(validate_intent.load_schema())
+    return exit_code, out.getvalue(), err.getvalue()
+
+
 class OneGlobExpanderTest(unittest.TestCase):
     """Every mode routes its globs through ``_expand_files`` — no exceptions.
 
@@ -177,42 +246,97 @@ class OneGlobExpanderTest(unittest.TestCase):
         """A directory named ``*.json`` is skipped, not reported as a broken fixture."""
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-
-        fixture = os.path.join(tmp.name, "an-intent.json")
-        with open(fixture, "w", encoding="utf-8") as handle:
-            json.dump(
-                {
-                    "entity": "Order",
-                    "action": "checkout",
-                    "behavior": "returns 402 payment required on expired card",
-                    "layer": "request",
-                },
-                handle,
-            )
+        globs = _write_complete_fixture_tree(tmp.name)
         # The regression: `*.json` matches this directory too.
-        os.mkdir(os.path.join(tmp.name, "legacy.json"))
+        os.mkdir(os.path.join(tmp.name, "examples", "legacy.json"))
+        _patch_globs(self, globs)
 
-        empty = os.path.join(tmp.name, "empty")
-        os.mkdir(empty)
-        globs = {
-            "VALID_EXAMPLES_GLOB": os.path.join(tmp.name, "*.json"),
-            "INVALID_EXAMPLES_GLOB": os.path.join(empty, "*.json"),
-            "VALID_SOURCES_GLOB": os.path.join(empty, "*"),
-            "INVALID_SOURCES_GLOB": os.path.join(empty, "*"),
-        }
-        for name, value in globs.items():
-            original = getattr(validate_intent, name)
-            self.addCleanup(setattr, validate_intent, name, original)
-            setattr(validate_intent, name, value)
+        exit_code, out, err = _run_self_test()
 
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            exit_code = validate_intent.run_self_test(validate_intent.load_schema())
-        report = out.getvalue()
+        self.assertEqual(exit_code, 0, out + err)
+        self.assertNotIn("legacy.json", out + err)
+        self.assertIn("4/4 fixtures matched expectation.", out)
 
-        self.assertEqual(exit_code, 0, report)
-        self.assertNotIn("legacy.json", report)
-        self.assertIn("1/1 fixtures matched expectation.", report)
+
+class SelfTestFixtureInventoryTest(unittest.TestCase):
+    """An empty fixture set fails the self-test — it must never read as green.
+
+    The self-test is this repo's *only* fixture-conformance gate, and it scored
+    itself ``checked - mismatches``: with no fixtures both are zero, so it
+    printed ``0/0 fixtures matched expectation.`` and exited 0 having validated
+    nothing. The partial case is the dangerous one — dropping
+    ``examples/invalid/`` alone took 12/12 to a healthier-*looking* 8/8, exit 0,
+    with the validator's ability to *reject* a bad annotation now wholly
+    unexercised. It is reachable without touching the repo at all: vendoring
+    ``bin/`` + ``schemas/`` into an adopter repo (which the README pitches)
+    brings no fixtures along.
+
+    So each of the four sets is guarded on its own — a single ``checked == 0``
+    check would pass every case below except the all-empty one — and this is
+    the same "must not read as green" rule ``_self_test_source_fixture``
+    already applies to a fixture with zero extractable annotations, lifted from
+    the fixture to the suite.
+    """
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.globs = _write_complete_fixture_tree(tmp.name)
+        self.examples = os.path.join(tmp.name, "examples")
+
+    def _run(self):
+        _patch_globs(self, self.globs)
+        return _run_self_test()
+
+    def _assert_fails_naming(self, glob_key, verifies):
+        exit_code, out, err = self._run()
+        self.assertEqual(exit_code, 1, "expected a non-zero exit\n%s%s" % (out, err))
+        self.assertIn(os.path.relpath(self.globs[glob_key], REPO_ROOT), err)
+        self.assertIn("cannot verify %s" % verifies, err)
+        # And no conformance verdict at all: an "N/N fixtures matched
+        # expectation" line over an incomplete inventory is precisely what made
+        # the vacuous run read as green.
+        self.assertNotIn("fixtures matched expectation", out)
+        return exit_code, out, err
+
+    def test_complete_fixture_tree_passes_with_nothing_on_stderr(self):
+        exit_code, out, err = self._run()
+        self.assertEqual(exit_code, 0, out + err)
+        self.assertIn("4/4 fixtures matched expectation.", out)
+        self.assertEqual(err, "")
+
+    def test_absent_examples_tree_fails_and_names_all_four_globs(self):
+        shutil.rmtree(self.examples)
+        exit_code, out, err = self._run()
+        self.assertEqual(exit_code, 1, out + err)
+        # One run names everything that is missing, not just the first set.
+        for glob_key, pattern in self.globs.items():
+            self.assertIn(os.path.relpath(pattern, REPO_ROOT), err, glob_key)
+        self.assertNotIn("0/0", out)
+        self.assertNotIn("fixtures matched expectation", out)
+
+    def test_missing_acceptance_fixtures_fail(self):
+        os.remove(os.path.join(self.examples, "an-intent.json"))
+        self._assert_fails_naming("VALID_EXAMPLES_GLOB", "acceptance")
+
+    def test_missing_rejection_fixtures_fail(self):
+        # The 8/8 case: rejection silently stops being tested while the count
+        # reads *healthier* than the truth.
+        shutil.rmtree(os.path.join(self.examples, "invalid"))
+        _, out, _ = self._assert_fails_naming("INVALID_EXAMPLES_GLOB", "rejection")
+        self.assertNotIn("3/3", out)
+
+    def test_missing_in_source_acceptance_fixtures_fail(self):
+        # Also the directory-only expansion: `sources/*` still matches the
+        # `invalid/` entry, which _expand_files drops — so the glob matches
+        # something and the set is empty anyway. Guarding the *set*, not the
+        # raw glob result, is what catches this.
+        os.remove(os.path.join(self.examples, "sources", "an_intent_spec.rb"))
+        self._assert_fails_naming("VALID_SOURCES_GLOB", "in-source acceptance")
+
+    def test_missing_in_source_rejection_fixtures_fail(self):
+        shutil.rmtree(os.path.join(self.examples, "sources", "invalid"))
+        self._assert_fails_naming("INVALID_SOURCES_GLOB", "in-source rejection")
 
 
 class RunOverPatternsTest(unittest.TestCase):
