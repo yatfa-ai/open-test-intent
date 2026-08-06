@@ -1,20 +1,22 @@
 // Command validate-intent is the Go port of bin/validate-intent.
 //
-// Slice 1 implements the adopter mode — `validate-intent FILE...`, where each
-// argument is a path or glob validated as a standalone intent JSON document —
-// plus `-h`/`--help`. Its stdout, stderr and exit code are proven byte-identical
-// to `python3 bin/validate-intent` over the same arguments by
-// tests/parity/run_parity.sh, which is the acceptance test for this port.
+// Implemented and proven byte-identical to `python3 bin/validate-intent` by
+// tests/parity/run_parity.sh, which is the acceptance test for this port:
 //
-// Self-test mode, stdin (`-`), `--source` and `--json` are later slices. They
-// are not silently absent: each refuses with exit 2 and a diagnostic naming
-// itself. That matters more than it looks. Python's main() falls through to
-// adopter mode for anything it does not recognise, so a naive port would read
-// `--source foo.rb` as a *filename glob*, find no match, and report a confident
-// "no file(s) match" — the wrong answer delivered with the right formatting.
-// This project has a name for that failure mode (a gate reporting success, or a
-// specific-sounding failure, having verified nothing), and refusing loudly is
-// the fix.
+//	FILE...            adopter mode        (slice 1, SPGD-98)
+//	-h / --help        usage               (slice 1)
+//	--source / -s      in-source mode      (slice 2, SPGD-102)
+//	<no arguments>     self-test           (slice 2)
+//	--source --json    machine-readable    (slice 2)
+//
+// Still a later slice: stdin (`-`), and `--json` for the stdin and FILE... modes.
+// They are not silently absent — each refuses with exit 2 and a diagnostic
+// naming itself. That matters more than it looks. Python's main() falls through
+// to adopter mode for anything it does not recognise, so a naive port would read
+// `-` as a *filename*, find no match, and report a confident "no file(s) match"
+// — the wrong answer delivered with the right formatting. This project has a
+// name for that failure mode (a gate reporting success, or a specific-sounding
+// failure, having verified nothing), and refusing loudly is the fix.
 package main
 
 import (
@@ -50,28 +52,48 @@ func run(argv []string) int {
 		}
 	}
 
+	// --json is stripped before the positional dispatch below, so it may be
+	// written anywhere on the command line (bin/validate-intent:891-893).
+	asJSON := false
+	positional := make([]string, 0, len(argv))
+	for _, arg := range argv {
+		if arg == "--json" {
+			asJSON = true
+			continue
+		}
+		positional = append(positional, arg)
+	}
+
 	// Out-of-scope surfaces, refused before anything else can misread them.
 	// These sit ahead of the schema load on purpose: "this mode is not in the Go
 	// port" is the actionable diagnostic for them, and it stays the same answer
 	// whether or not the schema happens to be loadable.
-	for _, arg := range argv {
-		if arg == "--json" {
-			return notImplemented("--json output")
-		}
-	}
-	if len(argv) == 0 {
-		return notImplemented("self-test mode (run with no arguments)")
-	}
-	if argv[0] == "-" {
+	if len(positional) > 0 && positional[0] == "-" {
 		return notImplemented("stdin mode (the `-` argument)")
 	}
-	if argv[0] == "-s" || argv[0] == "--source" {
-		return notImplemented("source mode (`" + argv[0] + "`)")
+	isSource := len(positional) > 0 && (positional[0] == "-s" || positional[0] == "--source")
+	if asJSON && len(positional) > 0 && !isSource {
+		// Only the --source JSON path is in scope for slice 2. Adopter-mode
+		// --json must NOT quietly fall through to the text renderer: that would
+		// answer a --json request with prose the consumer then fails to parse.
+		return notImplemented("--json output for adopter (FILE...) mode")
 	}
-	for _, arg := range argv {
+	for _, arg := range positional {
 		if hasRecursiveComponent(arg) {
 			return notImplemented("recursive `**` glob patterns, as in " + PyReprString(arg))
 		}
+	}
+
+	if len(positional) == 0 && asJSON {
+		// Self-test is the in-repo fixture harness, not an adopter surface.
+		// Falling back to its prose report would answer a --json request with
+		// text a consumer then fails to parse — refuse instead, exactly as the
+		// reference does (bin/validate-intent:902-909). This is a *reproduced*
+		// exit 2, not a port limitation.
+		fmt.Fprintln(os.Stderr, "error: --json is not supported in self-test mode "+
+			"(it needs -, FILE... or --source FILE...)")
+		os.Stderr.WriteString(usage)
+		return 2
 	}
 
 	schema, schemaPath, err := LoadSchema()
@@ -80,7 +102,24 @@ func run(argv []string) int {
 		return 2
 	}
 
-	return RunAdopter(argv, schema)
+	if len(positional) == 0 {
+		return RunSelfTest(schema)
+	}
+
+	if isSource {
+		if len(positional) == 1 {
+			fmt.Fprintf(os.Stderr,
+				"error: %s requires at least one FILE/glob argument\n", positional[0])
+			os.Stderr.WriteString(usage)
+			return 2
+		}
+		if asJSON {
+			return RunSourceJSON(positional[1:], schema)
+		}
+		return RunSource(positional[1:], schema)
+	}
+
+	return RunAdopter(positional, schema)
 }
 
 // notImplemented refuses a surface this slice does not implement. Exit 2 is the
@@ -112,7 +151,7 @@ func RunAdopter(patterns []string, schema *Schema) int {
 		}
 		return true
 	}
-	return runOverPatterns(patterns, checkOne)
+	return runOverPatterns(patterns, checkOne, nil)
 }
 
 // runOverPatterns is the port of `_run_over_patterns`
@@ -123,14 +162,22 @@ func RunAdopter(patterns []string, schema *Schema) int {
 // any file failed *or* any pattern matched nothing, else 0 — a pattern matching
 // nothing is never a silent pass.
 //
-// The `on_no_match` hook the reference takes is omitted: its only caller is the
-// --json renderer, which is a later slice.
-func runOverPatterns(patterns []string, checkOne func(string) bool) int {
+// onNoMatch replaces the default stderr diagnostic when non-nil: --json routes
+// the no-match into the document as a finding on stdout, so a stdout-only
+// consumer is not left with a clean pass list and an unexplained non-zero exit.
+// Either way the no-match still drives the exit code.
+func runOverPatterns(patterns []string, checkOne func(string) bool, onNoMatch func(string)) int {
 	exitCode := 0
 	for _, pattern := range patterns {
 		files := ExpandFiles(pattern)
 		if len(files) == 0 {
-			fmt.Fprintf(os.Stderr, "error: no file(s) match %s\n", PyReprString(pattern))
+			// Never a silent pass: a pattern that matches nothing (or only
+			// directories) is an error the caller must see.
+			if onNoMatch == nil {
+				fmt.Fprintf(os.Stderr, "error: no file(s) match %s\n", PyReprString(pattern))
+			} else {
+				onNoMatch(pattern)
+			}
 			exitCode = 1
 			continue
 		}

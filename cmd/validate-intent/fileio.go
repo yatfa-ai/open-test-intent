@@ -39,6 +39,35 @@ func CheckFile(path string, schema *Schema) (valid bool, errs []string, parseErr
 	return len(errs) == 0, errs, "", ""
 }
 
+// readSourceText reads a test source file the way check_source_file does
+// (bin/validate-intent:434-438).
+//
+// The error prefix differs from CheckFile's on purpose: the reference says
+// "could not read file: %s" here and "could not read/parse JSON: %s" there, and
+// both strings are part of the output contract.
+//
+// On Python's universal-newline translation, which this deliberately does NOT
+// implement: open(..., encoding="utf-8") rewrites "\r\n" and a lone "\r" to
+// "\n" before the caller sees the text. That is provably unobservable here —
+// the only consumer is pySplitlines, which already treats "\r\n" as a single
+// terminator and "\r" as a terminator in its own right, so the line sequence is
+// identical either way. Implementing it would be a second thing to keep correct
+// for no change in behaviour; leaving it out silently would be a divergence
+// nobody had checked. It is checked, and it is out.
+func readSourceText(path string) (text string, readError string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", "could not read file: " + pyOSError(err)
+	}
+	if !utf8.Valid(data) {
+		// Python decodes during the read, so undecodable bytes are a *read*
+		// failure and the file never reaches the extractor. Go would silently
+		// substitute U+FFFD and happily scan the result.
+		return "", "could not read file: " + pyUnicodeDecodeError(data)
+	}
+	return string(data), ""
+}
+
 // SchemaPath is the port of the SCHEMA_PATH constant
 // (bin/validate-intent:76-77): the repo root is the parent of the directory
 // holding the executable, so a Go binary built into `bin/` resolves the schema
