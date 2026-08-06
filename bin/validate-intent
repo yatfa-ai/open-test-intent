@@ -1,0 +1,889 @@
+#!/usr/bin/env python3
+"""
+OpenTestIntent schema validator.
+
+Validates an ``@intent`` annotation (as a parsed JSON object) against
+``schemas/open-test-intent.v1.json`` — the canonical JSON Schema (draft-07) the
+protocol ships.
+
+It is deliberately **vendor-neutral and zero-dependency**: it uses only the
+Python 3 standard library, so any adopter (pytest, jest, Go, …) can clone this
+repo and run it with nothing to install.
+
+Four modes:
+
+  * **Self-test** (no arguments): loads the in-repo schema and checks every
+    example fixture against its expected outcome — every ``examples/*.json``
+    must validate, every ``examples/invalid/*.json`` must be rejected, every
+    annotation in ``examples/sources/*`` must validate and every annotation in
+    ``examples/sources/invalid/*`` must be rejected. Exits ``0`` only if every
+    fixture matches its expectation; non-zero otherwise. Fixture directories
+    are globbed, so adding new examples never requires touching this script.
+
+  * **Stdin** (first argument ``-``): reads **one** JSON annotation object from
+    stdin and validates it against the schema — the programmatic input path for
+    scripts and AI coding agents (``annotation | validate-intent -``). Prints
+    ``PASS``/``FAIL`` (with the specific violated rules on failure) and exits
+    ``0``/``1`` accordingly. This avoids the filesystem round-trip of writing a
+    temp ``.json`` file, and (unlike piping into the no-arg self-test) never
+    reports success for an annotation that is in fact invalid.
+
+  * **Adopter** (one or more path/glob arguments): validates the given file(s)
+    as *valid* intent JSON. Exits ``0`` if every file conforms; exits non-zero
+    with the specific violated rule per file otherwise.
+
+  * **Source** (``--source``/``-s`` followed by one or more path/glob
+    arguments): validates ``@intent`` annotations *in place* inside test source
+    files (``.rb``, ``.py``, ``.js``, …) rather than as standalone ``.json``.
+    Each line is scanned for an ``@intent:`` token, the trailing object literal
+    is captured brace-balanced, normalized from the protocol's permissive
+    syntax (unquoted keys, single-quoted strings, arbitrary whitespace) into
+    strict JSON, and validated against the schema. Every finding is reported at
+    its ``file:line`` — the location information the other modes cannot give.
+    A source file with no annotations is not a failure (the protocol allows
+    unannotated tests). Exits ``0`` if every annotation found conforms.
+
+The ``--json`` flag (accepted anywhere on the command line) switches the three
+adopter-facing modes — stdin, ``FILE...`` and ``--source`` — from the human
+report to **one JSON document on stdout**, so a script or AI agent gets which
+file, which line and which rule as data instead of having to parse prose. Every
+finding carries a ``kind`` (``schema``/``extraction``/``parse``/``read``/
+``no-match``) naming how it failed, and a pattern matching nothing appears as a
+finding rather than only as a line on stderr. Exit codes are unchanged, and so
+is the default (non-``--json``) output. Self-test mode is the in-repo fixture
+harness rather than an adopter surface, so it has no ``--json`` form; asking for
+one is a usage error (exit ``2``) rather than a silent fallback to prose.
+
+Exit codes:
+  0  all checks passed (self-test fixtures matched, stdin annotation valid, or
+     every adopter/source file conformed)
+  1  one or more checks failed (a fixture mismatch, an invalid stdin annotation,
+     malformed JSON on stdin, a file that did not conform, or an in-source
+     annotation that could not be extracted/normalized or did not conform)
+  2  usage error / could not load the schema
+"""
+
+import glob
+import json
+import os
+import re
+import sys
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SCHEMA_PATH = os.path.join(REPO_ROOT, "schemas", "open-test-intent.v1.json")
+VALID_EXAMPLES_GLOB = os.path.join(REPO_ROOT, "examples", "*.json")
+INVALID_EXAMPLES_GLOB = os.path.join(REPO_ROOT, "examples", "invalid", "*.json")
+VALID_SOURCES_GLOB = os.path.join(REPO_ROOT, "examples", "sources", "*")
+INVALID_SOURCES_GLOB = os.path.join(REPO_ROOT, "examples", "sources", "invalid", "*")
+
+# Machine-readable failure taxonomy (the ``kind`` field of a ``--json`` finding).
+# Text mode renders two visually different shapes — an indented "-> rule" list and
+# an inline "— problem" — with no field telling them apart; these names are what
+# make that distinction data rather than something a consumer must re-derive by
+# lookahead over prose.
+KIND_SCHEMA = "schema"          # parsed fine, violated the JSON Schema
+KIND_EXTRACTION = "extraction"  # an @intent: token whose payload could not be captured
+KIND_PARSE = "parse"            # a payload/document that is not parseable JSON
+KIND_READ = "read"              # the input could not be read (missing, unreadable, non-UTF-8)
+KIND_NO_MATCH = "no-match"      # a path/glob argument that matched no file
+
+
+# --------------------------------------------------------------------------- #
+# draft-07 subset validator
+# --------------------------------------------------------------------------- #
+def _type_matches(value, allowed):
+    """Return True if ``value`` matches any of the draft-07 ``type`` strings."""
+    for kind in allowed:
+        if kind == "object" and isinstance(value, dict):
+            return True
+        if kind == "array" and isinstance(value, list):
+            return True
+        if kind == "string" and isinstance(value, str):
+            return True
+        # bool is a subclass of int in Python — exclude it from number/integer.
+        if kind == "integer" and isinstance(value, int) and not isinstance(value, bool):
+            return True
+        if kind == "number" and isinstance(value, (int, float)) and not isinstance(value, bool):
+            return True
+        if kind == "boolean" and isinstance(value, bool):
+            return True
+        if kind == "null" and value is None:
+            return True
+    return False
+
+
+def _type_of(value):
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, (int, float)):
+        return "number"
+    if value is None:
+        return "null"
+    return type(value).__name__
+
+
+def validate(instance, schema, path=""):
+    """Validate ``instance`` against a draft-07 ``schema`` (subset).
+
+    Implements every keyword the shipped schema uses plus the common neighbours
+    so it keeps working if the schema grows (minLength/maxLength/pattern,
+    enum, minItems/maxItems, items, minimum/maximum, nested objects/arrays).
+
+    Returns a list of human-readable error strings — empty means valid.
+    """
+    errors = []
+    if not isinstance(schema, dict):
+        # A boolean schema (true/false) or unknown form — nothing to enforce.
+        return errors
+
+    where = path or "<root>"
+
+    # type --------------------------------------------------------------- #
+    if "type" in schema:
+        allowed = schema["type"]
+        allowed = [allowed] if isinstance(allowed, str) else list(allowed)
+        if not _type_matches(instance, allowed):
+            errors.append(
+                "%s: expected type %s, got %s" % (where, "|".join(allowed), _type_of(instance))
+            )
+            return errors  # a type mismatch makes the remaining keywords moot
+
+    # enum --------------------------------------------------------------- #
+    if "enum" in schema and instance not in schema["enum"]:
+        errors.append("%s: value %r is not one of %s" % (where, instance, schema["enum"]))
+
+    # object keywords ---------------------------------------------------- #
+    if isinstance(instance, dict):
+        for key in schema.get("required", []):
+            if key not in instance:
+                errors.append("%s: missing required property '%s'" % (where, key))
+
+        props = schema.get("properties", {})
+        additional = schema.get("additionalProperties", True)
+        for name, value in instance.items():
+            child = "%s.%s" % (path, name) if path else name
+            if name in props:
+                errors.extend(validate(value, props[name], child))
+            elif additional is False:
+                errors.append("%s: additional property '%s' is not allowed" % (where, name))
+            elif isinstance(additional, dict):
+                errors.extend(validate(value, additional, child))
+
+    # array keywords ----------------------------------------------------- #
+    if isinstance(instance, list):
+        if "minItems" in schema and len(instance) < schema["minItems"]:
+            errors.append("%s: array has %d item(s), minimum is %d"
+                          % (where, len(instance), schema["minItems"]))
+        if "maxItems" in schema and len(instance) > schema["maxItems"]:
+            errors.append("%s: array has %d item(s), maximum is %d"
+                          % (where, len(instance), schema["maxItems"]))
+        items = schema.get("items")
+        if isinstance(items, dict):
+            for index, item in enumerate(instance):
+                errors.extend(validate(item, items, "%s[%d]" % (path, index)))
+
+    # string keywords ---------------------------------------------------- #
+    if isinstance(instance, str):
+        if "minLength" in schema and len(instance) < schema["minLength"]:
+            errors.append("%s: string is %d char(s), minLength is %d"
+                          % (where, len(instance), schema["minLength"]))
+        if "maxLength" in schema and len(instance) > schema["maxLength"]:
+            errors.append("%s: string is %d char(s), maxLength is %d"
+                          % (where, len(instance), schema["maxLength"]))
+        if "pattern" in schema and re.search(schema["pattern"], instance) is None:
+            errors.append("%s: string does not match pattern %r" % (where, schema["pattern"]))
+
+    # number keywords ---------------------------------------------------- #
+    if isinstance(instance, (int, float)) and not isinstance(instance, bool):
+        if "minimum" in schema and instance < schema["minimum"]:
+            errors.append("%s: value %r is below minimum %r" % (where, instance, schema["minimum"]))
+        if "maximum" in schema and instance > schema["maximum"]:
+            errors.append("%s: value %r is above maximum %r" % (where, instance, schema["maximum"]))
+
+    return errors
+
+
+# --------------------------------------------------------------------------- #
+# file checking
+# --------------------------------------------------------------------------- #
+def check_file(filepath, schema):
+    """Validate a single JSON file.
+
+    Returns ``(valid, errors, parse_error, kind)``:
+      * ``parse_error`` is a string when the file could not be read or parsed
+        (``valid`` is then ``False`` and ``errors`` empty), and ``kind`` says
+        which of the two it was: ``KIND_PARSE`` for a file that opened and
+        decoded but holds malformed JSON, ``KIND_READ`` for one that could not
+        be read at all (missing, unreadable, non-UTF-8). The two are one
+        failure in prose but different failures to a consumer: an author fixes
+        the first, an operator the second.
+      * otherwise ``valid`` reflects the schema outcome, ``errors`` lists the
+        violations and ``kind`` is ``None``.
+
+    The ``parse_error`` message is deliberately identical for both kinds so the
+    text renderers stay byte-for-byte unchanged; the distinction travels in
+    ``kind``, not in the prose.
+    """
+    try:
+        with open(filepath, "r", encoding="utf-8") as handle:
+            instance = json.load(handle)
+    except json.JSONDecodeError as exc:
+        # Must precede UnicodeDecodeError: both subclass ValueError, and a
+        # decoded-but-malformed document is a parse failure, not a read one.
+        return False, [], "could not read/parse JSON: %s" % exc, KIND_PARSE
+    except (OSError, UnicodeDecodeError) as exc:
+        return False, [], "could not read/parse JSON: %s" % exc, KIND_READ
+    errors = validate(instance, schema)
+    return not errors, errors, None, None
+
+
+def load_schema():
+    with open(SCHEMA_PATH, "r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+# --------------------------------------------------------------------------- #
+# in-source annotation extraction + permissive-syntax normalization
+# --------------------------------------------------------------------------- #
+INTENT_TOKEN = "@intent:"
+
+_BARE_WORD_RE = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*")
+_OPENERS = {"}": "{", "]": "["}
+
+
+def _scan_string(text, start, quote):
+    """Return the index just past the closing ``quote`` of a string literal.
+
+    ``text[start]`` must be the opening quote. Backslash escapes are honoured so
+    a quote or brace *inside* the string never terminates the scan.
+    """
+    i = start + 1
+    length = len(text)
+    while i < length:
+        char = text[i]
+        if char == "\\":
+            i += 2
+            continue
+        if char == quote:
+            return i + 1
+        i += 1
+    raise ValueError("unterminated %s-quoted string" % quote)
+
+
+def _scan_object(text, start):
+    """Return the index just past the ``}`` matching the ``{`` at ``text[start]``.
+
+    Bracket-balanced and string-aware, so a brace inside a quoted value (a
+    ``behavior`` sentence, say) does not end the payload early. Annotations are
+    single-line per PROTOCOL.md §1, so ``text`` is one line.
+    """
+    stack = []
+    i = start
+    length = len(text)
+    while i < length:
+        char = text[i]
+        if char in "\"'":
+            i = _scan_string(text, i, char)
+            continue
+        if char in "{[":
+            stack.append(char)
+        elif char in "}]":
+            if not stack or stack[-1] != _OPENERS[char]:
+                raise ValueError("unbalanced brackets in the annotation payload")
+            stack.pop()
+            if not stack:
+                return i + 1
+        i += 1
+    raise ValueError("unterminated object literal (an annotation must fit on one line)")
+
+
+def extract_intents(text):
+    """Yield ``(line_no, raw_payload, problem)`` for every ``@intent:`` in ``text``.
+
+    ``raw_payload`` is the object literal exactly as written in the source
+    (still permissive syntax — see :func:`normalize_payload`); it is ``None``
+    when ``problem`` describes why the annotation could not be captured. An
+    ``@intent:`` token that carries no extractable payload is reported rather
+    than skipped, so a typo'd annotation fails loudly instead of silently
+    counting as "unannotated".
+    """
+    for line_no, line in enumerate(text.splitlines(), start=1):
+        pos = 0
+        while True:
+            token_at = line.find(INTENT_TOKEN, pos)
+            if token_at == -1:
+                break
+            brace_at = line.find("{", token_at + len(INTENT_TOKEN))
+            if brace_at == -1:
+                yield line_no, None, "no '{...}' object literal follows the @intent: token"
+                break
+            try:
+                end = _scan_object(line, brace_at)
+            except ValueError as exc:
+                yield line_no, None, str(exc)
+                break
+            yield line_no, line[brace_at:end], None
+            pos = end
+
+
+def _requote(body):
+    """Re-emit the body of a single-quoted string as a double-quoted JSON string."""
+    out = []
+    i = 0
+    length = len(body)
+    while i < length:
+        char = body[i]
+        if char == "\\":
+            nxt = body[i + 1] if i + 1 < length else ""
+            # \' is meaningless in JSON — unescape it; keep every other escape.
+            out.append("'" if nxt == "'" else char + nxt)
+            i += 2
+            continue
+        out.append('\\"' if char == '"' else char)
+        i += 1
+    return '"' + "".join(out) + '"'
+
+
+def normalize_payload(raw):
+    """Relax the protocol's permissive annotation syntax into strict JSON.
+
+    PROTOCOL.md §1 promises "the linter normalizes before validating" and lists
+    three equivalent forms. This converts all of them to strict JSON:
+
+      * unquoted keys           ``{entity:"Order"}``  -> ``{"entity":"Order"}``
+      * single-quoted strings   ``{'entity':'Order'}``-> ``{"entity":"Order"}``
+      * arbitrary whitespace    (``json.loads`` already tolerates it)
+
+    plus a trailing comma before ``}``/``]`` as a courtesy. It is a
+    character-scanner rather than a regex substitution so quoted content is
+    never rewritten — a ``behavior`` sentence containing ``it's`` or ``{`` is
+    passed through untouched. (``ast.literal_eval`` cannot serve here: it
+    accepts single-quoted strings but rejects unquoted keys.)
+
+    Raises ``ValueError`` on an unterminated string literal.
+    """
+    out = []
+    i = 0
+    length = len(raw)
+    while i < length:
+        char = raw[i]
+
+        if char == '"':
+            end = _scan_string(raw, i, '"')
+            out.append(raw[i:end])
+            i = end
+            continue
+
+        if char == "'":
+            end = _scan_string(raw, i, "'")
+            out.append(_requote(raw[i + 1:end - 1]))
+            i = end
+            continue
+
+        match = _BARE_WORD_RE.match(raw, i)
+        if match:
+            word = match.group(0)
+            after = match.end()
+            probe = after
+            while probe < length and raw[probe].isspace():
+                probe += 1
+            # Quote a bare word only in *key* position. A bare word used as a
+            # value (`{layer: request}`) is left alone so it still fails — the
+            # protocol only relaxes keys and quote style, not value quoting.
+            out.append(json.dumps(word) if probe < length and raw[probe] == ":" else word)
+            i = after
+            continue
+
+        if char == ",":
+            probe = i + 1
+            while probe < length and raw[probe].isspace():
+                probe += 1
+            if probe < length and raw[probe] in "}]":
+                i += 1  # drop the trailing comma
+                continue
+
+        out.append(char)
+        i += 1
+
+    return "".join(out)
+
+
+def check_source_file(filepath, schema):
+    """Validate every ``@intent`` annotation embedded in a source file.
+
+    Returns ``(findings, read_error)``. ``read_error`` is a string when the file
+    could not be read (``findings`` is then ``None``). Otherwise ``findings`` is
+    a list of ``(line_no, valid, errors, problem, kind)`` — one entry per
+    annotation found, in source order; an empty list means the file carries none.
+
+    ``kind`` names *how* the annotation failed and is ``None`` when it passed. It
+    is carried here rather than reconstructed by the caller because a failed
+    extraction and an unparseable payload both land in ``problem``, so the two
+    are indistinguishable downstream once the tuple is flattened to prose.
+    """
+    try:
+        with open(filepath, "r", encoding="utf-8") as handle:
+            text = handle.read()
+    except (OSError, UnicodeDecodeError) as exc:
+        return None, "could not read file: %s" % exc
+
+    findings = []
+    for line_no, raw, problem in extract_intents(text):
+        if problem:
+            findings.append((line_no, False, [], problem, KIND_EXTRACTION))
+            continue
+        try:
+            instance = json.loads(normalize_payload(raw))
+        except ValueError as exc:  # covers json.JSONDecodeError
+            findings.append(
+                (line_no, False, [], "could not parse annotation: %s" % exc, KIND_PARSE)
+            )
+            continue
+        errors = validate(instance, schema)
+        findings.append((line_no, not errors, errors, None, KIND_SCHEMA if errors else None))
+    return findings, None
+
+
+def _expand_files(pattern):
+    """Expand ``pattern`` to the files it matches (directories filtered out).
+
+    Mode-agnostic: every glob-expanding mode goes through here so that a pattern
+    like ``intents/*`` never hands a directory to a reader, which would report it
+    as an unreadable/unparseable *file* rather than as something to skip.
+    """
+    return [p for p in sorted(glob.glob(pattern, recursive=True)) if os.path.isfile(p)]
+
+
+def _run_over_patterns(patterns, check_one, on_no_match=None):
+    """Expand ``patterns`` and run ``check_one`` over every file they match.
+
+    The pattern-expansion half of the file-checking modes: adopter and
+    ``--source`` differ *only* in their per-file check, so expansion, the loud
+    no-match diagnostic and exit-code aggregation are owned here once rather
+    than copied into each mode (which is how :func:`_expand_files` came to be
+    back-filled into some call sites and not others).
+
+    ``check_one(filepath)`` reports its own finding (printing it, or collecting
+    it under ``--json``) and returns truthy when that file failed. Returns the
+    aggregate exit code: ``1`` if any file failed *or* any pattern matched
+    nothing, else ``0``.
+
+    ``on_no_match(pattern)`` replaces the default stderr diagnostic when given —
+    ``--json`` routes the no-match into the document as a finding on stdout, so
+    a stdout-only consumer is not left with a clean pass list and an unexplained
+    non-zero exit. Either way the no-match still drives the exit code.
+    """
+    exit_code = 0
+    for pattern in patterns:
+        files = _expand_files(pattern)
+        if not files:
+            # Never a silent pass: a pattern that matches nothing (or only
+            # directories) is an error the caller must see.
+            if on_no_match is None:
+                print("error: no file(s) match %r" % pattern, file=sys.stderr)
+            else:
+                on_no_match(pattern)
+            exit_code = 1
+            continue
+        for filepath in files:
+            if check_one(filepath):
+                exit_code = 1
+    return exit_code
+
+
+# --------------------------------------------------------------------------- #
+# machine-readable reporting (--json)
+# --------------------------------------------------------------------------- #
+JSON_SCHEMA_ID = "open-test-intent.v1.json"
+
+
+class _JsonReport:
+    """Collects findings for ``--json`` and emits the single stdout document.
+
+    Text mode flattens the structured result — which file, which line, which
+    rule — into prose at the print site, leaving a consumer only the exit code.
+    This collects the same findings instead of printing them, so the ``--json``
+    modes are the *same* checks with a different renderer, not a second
+    implementation that could drift.
+
+    Every finding has the same shape regardless of mode:
+    ``{"file", "line", "ok", "kind", "errors"}`` — ``line`` is ``null`` where a
+    finding is not line-scoped (adopter, stdin, no-match), ``kind`` is ``null``
+    on a passing finding, and ``errors`` is always a list of strings so a
+    consumer never has to branch on its type.
+
+    ``summary.annotations`` counts **annotation sites examined**, and counts
+    them the same way in every mode: a site whose payload could not be captured
+    or parsed still counts (it was there, it was bad), but input that could not
+    be read at all — an unreadable file, or a stdin stream whose bytes never
+    decoded — contributes no sites. Summing ``annotations`` across modes is
+    therefore meaningful rather than mode-dependent.
+    """
+
+    def __init__(self, mode):
+        self.mode = mode
+        self.files = 0
+        self.annotations = 0
+        self.findings = []
+
+    def add(self, filepath, line, ok, kind, errors):
+        """Record one finding. Returns truthy when it failed (the ``check_one``
+        contract of :func:`_run_over_patterns`)."""
+        self.findings.append({
+            "file": filepath,
+            "line": line,
+            "ok": bool(ok),
+            "kind": kind,
+            "errors": list(errors),
+        })
+        return not ok
+
+    def no_match(self, pattern):
+        """The ``on_no_match`` hook: a pattern matching nothing is a finding too.
+
+        Formatted with ``%s``, not the text path's ``%r``: inside a JSON string
+        a Python repr's quoting is noise a consumer has to strip, and ``file``
+        already carries the pattern verbatim.
+        """
+        self.add(pattern, None, False, KIND_NO_MATCH, ["no file(s) match %s" % pattern])
+
+    def emit(self, exit_code):
+        """Print the document and pass ``exit_code`` straight through.
+
+        ``ok`` is derived from the exit code the *text* path would also have
+        produced, rather than recomputed from the findings, so the two renderers
+        cannot disagree about whether the run passed.
+        """
+        document = {
+            "schema": JSON_SCHEMA_ID,
+            "mode": self.mode,
+            "ok": exit_code == 0,
+            "summary": {
+                "files": self.files,
+                "annotations": self.annotations,
+                "failed": sum(1 for finding in self.findings if not finding["ok"]),
+            },
+            "findings": self.findings,
+        }
+        print(json.dumps(document, indent=2))
+        return exit_code
+
+
+# --------------------------------------------------------------------------- #
+# modes
+# --------------------------------------------------------------------------- #
+def _self_test_source_fixture(filepath, schema, expect_valid):
+    """Check one source fixture end-to-end (extraction -> normalization -> validation).
+
+    Returns ``True`` when the fixture matched its expectation. A fixture with
+    **zero** extractable annotations is a mismatch either way: that is what a
+    silently-broken extractor looks like, and it must not read as green.
+    """
+    rel = os.path.relpath(filepath, REPO_ROOT)
+    findings, read_error = check_source_file(filepath, schema)
+    if read_error:
+        print("FAIL  %s — %s" % (rel, read_error))
+        return False
+    if not findings:
+        print("FAIL  %s — no @intent annotations extracted" % rel)
+        return False
+
+    matched = True
+    for line_no, valid, errors, problem, _kind in findings:
+        where = "%s:%d" % (rel, line_no)
+        if valid == expect_valid:
+            if expect_valid:
+                print("PASS  %s" % where)
+            else:
+                detail = problem or (errors[0] if errors else "invalid")
+                print("PASS  %s (correctly rejected — %s)" % (where, detail))
+            continue
+        matched = False
+        if expect_valid:
+            print("FAIL  %s — unexpectedly invalid%s" % (where, (" (%s)" % problem) if problem else ""))
+            for err in errors:
+                print("        -> %s" % err)
+        else:
+            print("FAIL  %s — unexpectedly valid" % where)
+    return matched
+
+
+def run_self_test(schema):
+    """Validate the in-repo example fixtures against their expected outcomes."""
+    mismatches = 0
+    checked = 0
+
+    valid_files = _expand_files(VALID_EXAMPLES_GLOB)
+    invalid_files = _expand_files(INVALID_EXAMPLES_GLOB)
+    invalid_sources = _expand_files(INVALID_SOURCES_GLOB)
+    # `sources/*` yields the invalid/ directory entry, not its contents, and
+    # _expand_files drops directories — so the two sets are already disjoint.
+    # The subtraction keeps them disjoint if the glob is ever widened to `**`.
+    valid_sources = [p for p in _expand_files(VALID_SOURCES_GLOB) if p not in invalid_sources]
+
+    # expected-valid fixtures
+    for filepath in valid_files:
+        checked += 1
+        rel = os.path.relpath(filepath, REPO_ROOT)
+        valid, errors, parse_error, _kind = check_file(filepath, schema)
+        if parse_error:
+            print("FAIL  %s — unexpectedly invalid (%s)" % (rel, parse_error))
+            mismatches += 1
+        elif valid:
+            print("PASS  %s" % rel)
+        else:
+            print("FAIL  %s — unexpectedly invalid" % rel)
+            for err in errors:
+                print("        -> %s" % err)
+            mismatches += 1
+
+    # expected-invalid fixtures
+    for filepath in invalid_files:
+        checked += 1
+        rel = os.path.relpath(filepath, REPO_ROOT)
+        valid, _errors, parse_error, _kind = check_file(filepath, schema)
+        if parse_error:
+            # Malformed JSON is a rejection too — but flag it so it's visible.
+            print("PASS  %s (correctly rejected — %s)" % (rel, parse_error))
+        elif valid:
+            print("FAIL  %s — unexpectedly valid" % rel)
+            mismatches += 1
+        else:
+            print("PASS  %s (correctly invalid)" % rel)
+
+    # in-source fixtures — extraction + normalization + validation end-to-end
+    for filepath in valid_sources:
+        checked += 1
+        if not _self_test_source_fixture(filepath, schema, expect_valid=True):
+            mismatches += 1
+
+    for filepath in invalid_sources:
+        checked += 1
+        if not _self_test_source_fixture(filepath, schema, expect_valid=False):
+            mismatches += 1
+
+    matched = checked - mismatches
+    print("\n%d/%d fixtures matched expectation." % (matched, checked))
+    return 0 if mismatches == 0 else 1
+
+
+def run_adopter(patterns, schema):
+    """Validate the given path(s)/glob(s) as valid intent JSON."""
+    def check_one(filepath):
+        valid, errors, parse_error, _kind = check_file(filepath, schema)
+        if parse_error:
+            print("FAIL  %s — %s" % (filepath, parse_error))
+            return True
+        if valid:
+            print("PASS  %s" % filepath)
+            return False
+        print("FAIL  %s" % filepath)
+        for err in errors:
+            print("        -> %s" % err)
+        return True
+
+    return _run_over_patterns(patterns, check_one)
+
+
+def run_adopter_json(patterns, schema):
+    """``--json`` renderer for adopter mode — one finding per file checked.
+
+    ``summary.annotations`` counts *annotation sites examined*, the same rule
+    ``--source`` mode uses: in adopter mode each file is one site, so a file
+    holding malformed JSON still counts (the site existed, its payload was
+    unparseable — exactly how ``--source`` counts a ``parse`` finding), while a
+    file that could not be read contributes none.
+    """
+    report = _JsonReport("adopter")
+
+    def check_one(filepath):
+        report.files += 1
+        valid, errors, parse_error, kind = check_file(filepath, schema)
+        if parse_error:
+            if kind != KIND_READ:
+                report.annotations += 1
+            return report.add(filepath, None, False, kind, [parse_error])
+        report.annotations += 1
+        return report.add(filepath, None, valid, None if valid else KIND_SCHEMA, errors)
+
+    return report.emit(_run_over_patterns(patterns, check_one, report.no_match))
+
+
+def run_source(patterns, schema):
+    """Validate ``@intent`` annotations in place inside test source file(s).
+
+    Mirrors :func:`run_adopter` but reads *source* rather than strict JSON, and
+    reports each finding at its ``file:line``. A file with no annotations is
+    reported and skipped, not failed — the protocol allows unannotated tests.
+    """
+    def check_one(filepath):
+        findings, read_error = check_source_file(filepath, schema)
+        if read_error:
+            print("FAIL  %s — %s" % (filepath, read_error))
+            return True
+        if not findings:
+            print("----  %s — no @intent annotations" % filepath)
+            return False
+        failed = False
+        for line_no, valid, errors, problem, _kind in findings:
+            where = "%s:%d" % (filepath, line_no)
+            if valid:
+                print("PASS  %s" % where)
+                continue
+            print("FAIL  %s%s" % (where, (" — %s" % problem) if problem else ""))
+            for err in errors:
+                print("        -> %s" % err)
+            failed = True
+        return failed
+
+    return _run_over_patterns(patterns, check_one)
+
+
+def run_source_json(patterns, schema):
+    """``--json`` renderer for ``--source`` mode — one finding per annotation.
+
+    A file carrying no annotations contributes to ``summary.files`` and no
+    findings: text mode's ``----`` line is the absence of anything to report,
+    not a result, and emitting it as a finding would inflate the annotation
+    count with rows a consumer has to filter back out.
+    """
+    report = _JsonReport("source")
+
+    def check_one(filepath):
+        report.files += 1
+        findings, read_error = check_source_file(filepath, schema)
+        if read_error:
+            return report.add(filepath, None, False, KIND_READ, [read_error])
+        failed = False
+        for line_no, valid, errors, problem, kind in findings:
+            report.annotations += 1
+            # `problem` and `errors` are the same thing to a consumer: why this
+            # annotation failed. `kind` is what tells them apart, so both are
+            # normalized into the one `errors` list.
+            if report.add(filepath, line_no, valid, kind, [problem] if problem else errors):
+                failed = True
+        return failed
+
+    return report.emit(_run_over_patterns(patterns, check_one, report.no_match))
+
+
+def run_stdin(schema):
+    """Validate a single annotation object read from stdin.
+
+    Reads one JSON document from stdin, validates it against ``schema``, prints
+    ``PASS``/``FAIL`` (with the specific violated rules on failure) and returns
+    ``0``/``1`` accordingly. A document that is not valid JSON is a failure
+    (exit ``1``), not a silent success — this is the programmatic input path.
+    """
+    try:
+        raw = sys.stdin.read()
+        instance = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        print("FAIL — could not read/parse JSON: %s" % exc)
+        return 1
+    errors = validate(instance, schema)
+    if errors:
+        print("FAIL")
+        for err in errors:
+            print("        -> %s" % err)
+        return 1
+    print("PASS")
+    return 0
+
+
+def run_stdin_json(schema):
+    """``--json`` renderer for stdin mode — always exactly one finding.
+
+    The finding's ``file`` is ``"-"``, the same sentinel the caller passed, so a
+    consumer aggregating findings across invocations still has a non-null key
+    for the stdin document.
+
+    The read is deliberately hoisted out of the ``json.loads`` ``try`` so the
+    two failures stay distinguishable, matching :func:`check_file`: bytes that
+    never decoded never reached the parser, so they are ``KIND_READ`` — the
+    same kind the identical bytes get from a file — and the site they would
+    have been is not counted in ``summary.annotations``, exactly as an
+    unreadable adopter file contributes none. Only a stream that decoded and
+    was then rejected by the parser is ``KIND_PARSE``.
+    """
+    report = _JsonReport("stdin")
+    try:
+        raw = sys.stdin.read()
+    except UnicodeDecodeError as exc:
+        report.add("-", None, False, KIND_READ, ["could not read/parse JSON: %s" % exc])
+        return report.emit(1)
+    report.annotations = 1
+    try:
+        instance = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        report.add("-", None, False, KIND_PARSE, ["could not read/parse JSON: %s" % exc])
+        return report.emit(1)
+    errors = validate(instance, schema)
+    report.add("-", None, not errors, KIND_SCHEMA if errors else None, errors)
+    return report.emit(1 if errors else 0)
+
+
+USAGE = """\
+usage: validate-intent                    # self-test the in-repo fixtures
+       validate-intent -                  # validate one annotation JSON read from stdin
+       validate-intent FILE...            # validate FILE(s)/glob(s) as valid intent JSON
+       validate-intent --source FILE...   # validate @intent annotations inside test
+                                          #   source files (.rb/.py/.js/...), reported
+                                          #   per finding as file:line. Alias: -s
+
+       --json   emit one machine-readable JSON document on stdout instead of the
+                human report — for the stdin, FILE... and --source modes only.
+                Position-independent. Exit codes are identical either way.
+
+Validates JSON against schemas/open-test-intent.v1.json (zero dependencies).
+"""
+
+
+def main(argv):
+    if any(arg in ("-h", "--help") for arg in argv):
+        sys.stdout.write(USAGE)
+        return 0
+
+    # Strip --json before the positional dispatch below, so it may be written
+    # anywhere on the command line (`--json -`, `--source F --json`, ...).
+    as_json = "--json" in argv
+    argv = [arg for arg in argv if arg != "--json"]
+
+    try:
+        schema = load_schema()
+    except (OSError, json.JSONDecodeError) as exc:
+        print("error: could not load schema %s: %s" % (SCHEMA_PATH, exc), file=sys.stderr)
+        return 2
+
+    if not argv:
+        if as_json:
+            # Self-test is the in-repo fixture harness, not an adopter surface.
+            # Falling back to its prose report would answer a --json request
+            # with text a consumer then fails to parse — refuse instead.
+            print("error: --json is not supported in self-test mode "
+                  "(it needs -, FILE... or --source FILE...)", file=sys.stderr)
+            sys.stderr.write(USAGE)
+            return 2
+        return run_self_test(schema)
+
+    if argv[0] == "-":
+        return run_stdin_json(schema) if as_json else run_stdin(schema)
+
+    if argv[0] in ("-s", "--source"):
+        if not argv[1:]:
+            print("error: %s requires at least one FILE/glob argument" % argv[0], file=sys.stderr)
+            sys.stderr.write(USAGE)
+            return 2
+        return run_source_json(argv[1:], schema) if as_json else run_source(argv[1:], schema)
+
+    return run_adopter_json(argv, schema) if as_json else run_adopter(argv, schema)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
