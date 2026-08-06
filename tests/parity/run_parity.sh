@@ -32,10 +32,15 @@
 #
 # Excluded cases, and why
 # -----------------------
-# Five groups of inputs are deliberately NOT compared against Python. Each is
+# FOUR groups of inputs are deliberately NOT compared against Python. Each is
 # excluded for a stated reason, and each is still asserted against on the Go
 # side (see "Go-side refusals" at the bottom) so the exclusion cannot quietly
 # become "untested".
+#
+# (Four, not five: slice 1 listed five, slice 2 retired two of them — see
+# RETIRED EXCLUSIONS below — and slice 1's separate "unsupported schema
+# construct" group folded into group 4 when the `pattern` port landed. The
+# count is right; it just does not arithmetic down from five in one step.)
 #
 #   1. Recursive `**` glob patterns.
 #      Python globs with recursive=True; Go's filepath.Glob has no `**` at all,
@@ -44,22 +49,17 @@
 #      silently downgraded to a single `*` — a downgrade would quietly check a
 #      smaller set of files and still report a clean pass.
 #
-#   2. Malformed JSON and non-UTF-8 input.
-#      check_file embeds the raw Python exception text
-#      ("could not read/parse JSON: %s" % exc, bin/validate-intent:243). Go's
-#      encoding/json cannot reproduce json.JSONDecodeError's wording, so the
-#      prose after the colon differs by construction. Everything around it does
-#      match — the FAIL line shape, the file path, the exit code — and no
-#      shipped examples/invalid/*.json fixture is malformed (all four parse
-#      cleanly and fail on schema grounds), so this is unexercised by the
-#      corpus. Read and OS errors are NOT excluded: Python's OSError prose is
-#      mechanical enough to reproduce exactly, and cases 21-22 below prove it.
+#   2. Non-UTF-8 input — the PROSE only.
+#      A file whose bytes do not decode raises UnicodeDecodeError in Python, and
+#      the message names a reason ("invalid start byte", "invalid continuation
+#      byte", ...) that CPython classifies more finely than the port does. The
+#      CLASSIFICATION and the exit code are exact — such a file is a read
+#      failure in both — so only the tail of the message can differ.
 #
-#   3. Modes outside slice 1: self-test (no arguments), stdin (`-`),
-#      `--source`/`-s`, and `--json`.
-#      Not implemented yet. They are refused with exit 2 rather than falling
-#      through to adopter mode, where `--source foo.rb` would be read as a
-#      filename glob and produce a confident, correctly-formatted, wrong answer.
+#   3. Modes outside slices 1-2: stdin (`-`), and `--json` for *adopter*
+#      (FILE...) mode. Not implemented yet. They are refused with exit 2 rather
+#      than falling through, where `-` would be read as a filename and produce a
+#      confident, correctly-formatted, wrong answer.
 #
 #   4. Schemas carrying a `pattern` Go's RE2 engine cannot reproduce exactly.
 #      validate() evaluates `pattern` with re.search (bin/validate-intent:205).
@@ -76,22 +76,41 @@
 #      The port accepts only the constructs that provably agree (rewriting a
 #      trailing `$` to `(?:\n?\z)`, its exact equivalent) and REFUSES the whole
 #      schema with exit 2 otherwise — see cmd/validate-intent/pypattern.go. The
-#      accepted half is compared here, over a grown schema, in section 8; the
-#      refused half is asserted in section 10, including a check on what Python
-#      does with each of those schemas, so the refusal is a real divergence
-#      being declined rather than a failure both implementations share.
-
+#      accepted half is compared here, over a grown schema, in section 8 ("a
+#      grown schema — the validator keywords the shipped one does not
+#      declare"); the refused half is asserted in section 16 ("Go-side
+#      refusals — schemas carrying a pattern RE2 cannot reproduce"), including
+#      a check on what Python does with each of those schemas, so the refusal
+#      is a real divergence being declined rather than a failure both
+#      implementations share.
 #
-#   5. `NaN` / `Infinity` / `-Infinity` literals in a document.
-#      Python's json accepts them by default; Go's encoding/json rejects them.
-#      Both implementations still exit 1 on such a file, but they classify it
-#      differently — Python parses it and reports a schema violation
-#      (KIND_SCHEMA), Go reports a parse failure (KIND_PARSE). Under adopter
-#      text mode that difference is invisible in the prose beyond the reason
-#      after the em dash, which is why it is excluded rather than fixed here.
-#      It stops being cosmetic in the --json slice, where `kind` becomes
-#      machine-readable: that slice must decide deliberately whether to teach
-#      the decoder these literals or to declare them unsupported.
+# RETIRED EXCLUSIONS — slice 2 (SPGD-102) closed two of slice 1's five:
+#
+#   * Malformed JSON prose. check_file and check_source_file both embed the raw
+#     exception text ("could not read/parse JSON: %s", "could not parse
+#     annotation: %s"), which slice 1 could not reproduce with encoding/json.
+#     `--source` made that unaffordable — an unparseable payload is what a
+#     typo'd annotation produces, i.e. the case adopters actually hit — so the
+#     port now carries its own CPython-compatible decoder
+#     (cmd/validate-intent/pyjson.go) that reproduces json.JSONDecodeError's
+#     message, line, column and character offset. Compared here in section 11
+#     ("malformed payloads and documents — the retired exclusions").
+#
+#     Caveat worth stating plainly: that section compares the decoder only
+#     through the CLI, on the payloads the corpus and fixtures happen to reach
+#     it with. The broad evidence for that decoder is a differential fuzzer
+#     against python3's json.loads in cmd/validate-intent/pyjson_fuzz_test.go,
+#     and THIS HARNESS DOES NOT RUN IT — run `go test ./cmd/validate-intent`
+#     separately. Passing every case here is not by itself a claim about the
+#     decoder's general correctness. (Deliberately not stated as a case count:
+#     the count moves whenever cases are added, and a stale figure in prose is
+#     the same drift the section cross-references above guard against.)
+#
+#   * `NaN` / `Infinity` / `-Infinity` literals. Python's json accepts them and
+#     encoding/json rejected them, so the two classified such a document
+#     differently (schema violation vs parse failure). The new decoder accepts
+#     them exactly as Python does. Compared here in section 11 ("malformed
+#     payloads and documents — the retired exclusions").
 #
 set -uo pipefail
 
@@ -127,6 +146,32 @@ fi
 dim "building $GO_BIN ..."
 if ! (cd "$REPO_ROOT" && "$GO" build -o "$GO_BIN" ./cmd/validate-intent); then
   red "error: go build failed"
+  exit 2
+fi
+
+# --------------------------------------------------------------------------- #
+# preflight: section cross-references
+# --------------------------------------------------------------------------- #
+#
+# This suite is cited BY NUMBER from other files -- notably
+# cmd/validate-intent/main.go, which tells a future maintainer not to hoist the
+# self-test `--json` refusal back above LoadSchema(), on the grounds that
+# section 7 ("OS-level failures") proves the hoist breaks parity. Those numbers
+# drift every time a slice inserts a section, and a citation that points at the
+# wrong section is a comment that has quietly stopped being evidence while
+# still reading like it.
+#
+# The check requires each citation to carry the section's NAME as well as its
+# number, and compares the two. Merely checking that section N exists would
+# have passed on every instance of this defect the repo has actually seen --
+# they all pointed at real sections -- which is the vacuous-green shape this
+# project keeps having to name.
+#
+# It runs BEFORE the comparisons rather than after, because its failure is a
+# documentation failure: you want to see it even on a run you abandon once the
+# first diff goes red.
+if ! "$PYTHON" "$REPO_ROOT/tests/parity/check_section_refs.py"; then
+  red "error: section cross-references are stale (see above)"
   exit 2
 fi
 
@@ -380,6 +425,25 @@ cp "$REPO_ROOT/examples/unit-order-total.json" "$schema_root/thing.json"
 compare_in "$schema_root" "$schema_root/bin/validate-intent" \
   "$schema_root/bin/validate-intent-go" "missing schema (exit 2)" thing.json
 
+# The crossing of the two exit-2 paths, which neither one alone covers.
+#
+# The harness compares schema-load failures (just above) and it compares the
+# self-test `--json` refusal (section 10, "self-test (bare invocation)") — but
+# until now never both at once, and that is precisely where the port drifted:
+# main.go originally refused `--json` BEFORE loading the schema, so on a tree
+# with no schemas/ it answered "--json is not supported in self-test mode" plus
+# the usage block where Python answers "could not load schema ...". Same exit
+# code, different stderr, and no case in the suite that would notice. Both
+# orderings are exercised here now.
+compare_in "$schema_root" "$schema_root/bin/validate-intent" \
+  "$schema_root/bin/validate-intent-go" "missing schema + bare --json (schema load wins)" --json
+compare_in "$schema_root" "$schema_root/bin/validate-intent" \
+  "$schema_root/bin/validate-intent-go" "missing schema + self-test (no args)"
+compare_in "$schema_root" "$schema_root/bin/validate-intent" \
+  "$schema_root/bin/validate-intent-go" "missing schema + --source --json" --source thing.json --json
+compare_in "$schema_root" "$schema_root/bin/validate-intent" \
+  "$schema_root/bin/validate-intent-go" "missing schema + --source with no argument" --source
+
 # An unreadable schema is the same code path with a different errno.
 schema_root2="$WORK/badschema"
 mkdir -p "$schema_root2/bin" "$schema_root2/schemas"
@@ -511,7 +575,8 @@ JSON
 compare_root "$grown" "grown: minLength" lengths.json
 
 # A quantifier on a *grouped* anchor is legal in Python and in RE2 alike, so it
-# must survive the refusal that rejects the bare `^*` form (section 10). Both
+# must survive the refusal that rejects the bare `^*` form (section 16,
+# "Go-side refusals — schemas carrying a pattern RE2 cannot reproduce"). Both
 # documents are compared, so an over-refusal here is a loud failure rather than
 # a silently smaller accepted language: the port would exit 2 where the
 # reference answers.
@@ -535,7 +600,399 @@ compare_root "$grown" "grown: key order across the new keywords" key-order.json
 compare_root "$grown" "grown: every fixture in one invocation" '*.json'
 
 # --------------------------------------------------------------------------- #
-# 9. Go-side refusals — the excluded surfaces, still asserted
+# 9. --source over the shipped corpus
+# --------------------------------------------------------------------------- #
+#
+# The mode's own acceptance criteria: every valid source fixture, every invalid
+# one, each file individually and as globs. The em dash (U+2014) in
+# "correctly rejected — ..." and "FAIL file:line — problem" is load-bearing
+# output, so these comparisons are also what pins the port's non-ASCII bytes.
+echo
+echo "== --source over the shipped corpus =="
+compare "--source examples/sources/*"          --source 'examples/sources/*'
+compare "--source examples/sources/invalid/*"  --source 'examples/sources/invalid/*'
+compare "-s alias"                             -s 'examples/sources/*'
+for fixture in "$REPO_ROOT"/examples/sources/*.* "$REPO_ROOT"/examples/sources/invalid/*; do
+  [ -f "$fixture" ] || continue
+  rel="${fixture#"$REPO_ROOT"/}"
+  compare "--source $rel" --source "$rel"
+done
+# Both sets in one invocation: output order and exit-code aggregation.
+compare "--source valid then invalid" \
+  --source 'examples/sources/*' 'examples/sources/invalid/*'
+compare "--source invalid then valid" \
+  --source 'examples/sources/invalid/*' 'examples/sources/*'
+# --source shares _run_over_patterns with adopter mode, so its no-match
+# diagnostic and repr'd pattern must match too.
+compare "--source no-match"          --source 'nope/*.rb'
+compare "--source no-match mixed"    --source 'examples/sources/*' 'nope/*.rb'
+compare "--source a directory"       --source 'examples/sources'
+# --source with no FILE argument is a usage error (exit 2) with USAGE on stderr.
+compare "--source with no argument"  --source
+compare "-s with no argument"        -s
+# A JSON file read as *source* carries no @intent token: the `----` line, which
+# is not a failure.
+compare "--source over a .json file" --source examples/unit-order-total.json
+# Reading a source file as adopter JSON is the mirror image, and now compares
+# byte for byte including json.JSONDecodeError's wording (retired exclusion).
+compare "adopter over a .rb file"    examples/sources/order_spec.rb
+
+# --------------------------------------------------------------------------- #
+# 10. self-test (bare invocation)
+# --------------------------------------------------------------------------- #
+#
+# 24 PASS lines then "12/12 fixtures matched expectation." Those two numbers
+# count different things ON PURPOSE — `checked` counts FIXTURES (8 JSON + 4
+# source files) while the source fixtures print one line per ANNOTATION. A port
+# that "fixed" the arithmetic would fail right here.
+echo
+echo "== self-test =="
+compare "bare invocation (self-test)"
+# --json is refused in self-test mode by the REFERENCE (exit 2 + usage on
+# stderr), so this is a reproduced refusal, not a port limitation — which is why
+# it is compared rather than listed as a Go-side-only assertion.
+compare "self-test refuses --json" --json
+
+# --------------------------------------------------------------------------- #
+# 11. malformed payloads and documents — the retired exclusions
+# --------------------------------------------------------------------------- #
+#
+# Slice 1 excluded json.JSONDecodeError's wording and the NaN/Infinity literals.
+# Slice 2 needed the first closed (an unparseable annotation payload is the
+# commonest real `--source` failure) and got the second for free, so both are
+# now compared byte for byte — message, line, column and character offset.
+#
+# The char offset is where DIVERGENCE 4 becomes observable. Every offset CPython
+# reports is an index into the decoded str, i.e. a CODE POINT offset. The scanner
+# functions themselves turn out to be latent under byte indexing — every byte of
+# a multi-byte UTF-8 sequence is >= 0x80, so none can be mistaken for a quote or
+# a brace — but the decoder's offsets are not: a payload carrying `café` before
+# the syntax error reports one lower char offset than the same payload carrying
+# `ascii`, and a byte-indexed decoder gets that wrong by exactly the number of
+# non-ASCII characters preceding it.
+echo
+echo "== malformed payloads and documents =="
+
+malformed="$WORK/malformed"
+mkdir -p "$malformed"
+
+cat > "$malformed/truncated.json" <<'JSON'
+{"entity": "Order",
+JSON
+compare "adopter: truncated JSON document" "$malformed/truncated.json"
+
+printf '{"entity": "Order" "action": "create"}\n' > "$malformed/missing-comma.json"
+compare "adopter: missing comma" "$malformed/missing-comma.json"
+
+printf '{entity: "Order"}\n' > "$malformed/bare-key.json"
+compare "adopter: bare key is not JSON" "$malformed/bare-key.json"
+
+printf '{"entity": "Order",}\n' > "$malformed/trailing-comma.json"
+compare "adopter: trailing comma" "$malformed/trailing-comma.json"
+
+printf '\n\n  {"entity" 1}\n' > "$malformed/multiline.json"
+compare "adopter: error on line 3 (lineno/colno)" "$malformed/multiline.json"
+
+# A non-ASCII character BEFORE the error: the char offset is code points.
+printf '{"entity": "caf\303\251", "action" 1}\n' > "$malformed/nonascii-offset.json"
+compare "adopter: char offset counts code points" "$malformed/nonascii-offset.json"
+printf '{"entity": "ascii", "action" 1}\n' > "$malformed/ascii-offset.json"
+compare "adopter: the same document in ASCII (offset differs by design)" \
+  "$malformed/ascii-offset.json"
+
+# The retired NaN/Infinity exclusion: Python parses these and reports a SCHEMA
+# violation; a port that rejected them would report a parse failure instead.
+printf '{"entity": NaN, "action": Infinity, "behavior": -Infinity, "layer": "unit"}\n' \
+  > "$malformed/nonfinite.json"
+compare "adopter: NaN/Infinity parse and fail on schema grounds" "$malformed/nonfinite.json"
+
+# Unterminated and invalid string escapes.
+printf '{"entity": "Order\n' > "$malformed/unterminated-string.json"
+compare "adopter: unterminated string" "$malformed/unterminated-string.json"
+printf '{"entity": "a\\qb"}\n' > "$malformed/bad-escape.json"
+compare "adopter: invalid backslash escape" "$malformed/bad-escape.json"
+printf '{"entity": "a\\u12"}\n' > "$malformed/bad-uescape.json"
+compare 'adopter: invalid \uXXXX escape' "$malformed/bad-uescape.json"
+printf '{"entity": "Order"} trailing\n' > "$malformed/extra-data.json"
+compare "adopter: extra data after the document" "$malformed/extra-data.json"
+printf '\n' > "$malformed/empty.json"
+compare "adopter: an empty document" "$malformed/empty.json"
+
+# --------------------------------------------------------------------------- #
+# 12. --source hazards: the four divergences, the thin ice, the known defect
+# --------------------------------------------------------------------------- #
+#
+# These fixtures are BUILT HERE with printf rather than checked in, because most
+# of them turn on characters that are invisible in a file (\v, \x1d, \x1f, NEL).
+# A reviewer can see the exact bytes and the reason for them side by side; in a
+# checked-in fixture they would be a mystery nobody could verify by reading.
+echo
+echo "== --source hazards =="
+
+SRC="$WORK/sources"
+mkdir -p "$SRC"
+
+# -- DIVERGENCE 1: str.splitlines() ----------------------------------------- #
+# The first physical line carries \v (0x0b), \f (0x0c), \x1d and NEL (U+0085).
+# Python's splitlines() breaks on ALL of them, so the annotation that follows is
+# on line 6. strings.Split(text, "\n") sees ONE line, and would report line 2 —
+# a specific, confident, wrong file:line pointing at innocent code.
+printf 'a\013b\014c\035d\302\205e\n# @intent: { entity: "Order", action: "create", behavior: "creates an order from a valid cart", layer: "unit" }\n' \
+  > "$SRC/splitlines_spec.rb"
+compare "divergence 1: \\v \\f \\x1d NEL shift the line number" --source "$SRC/splitlines_spec.rb"
+
+# U+2028 / U+2029 are terminators to splitlines() too, and are multi-byte — so
+# this also exercises the terminator scan over runes rather than bytes.
+printf 'x\342\200\250y\342\200\251z\n# @intent: { entity: "Order", action: "create", behavior: "creates an order from a valid cart", layer: "unit" }\n' \
+  > "$SRC/splitlines_unicode_spec.rb"
+compare "divergence 1: U+2028/U+2029 are terminators too" --source "$SRC/splitlines_unicode_spec.rb"
+
+# \r\n counts as ONE terminator, and a trailing terminator yields no extra line.
+printf 'one\r\ntwo\r\n# @intent: { entity: "Order", action: "create", behavior: "creates an order from a valid cart", layer: "unit" }\r\n' \
+  > "$SRC/splitlines_crlf_spec.rb"
+compare "divergence 1: CRLF is one terminator" --source "$SRC/splitlines_crlf_spec.rb"
+
+# -- DIVERGENCE 2: str.isspace() -------------------------------------------- #
+# Python's isspace() set is Go's unicode.IsSpace PLUS U+001C-U+001F. Of those
+# four, U+001C/1D/1E are ALSO splitlines() terminators, so they can never survive
+# inside a single line and can never reach normalize_payload's lookaheads.
+# U+001F is the only character in the delta that can — which makes it the whole
+# of divergence 2's reachable surface, and both lookaheads are exercised with it.
+#
+# Line 1: the trailing-comma lookahead. With isspace() the comma is dropped;
+# without it the comma stays, and the two produce DIFFERENT parse errors.
+# Line 2: the bare-word-key lookahead. With isspace() `entity` is recognised as a
+# key and quoted; without it, it is left bare — again a different parse error.
+printf '# @intent: { entity: "Order", action: "create", behavior: "creates an order from a valid cart", layer: "unit"\037, }\n# @intent: { entity\037: "Order", action: "create", behavior: "creates an order from a valid cart", layer: "unit" }\n' \
+  > "$SRC/isspace_spec.rb"
+compare "divergence 2: U+001F is whitespace to Python, not to Go" --source "$SRC/isspace_spec.rb"
+
+# The three delta characters that ARE line terminators, proving the claim above:
+# they cut the annotation in half rather than reaching the lookahead.
+printf '# @intent: { entity\034: "Order" }\n# @intent: { entity\036: "Order" }\n' \
+  > "$SRC/isspace_terminators_spec.rb"
+compare "divergence 2: U+001C/U+001E terminate the line instead" \
+  --source "$SRC/isspace_terminators_spec.rb"
+
+# -- DIVERGENCE 3: json.dumps() --------------------------------------------- #
+# _BARE_WORD_RE is [A-Za-z_$][A-Za-z0-9_$]*, i.e. ASCII — so `café` matches only
+# `caf`, and `a<b>&c` matches `a`, `b` and `c` separately with only `c` in key
+# position (normalizing to `{a<b>&"c": "y"}`). Both then fail to parse, and the
+# exact JSONDecodeError is the assertion.
+printf '# @intent: { caf\303\251: "x" }\n# @intent: { a<b>&c: "y" }\n' \
+  > "$SRC/bareword_spec.rb"
+compare "divergence 3: café and a<b>&c bare-word keys" --source "$SRC/bareword_spec.rb"
+
+# The same two characters where json.dumps' escaping WOULD show, if the bare-word
+# class ever widened: inside a quoted key and a quoted value, passed through
+# untouched by the normalizer.
+printf '# @intent: { "caf\303\251": "a<b>&c", entity: "Order", action: "create", behavior: "creates an order from a valid cart", layer: "unit" }\n' \
+  > "$SRC/escaping_spec.rb"
+compare "divergence 3: non-ASCII and <>& survive quoting untouched" \
+  --source "$SRC/escaping_spec.rb"
+
+# -- DIVERGENCE 4: code-point vs byte indexing ------------------------------ #
+# A backslash escape immediately before a multi-byte character — the `i += 2`
+# at bin/validate-intent:275 that steps over one CODE POINT in Python and would
+# step over one BYTE in a naive port.
+printf '# @intent: { entity: "Order", action: "a\\\\\303\251b", behavior: "creates an order from a valid cart", layer: "unit" }\n' \
+  > "$SRC/escape_multibyte_spec.rb"
+compare "divergence 4: backslash before a multi-byte character" \
+  --source "$SRC/escape_multibyte_spec.rb"
+
+# The observable half: a parse error whose char offset follows non-ASCII text.
+# The ASCII twin is compared alongside it so the offsets are visibly different
+# numbers rather than a single value nobody can check.
+printf '# @intent: { entity: "caf\303\251", action: xyz, behavior: "creates an order from a valid cart", layer: "unit" }\n' \
+  > "$SRC/offset_nonascii_spec.rb"
+printf '# @intent: { entity: "ascii", action: xyz, behavior: "creates an order from a valid cart", layer: "unit" }\n' \
+  > "$SRC/offset_ascii_spec.rb"
+compare "divergence 4: parse-error offset after non-ASCII" --source "$SRC/offset_nonascii_spec.rb"
+compare "divergence 4: the ASCII twin"                     --source "$SRC/offset_ascii_spec.rb"
+
+# -- THE THIN ICE: brace-balanced capture ----------------------------------- #
+# examples/sources/order_spec.rb:57 is the shipped instance; these isolate the
+# shape. A greedy regex captures through the trailing `{§3}` and fails; a lazy
+# one truncates the payload mid-object. Only a balanced, string-aware scan is
+# right. (The captured substring itself is asserted directly in
+# cmd/validate-intent/source_test.go — a PASS line alone would not catch a port
+# that swallowed the tail and still validated.)
+printf '# @intent: { entity: "Order", action: "refund", behavior: "restores stock levels when a paid order is refunded", layer: "unit" } \342\200\224 see ADR-14 {\302\2473} for why.\n' \
+  > "$SRC/brace_tail_spec.rb"
+compare "thin ice: trailing prose with its own brace pair" --source "$SRC/brace_tail_spec.rb"
+
+# Braces and quotes INSIDE the payload's own strings, plus a nested object and
+# array, plus the permissive forms the normalizer exists for.
+cat > "$SRC/permissive_spec.rb" <<'RUBY'
+# @intent: {'entity': 'Order', 'action': 'create', 'behavior': "it's got a { brace } and a ] bracket", 'layer': 'unit',}
+# @intent: { entity: "Order", action: "create", behavior: "creates an order from a valid cart", layer: "unit", preconditions: ["a cart exists", "the cart has items",] }
+# @intent: {entity:"Order",action:"create",behavior:"creates an order from a valid cart",layer:"unit"}
+RUBY
+compare "permissive syntax: quotes, trailing commas, nested brackets" \
+  --source "$SRC/permissive_spec.rb"
+
+# Two annotations on ONE line: extract_intents resumes scanning at `pos = end`.
+printf '# @intent: { entity: "Order", action: "create", behavior: "creates an order from a valid cart", layer: "unit" } and @intent: { entity: "Cart", action: "empty", behavior: "empties the cart when the order is placed", layer: "unit" }\n' \
+  > "$SRC/two_on_one_line_spec.rb"
+compare "two annotations on one line" --source "$SRC/two_on_one_line_spec.rb"
+
+# Extraction failures: no brace at all, an unterminated object, an unterminated
+# string, and unbalanced brackets — the four ValueError paths.
+cat > "$SRC/extraction_failures_spec.rb" <<'RUBY'
+# @intent: no object literal here
+# @intent: { entity: "Order", action: "create"
+# @intent: { entity: "Order }
+# @intent: { entity: "Order"]
+RUBY
+compare "extraction failures: all four problem strings" \
+  --source "$SRC/extraction_failures_spec.rb"
+
+# A file with no annotations at all: the `----` line, exit 0, not a failure.
+printf 'describe Order do\n  it "works" do\n  end\nend\n' > "$SRC/unannotated_spec.rb"
+compare "a file with no annotations is not a failure" --source "$SRC/unannotated_spec.rb"
+
+# -- THE KNOWN DEFECT, REPRODUCED ------------------------------------------- #
+# extract_intents cannot tell an @intent: inside a STRING LITERAL from one in a
+# real comment. The phantom and the real comment produce BYTE-IDENTICAL output —
+# and that identity is the proof the extractor cannot distinguish them. The port
+# must INHERIT this: "fixing" it here would fail parity, and changing it is a
+# protocol-level decision for bin/validate-intent first.
+#
+# PROBE HYGIENE (this cost the ticket's author real time): the host must be
+# SINGLE-quoted. A double-quoted Ruby host makes the line carry backslash-escaped
+# {\"entity\"...}, and the validator answers "unterminated object literal" —
+# which reads exactly like the defect being absent. It is not; the payload never
+# reaches the string-literal question. The positive control runs alongside so
+# the identity is asserted, not assumed.
+printf "x = '# @intent: { entity: \"Order\", action: \"create\", behavior: \"creates an order from a valid cart\", layer: \"unit\" }'\n" \
+  > "$SRC/phantom_spec.rb"
+printf '# @intent: { entity: "Order", action: "create", behavior: "creates an order from a valid cart", layer: "unit" }\n' \
+  > "$SRC/real_comment_spec.rb"
+compare "known defect: @intent inside a string literal still PASSes" --source "$SRC/phantom_spec.rb"
+compare "positive control: the same annotation in a real comment"   --source "$SRC/real_comment_spec.rb"
+# The identity itself: strip the differing filename and require the rest to be
+# byte-identical between the two. Without this the pair above could both be
+# green while the port quietly started telling them apart.
+"$PYTHON" "$REFERENCE" --source "$SRC/phantom_spec.rb" 2>/dev/null \
+  | sed 's#.*phantom_spec.rb#FILE#' > "$WORK/phantom.py"
+"$GO_BIN" --source "$SRC/real_comment_spec.rb" 2>/dev/null \
+  | sed 's#.*real_comment_spec.rb#FILE#' > "$WORK/real.go"
+if cmp -s "$WORK/phantom.py" "$WORK/real.go"; then
+  passed=$((passed + 1))
+  printf '  ok    known defect: phantom and real comment are indistinguishable\n'
+else
+  failed=$((failed + 1))
+  red "  FAIL  known defect: the port started distinguishing a string literal from a comment"
+  diff -u "$WORK/phantom.py" "$WORK/real.go" | tail -n +3 | sed 's/^/        /'
+fi
+
+# A file that cannot be read: check_source_file's prefix is "could not read
+# file:", NOT check_file's "could not read/parse JSON:".
+unreadable_src="$SRC/unreadable_spec.rb"
+cp "$SRC/real_comment_spec.rb" "$unreadable_src"
+chmod 000 "$unreadable_src"
+if [ -r "$unreadable_src" ]; then
+  skipped=$((skipped + 1))
+  red "  SKIP  unreadable source — chmod 000 did not make it unreadable (running as root?)"
+else
+  compare "--source over an unreadable file" --source "$unreadable_src"
+fi
+chmod 644 "$unreadable_src"
+
+# --------------------------------------------------------------------------- #
+# 13. --source --json
+# --------------------------------------------------------------------------- #
+#
+# The whole rendering path is new in slice 2 (slice 1 has no reporter to reuse —
+# it refuses --json outright), so every shape of the document is compared:
+# passing findings, schema findings, extraction findings, parse findings, a
+# no-match finding, a read finding, and the file-with-no-annotations rule.
+#
+# json.dumps(indent=2) is reproduced by hand rather than with encoding/json,
+# which escapes <>& and does NOT escape non-ASCII — the exact opposite of
+# json.dumps on both counts. The em dashes in the extraction messages make that
+# visible here rather than theoretical.
+echo
+echo "== --source --json =="
+compare "--json: all passing"        --source examples/sources/order_spec.rb --json
+compare "--json: mixed failures"     --source 'examples/sources/invalid/*' --json
+compare "--json: the whole corpus"   --source 'examples/sources/*' 'examples/sources/invalid/*' --json
+compare "--json: position-independent (leading)" --json --source 'examples/sources/*'
+compare "--json: a file with no annotations"     --source "$SRC/unannotated_spec.rb" --json
+compare "--json: no-match becomes a finding"     --source 'nope/*.rb' --json
+compare "--json: no-match mixed with matches"    --source 'examples/sources/*' 'nope/*.rb' --json
+compare "--json: extraction failures"            --source "$SRC/extraction_failures_spec.rb" --json
+compare "--json: parse failures (em dash + escaping)" --source "$SRC/bareword_spec.rb" --json
+compare "--json: non-ASCII in an error string"   --source "$SRC/offset_nonascii_spec.rb" --json
+# --source --json with no FILE argument is still the usage error, not an empty
+# document: a consumer must not get a clean-looking `"ok": true` for a run that
+# was never given anything to check.
+compare "--json: --source with no argument"      --source --json
+chmod 000 "$unreadable_src"
+if [ -r "$unreadable_src" ]; then
+  skipped=$((skipped + 1))
+  red "  SKIP  --json read finding — chmod 000 did not make the file unreadable (running as root?)"
+else
+  compare "--json: an unreadable file is a read finding" --source "$unreadable_src" --json
+fi
+chmod 644 "$unreadable_src"
+
+# --------------------------------------------------------------------------- #
+# 14. the self-test's empty-fixture-set guard
+# --------------------------------------------------------------------------- #
+#
+# A fixture set matching NOTHING must be an error, not a vacuous pass: dropping
+# examples/invalid/ alone turns 12/12 into a greener-reading 8/8 with the
+# validator's ability to reject anything now wholly unexercised. Each set is
+# guarded independently, every empty one is reported, and the run fails before
+# checking anything — so these trees assert the diagnostics as well as the exit
+# code.
+echo
+echo "== self-test empty-fixture-set guard =="
+
+# make_fixture_root <name> — a tree holding both implementations, the real
+# schema, and whichever fixture directories the caller then populates.
+make_fixture_root() {
+  local root="$WORK/$1"
+  mkdir -p "$root/bin" "$root/schemas"
+  cp "$REFERENCE" "$root/bin/validate-intent"
+  cp "$GO_BIN" "$root/bin/validate-intent-go"
+  cp "$REPO_ROOT/schemas/open-test-intent.v1.json" "$root/schemas/"
+  printf '%s' "$root"
+}
+
+# Nothing at all: all four sets empty, all four diagnostics.
+bare_root="$(make_fixture_root selftest-bare)"
+compare_root "$bare_root" "self-test: every fixture set empty"
+
+# Only the valid JSON examples present: the other three are reported.
+partial_root="$(make_fixture_root selftest-partial)"
+mkdir -p "$partial_root/examples"
+cp "$REPO_ROOT"/examples/*.json "$partial_root/examples/"
+compare_root "$partial_root" "self-test: three sets empty"
+
+# Everything present: the full green path, in a tree of our own.
+full_root="$(make_fixture_root selftest-full)"
+mkdir -p "$full_root/examples/invalid" "$full_root/examples/sources/invalid"
+cp "$REPO_ROOT"/examples/*.json "$full_root/examples/"
+cp "$REPO_ROOT"/examples/invalid/*.json "$full_root/examples/invalid/"
+cp "$REPO_ROOT"/examples/sources/*.* "$full_root/examples/sources/" 2>/dev/null
+cp "$REPO_ROOT"/examples/sources/invalid/* "$full_root/examples/sources/invalid/"
+compare_root "$full_root" "self-test: a complete fixture tree elsewhere"
+
+# A source fixture with ZERO extractable annotations must be a MISMATCH, not a
+# pass — that is what a silently-broken extractor looks like.
+noann_root="$(make_fixture_root selftest-noann)"
+mkdir -p "$noann_root/examples/invalid" "$noann_root/examples/sources/invalid"
+cp "$REPO_ROOT"/examples/*.json "$noann_root/examples/"
+cp "$REPO_ROOT"/examples/invalid/*.json "$noann_root/examples/invalid/"
+cp "$REPO_ROOT"/examples/sources/*.* "$noann_root/examples/sources/" 2>/dev/null
+cp "$REPO_ROOT"/examples/sources/invalid/* "$noann_root/examples/sources/invalid/"
+printf 'describe Order do\nend\n' > "$noann_root/examples/sources/unannotated_spec.rb"
+compare_root "$noann_root" "self-test: a fixture with no annotations is a mismatch"
+
+# --------------------------------------------------------------------------- #
+# 15. Go-side refusals — the excluded surfaces, still asserted
 # --------------------------------------------------------------------------- #
 #
 # These are the inputs listed as excluded in the header. They are not compared
@@ -572,17 +1029,41 @@ assert_refusal() {
   return 0
 }
 
-assert_refusal "self-test mode"
 assert_refusal "stdin mode" -
-assert_refusal "source mode (--source)" --source 'examples/*.json'
-assert_refusal "source mode (-s)" -s 'examples/*.json'
-assert_refusal "--json" --json 'examples/*.json'
-assert_refusal "--json anywhere on the line" 'examples/*.json' --json
+assert_refusal "--json for adopter mode" --json 'examples/*.json'
+assert_refusal "--json for adopter mode, anywhere on the line" 'examples/*.json' --json
 assert_refusal "recursive glob" 'examples/**/*.json'
 assert_refusal "recursive glob, bare" '**'
+assert_refusal "recursive glob under --source" --source 'examples/**/*.rb'
+
+# The mirror of the list above: the surfaces slice 2 IMPLEMENTED must NOT be
+# refused any more. Without this, deleting a mode's dispatch would leave every
+# comparison in sections 9-14 unrun and the refusal assertions still green — a
+# suite that got smaller without going red.
+assert_not_refused() {
+  local label="$1"
+  shift
+  local rc
+  (cd "$REPO_ROOT" && "$GO_BIN" "$@" >"$WORK/go.out" 2>"$WORK/go.err")
+  rc=$?
+  if [ "$rc" -eq 2 ] && grep -q 'not implemented in the Go port' "$WORK/go.err"; then
+    failed=$((failed + 1))
+    red "  FAIL  $label — still refused as unimplemented"
+    printf '        %s\n' "$(head -1 "$WORK/go.err")"
+    return 1
+  fi
+  passed=$((passed + 1))
+  printf '  ok    %s (implemented)\n' "$label"
+  return 0
+}
+
+assert_not_refused "self-test mode is implemented"
+assert_not_refused "source mode (--source) is implemented" --source 'examples/sources/*'
+assert_not_refused "source mode (-s) is implemented" -s 'examples/sources/*'
+assert_not_refused "--source --json is implemented" --source 'examples/sources/*' --json
 
 # --------------------------------------------------------------------------- #
-# 10. Go-side refusals — schemas carrying a pattern RE2 cannot reproduce
+# 16. Go-side refusals — schemas carrying a pattern RE2 cannot reproduce
 # --------------------------------------------------------------------------- #
 #
 # The other half of excluded group 4. Each case builds a tree whose schema
@@ -715,7 +1196,7 @@ assert_pattern_refusal 'backreference' \
   '(a)\\1' '"aa"' pass
 
 # --------------------------------------------------------------------------- #
-# 11. the reference is untouched
+# 17. the reference is untouched
 # --------------------------------------------------------------------------- #
 #
 # This slice adds only. If the port were "made to pass" by editing the oracle,

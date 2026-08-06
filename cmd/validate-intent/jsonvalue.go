@@ -11,11 +11,8 @@ package main
 // that impossible.
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math/big"
 	"strconv"
 	"strings"
@@ -103,7 +100,16 @@ func newNumber(raw string) (Number, error) {
 	n := Number{Raw: raw, IsInt: !strings.ContainsAny(raw, ".eE")}
 	f, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
-		return n, fmt.Errorf("invalid number literal %q", raw)
+		// A literal outside float64's range is NOT a parse failure. Python's
+		// float() saturates: float("1e400") is inf and float("1e-400") is 0.0.
+		// Go's ParseFloat returns exactly those same values but also flags
+		// ErrRange, and treating that flag as an error made the port answer
+		// "Expecting value" where python3 answered `inf` — caught by
+		// TestPyJSON_handWrittenCases, not by inspection.
+		var numErr *strconv.NumError
+		if !errors.As(err, &numErr) || numErr.Err != strconv.ErrRange {
+			return n, fmt.Errorf("invalid number literal %q", raw)
+		}
 	}
 	n.Float = f
 	if n.IsInt {
@@ -125,88 +131,11 @@ func (n Number) AsInt() int64 {
 	return int64(n.Float)
 }
 
-// DecodeOrdered parses one JSON document, preserving object key order.
-//
-// Trailing content after the top-level value is an error, matching json.load.
-func DecodeOrdered(data []byte) (Value, error) {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
-
-	value, err := decodeValue(dec)
-	if err != nil {
-		if err == io.EOF {
-			return nil, errors.New("unexpected end of JSON input")
-		}
-		return nil, err
-	}
-	if _, err := dec.Token(); err != io.EOF {
-		if err == nil {
-			return nil, errors.New("extra data after the top-level JSON value")
-		}
-		return nil, err
-	}
-	return value, nil
-}
-
-func decodeValue(dec *json.Decoder) (Value, error) {
-	tok, err := dec.Token()
-	if err != nil {
-		return nil, err
-	}
-	return decodeFromToken(dec, tok)
-}
-
-func decodeFromToken(dec *json.Decoder, tok json.Token) (Value, error) {
-	switch t := tok.(type) {
-	case json.Delim:
-		switch t {
-		case '{':
-			obj := NewObject()
-			for dec.More() {
-				keyTok, err := dec.Token()
-				if err != nil {
-					return nil, err
-				}
-				key, ok := keyTok.(string)
-				if !ok {
-					return nil, fmt.Errorf("object key is not a string: %v", keyTok)
-				}
-				value, err := decodeValue(dec)
-				if err != nil {
-					return nil, err
-				}
-				obj.Set(key, value)
-			}
-			if _, err := dec.Token(); err != nil { // consume '}'
-				return nil, err
-			}
-			return obj, nil
-		case '[':
-			arr := []Value{}
-			for dec.More() {
-				value, err := decodeValue(dec)
-				if err != nil {
-					return nil, err
-				}
-				arr = append(arr, value)
-			}
-			if _, err := dec.Token(); err != nil { // consume ']'
-				return nil, err
-			}
-			return arr, nil
-		}
-		return nil, fmt.Errorf("unexpected delimiter %q", t)
-	case string:
-		return t, nil
-	case bool:
-		return t, nil
-	case json.Number:
-		return newNumber(string(t))
-	case nil:
-		return nil, nil
-	}
-	return nil, fmt.Errorf("unexpected JSON token %v", tok)
-}
+// DecodeOrdered lives in pyjson.go, which parses the way json.loads does —
+// error prose, offsets and all. Slice 1 backed it with encoding/json and paid
+// for that with two parity exclusions (json.JSONDecodeError's wording, and the
+// NaN/Infinity literals encoding/json rejects); slice 2 needed both of them
+// closed for `--source`, so the decoder moved rather than being duplicated.
 
 // pyEqual reports whether Python's `==` would consider a and b equal.
 //

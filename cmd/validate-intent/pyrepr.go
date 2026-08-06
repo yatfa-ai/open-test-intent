@@ -74,7 +74,15 @@ func PyStr(v Value) string {
 //
 // Python prefers single quotes and switches to double quotes only when the
 // string contains a single quote but no double quote.
+//
+// It iterates pyRunes rather than `range s`: a decoded JSON string may hold a
+// lone surrogate (from a `"\ud800"` literal, which Python decodes and keeps),
+// carried through this port as WTF-8. `range` over a Go string decodes those
+// three bytes as three U+FFFD replacements, which repr'd as three literal
+// replacement characters instead of Python's `\ud800`.
 func PyReprString(s string) string {
+	runes := pyRunes(s)
+
 	quote := byte('\'')
 	if strings.ContainsRune(s, '\'') && !strings.ContainsRune(s, '"') {
 		quote = '"'
@@ -82,7 +90,7 @@ func PyReprString(s string) string {
 
 	var b strings.Builder
 	b.WriteByte(quote)
-	for _, r := range s {
+	for _, r := range runes {
 		switch {
 		case r == rune(quote) || r == '\\':
 			b.WriteByte('\\')

@@ -10,7 +10,6 @@ package main
 import (
 	"fmt"
 	"strings"
-	"unicode/utf8"
 )
 
 // Machine-readable failure taxonomy — the `kind` a --json finding will carry.
@@ -209,8 +208,10 @@ func (s *Schema) validate(instance Value, schema Value, path string) []string {
 
 	// string keywords ------------------------------------------------------ //
 	if str, isString := instance.(string); isString {
-		// Python's len() over a str counts code points, not bytes.
-		length := utf8.RuneCountInString(str)
+		// Python's len() over a str counts code points, not bytes — and pyLen,
+		// unlike utf8.RuneCountInString, also counts a WTF-8 lone surrogate as
+		// the single character Python holds for it. See pystr.go.
+		length := pyLen(str)
 		if raw, present := schemaObj.Get("minLength"); present {
 			if min, isNumber := raw.(Number); isNumber && float64(length) < min.Float {
 				errors = append(errors, fmt.Sprintf("%s: string is %d char(s), minLength is %d",
