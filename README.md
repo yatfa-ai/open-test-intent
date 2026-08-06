@@ -164,6 +164,56 @@ Note that `./bin/validate-intent` (self-test mode) and this suite check differen
 the self-test verifies the **fixtures** still match their expected outcome, while the
 suite verifies the **validator logic** — run both.
 
+## The Go port (in progress)
+
+`cmd/validate-intent` is a Go port of the same validator, on its way to a single static
+binary adopters can drop in without a Python 3 runtime. Python remains the reference
+implementation; the Go build is held to it byte for byte.
+
+**Implemented so far:** `FILE...` (adopter) mode and `-h`/`--help`.
+**Not yet:** self-test mode, stdin (`-`), `--source`, `--json`, and recursive `**` globs.
+Every one of those *refuses* with exit `2` and a diagnostic naming itself, rather than
+falling through to adopter mode — where `--source foo.rb` would be read as a filename
+glob and answered with a confident, correctly formatted, wrong result.
+
+The same rule covers the schema's `pattern` keyword. Python's `re` and Go's RE2 are not
+the same regex language even where both accept the same source text — Python's `$` also
+matches before a trailing newline, `\d`/`\w`/`\s`/`\b` are Unicode-aware in Python and
+ASCII-only in RE2, `[[:alpha:]]` and `\p{L}` are RE2-only, and `{,n}` means `{0,n}` to
+Python and four literal characters to RE2. Some constructs are worse than merely
+different: `\p{L}`, or a quantifier on a bare `^`/`\A` (`^*`), compile under RE2 and are
+outright parse errors in Python, so accepting one would have the port answering a
+question the reference raises an exception on — and `^*` answers it vacuously, matching
+every input. The port accepts only the constructs that provably agree (rewriting a
+trailing `$` to `(?:\n?\z)`, its exact equivalent) and refuses the whole schema with
+exit `2` otherwise, naming the construct. The shipped schema declares no patterns, so
+this affects schema growth rather than current behaviour — see
+`cmd/validate-intent/pypattern.go`.
+
+```sh
+go build -o bin/validate-intent-go ./cmd/validate-intent
+./bin/validate-intent-go 'examples/*.json'
+```
+
+Build it into `bin/`. Like the Python script, the binary locates
+`schemas/open-test-intent.v1.json` relative to its own directory's parent, so a binary
+placed elsewhere will not find the schema.
+
+```sh
+tests/parity/run_parity.sh   # the acceptance test for the port
+```
+
+The parity harness runs both implementations over the same arguments and requires
+identical **stdout, stderr and exit code** — any single byte of difference fails the run.
+It also asserts that the unimplemented surfaces refuse, and that the Python reference has
+no local modifications (a port "made to pass" by editing its own oracle would otherwise
+look green). Cases excluded from the comparison are listed at the top of the script with
+the reason for each.
+
+```sh
+go test ./cmd/...            # unit coverage for the Python-emulation layer
+```
+
 ## Versioning
 
 Current: **v1**. Breaking changes (renamed/removed fields, narrowed enums) bump to `v2` under a new
