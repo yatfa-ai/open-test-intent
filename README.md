@@ -171,5 +171,5 @@ schema `$id`. Additive optional fields do not bump the major version, but
 `additionalProperties: false` means unknown keys are rejected — additions are an explicit, versioned
 choice, never silent forward-compatibility.
 
-**Status:** v1, specification stage. Built by yatfa agents — see the
-[master spec](PROTOCOL.md).
+**Status:** v1, specification stage. Built by yatfa agents — the normative specification is
+[PROTOCOL.md](PROTOCOL.md).
