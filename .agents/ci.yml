@@ -1,13 +1,27 @@
 name: CI
 
 on:
+  # `pull_request` covers every branch pre-merge; `push` is filtered to `main`
+  # so it only adds post-merge coverage. Without the filter every push to a PR
+  # branch fires both events over an identical tree, doubling the matrix.
   push:
+    branches: [main]
   pull_request:
+
+# This job runs `bin/validate-intent` — a file agents write freely — on runners
+# that receive GITHUB_TOKEN. Declaring the scope here means the job cannot
+# inherit a repo/org default that an admin may widen to read-write later.
+# `actions/checkout` is the only token consumer and needs nothing beyond read.
+permissions:
+  contents: read
 
 jobs:
   test:
     name: python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
+    # Both commands finish in well under a second; the GitHub default is 360
+    # minutes, so a hang would otherwise burn six hours before failing.
+    timeout-minutes: 5
     strategy:
       # Report both legs independently — if the old end breaks we want to see
       # that the new end still passes, not have it cancelled.
@@ -22,6 +36,11 @@ jobs:
         python-version: ['3.10', '3.13']
 
     steps:
+      # Pinned to first-party major tags rather than commit SHAs — a deliberate
+      # choice, not a default. Major tags are mutable, so this trades exact
+      # reproducibility for automatic security patches; `permissions: contents:
+      # read` above bounds what a compromised action could reach. Switch to SHA
+      # pins if third-party actions are ever added here.
       - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v7

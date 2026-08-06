@@ -19,6 +19,14 @@ The workflow starts running on the next `push` / `pull_request` after that.
 Keep the draft in place so later agent-authored changes have a base to edit;
 promote again to publish them.
 
+### After promotion, the draft is no longer authoritative
+
+Promotion is a copy, and nothing here detects drift. Once `.github/workflows/`
+holds a copy, **that copy is what runs** — this directory is only a base to edit
+from. An agent can change a draft and, until someone promotes it again, this
+repo documents a CI configuration that is not the one checking it, with nothing
+reporting the divergence. When the two differ, read `.github/workflows/`.
+
 ## Current drafts
 
 | Draft | What it does |
