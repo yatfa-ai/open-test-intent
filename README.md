@@ -164,6 +164,42 @@ Note that `./bin/validate-intent` (self-test mode) and this suite check differen
 the self-test verifies the **fixtures** still match their expected outcome, while the
 suite verifies the **validator logic** — run both.
 
+## The Go port (in progress)
+
+`cmd/validate-intent` is a Go port of the same validator, on its way to a single static
+binary adopters can drop in without a Python 3 runtime. Python remains the reference
+implementation; the Go build is held to it byte for byte.
+
+**Implemented so far:** `FILE...` (adopter) mode and `-h`/`--help`.
+**Not yet:** self-test mode, stdin (`-`), `--source`, `--json`, and recursive `**` globs.
+Every one of those *refuses* with exit `2` and a diagnostic naming itself, rather than
+falling through to adopter mode — where `--source foo.rb` would be read as a filename
+glob and answered with a confident, correctly formatted, wrong result.
+
+```sh
+go build -o bin/validate-intent-go ./cmd/validate-intent
+./bin/validate-intent-go 'examples/*.json'
+```
+
+Build it into `bin/`. Like the Python script, the binary locates
+`schemas/open-test-intent.v1.json` relative to its own directory's parent, so a binary
+placed elsewhere will not find the schema.
+
+```sh
+tests/parity/run_parity.sh   # the acceptance test for the port
+```
+
+The parity harness runs both implementations over the same arguments and requires
+identical **stdout, stderr and exit code** — any single byte of difference fails the run.
+It also asserts that the unimplemented surfaces refuse, and that the Python reference has
+no local modifications (a port "made to pass" by editing its own oracle would otherwise
+look green). Cases excluded from the comparison are listed at the top of the script with
+the reason for each.
+
+```sh
+go test ./cmd/...            # unit coverage for the Python-emulation layer
+```
+
 ## Versioning
 
 Current: **v1**. Breaking changes (renamed/removed fields, narrowed enums) bump to `v2` under a new

@@ -1,0 +1,1 @@
+{"entity": "Order", "action": "checkout", "behavior": "returns 402 payment required on expired card", "layer": "request", "preconditions": ["the saved card is expired", "the cart holds one item"]}
