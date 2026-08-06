@@ -67,7 +67,11 @@ func run(argv []string) int {
 	// Out-of-scope surfaces, refused before anything else can misread them.
 	// These sit ahead of the schema load on purpose: "this mode is not in the Go
 	// port" is the actionable diagnostic for them, and it stays the same answer
-	// whether or not the schema happens to be loadable.
+	// whether or not the schema happens to be loadable. They are deliberate
+	// Go-only divergences, so they owe the reference nothing on ordering.
+	//
+	// Contrast the self-test `--json` refusal below, which claims to *reproduce*
+	// the reference and therefore has to sit exactly where the reference put it.
 	if len(positional) > 0 && positional[0] == "-" {
 		return notImplemented("stdin mode (the `-` argument)")
 	}
@@ -84,18 +88,6 @@ func run(argv []string) int {
 		}
 	}
 
-	if len(positional) == 0 && asJSON {
-		// Self-test is the in-repo fixture harness, not an adopter surface.
-		// Falling back to its prose report would answer a --json request with
-		// text a consumer then fails to parse — refuse instead, exactly as the
-		// reference does (bin/validate-intent:902-909). This is a *reproduced*
-		// exit 2, not a port limitation.
-		fmt.Fprintln(os.Stderr, "error: --json is not supported in self-test mode "+
-			"(it needs -, FILE... or --source FILE...)")
-		os.Stderr.WriteString(usage)
-		return 2
-	}
-
 	schema, schemaPath, err := LoadSchema()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: could not load schema %s: %s\n", schemaPath, err)
@@ -103,6 +95,27 @@ func run(argv []string) int {
 	}
 
 	if len(positional) == 0 {
+		if asJSON {
+			// Self-test is the in-repo fixture harness, not an adopter surface.
+			// Falling back to its prose report would answer a --json request
+			// with text a consumer then fails to parse — refuse instead,
+			// exactly as the reference does (bin/validate-intent:900-909).
+			// This is a *reproduced* exit 2, not a port limitation.
+			//
+			// It therefore has to sit HERE, below the schema load, and not up
+			// with the out-of-scope refusals above: the reference loads the
+			// schema first (bin/validate-intent:895), so on a tree with no
+			// readable schema it answers `could not load schema ...` and never
+			// reaches this branch at all. Refusing earlier would still exit 2,
+			// but with different stderr — which is exactly the claim of
+			// reproduction this comment makes, broken in the one combination
+			// nobody diffs by hand. tests/parity/run_parity.sh section 8 now
+			// covers it (schema-less tree, bare `--json`).
+			fmt.Fprintln(os.Stderr, "error: --json is not supported in self-test mode "+
+				"(it needs -, FILE... or --source FILE...)")
+			os.Stderr.WriteString(usage)
+			return 2
+		}
 		return RunSelfTest(schema)
 	}
 

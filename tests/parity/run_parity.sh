@@ -37,6 +37,11 @@
 # side (see "Go-side refusals" at the bottom) so the exclusion cannot quietly
 # become "untested".
 #
+# (Four, not five: slice 1 listed five, slice 2 retired two of them — see
+# RETIRED EXCLUSIONS below — and slice 1's separate "unsupported schema
+# construct" group folded into group 4 when the `pattern` port landed. The
+# count is right; it just does not arithmetic down from five in one step.)
+#
 #   1. Recursive `**` glob patterns.
 #      Python globs with recursive=True; Go's filepath.Glob has no `**` at all,
 #      and the port implements the rest of Python's glob syntax rather than
@@ -86,6 +91,14 @@
 #     port now carries its own CPython-compatible decoder
 #     (cmd/validate-intent/pyjson.go) that reproduces json.JSONDecodeError's
 #     message, line, column and character offset. Compared here in section 11.
+#
+#     Caveat worth stating plainly: section 11 compares the decoder only
+#     through the CLI, on the payloads the corpus and fixtures happen to reach
+#     it with. The broad evidence for that decoder is a differential fuzzer
+#     against python3's json.loads in cmd/validate-intent/pyjson_fuzz_test.go,
+#     and THIS HARNESS DOES NOT RUN IT — run `go test ./cmd/validate-intent`
+#     separately. Passing 164/164 here is not by itself a claim about the
+#     decoder's general correctness.
 #
 #   * `NaN` / `Infinity` / `-Infinity` literals. Python's json accepts them and
 #     encoding/json rejected them, so the two classified such a document
@@ -378,6 +391,24 @@ cp "$GO_BIN" "$schema_root/bin/validate-intent-go"
 cp "$REPO_ROOT/examples/unit-order-total.json" "$schema_root/thing.json"
 compare_in "$schema_root" "$schema_root/bin/validate-intent" \
   "$schema_root/bin/validate-intent-go" "missing schema (exit 2)" thing.json
+
+# The crossing of the two exit-2 paths, which neither one alone covers.
+#
+# The harness compares schema-load failures (just above) and it compares the
+# self-test `--json` refusal (section 12) — but until now never both at once,
+# and that is precisely where the port drifted: main.go originally refused
+# `--json` BEFORE loading the schema, so on a tree with no schemas/ it answered
+# "--json is not supported in self-test mode" plus the usage block where Python
+# answers "could not load schema ...". Same exit code, different stderr, and no
+# case in the suite that would notice. Both orderings are exercised here now.
+compare_in "$schema_root" "$schema_root/bin/validate-intent" \
+  "$schema_root/bin/validate-intent-go" "missing schema + bare --json (schema load wins)" --json
+compare_in "$schema_root" "$schema_root/bin/validate-intent" \
+  "$schema_root/bin/validate-intent-go" "missing schema + self-test (no args)"
+compare_in "$schema_root" "$schema_root/bin/validate-intent" \
+  "$schema_root/bin/validate-intent-go" "missing schema + --source --json" --source thing.json --json
+compare_in "$schema_root" "$schema_root/bin/validate-intent" \
+  "$schema_root/bin/validate-intent-go" "missing schema + --source with no argument" --source
 
 # An unreadable schema is the same code path with a different errno.
 schema_root2="$WORK/badschema"

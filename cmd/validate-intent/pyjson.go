@@ -39,11 +39,18 @@ package main
 //
 // HOW IT IS KNOWN TO BE RIGHT
 // ---------------------------
-// Not by transcription from memory: tests/parity/fuzz_json.py generates tens of
-// thousands of JSON-ish strings, feeds each to python3's json.loads and to this
-// decoder, and requires the *value or the exact error string* to agree. Every
-// message and offset below was first observed from CPython 3.13.5, then pinned
-// by that fuzzer.
+// Not by transcription from memory: cmd/validate-intent/pyjson_fuzz_test.go
+// generates tens of thousands of JSON-ish strings, feeds each to python3's
+// json.loads and to this decoder, and requires the *value or the exact error
+// string* to agree. Every message and offset below was first observed from
+// CPython 3.13.5, then pinned by that fuzzer.
+//
+// Reach it with `go test ./cmd/validate-intent` — and note that nothing else
+// will. tests/parity/run_parity.sh builds the binary and diffs CLI invocations;
+// it does not run `go test`, and CI runs neither (the workflow is still an
+// unpromoted draft in .agents/ci.yml). So that one command is the sole path to
+// the oracle behind this file. The fuzzer skips itself, loudly, when python3 is
+// absent rather than passing vacuously.
 
 import (
 	"fmt"
