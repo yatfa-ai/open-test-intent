@@ -24,6 +24,30 @@ import (
 	"os"
 )
 
+// usage is compared byte-for-byte against the reference's USAGE
+// (bin/validate-intent) by tests/parity/run_parity.sh, in section 6 ("--help")
+// and wherever a refusal prints the usage block.
+//
+// KNOWN-MISLEADING LAST LINE, and why it is still here.
+//
+// "Validates JSON against schemas/open-test-intent.v1.json" is true of the
+// Python script — it always lives at <repo>/bin/ — and is no longer true of
+// this binary. Since SPGD-131 an installed copy at /usr/local/bin/ validates
+// against its embedded schema; the path this line names does not exist there
+// and governs nothing.
+//
+// Because the two texts are compared byte-for-byte, they can only move
+// together: editing this constant alone fails section 6 ("--help") and every
+// refusal that prints the usage block, which is deleting real coverage to fix
+// a sentence.
+//
+// The matched edit belongs in bin/validate-intent, and SPGD-131 put that file
+// out of scope. That — a scope boundary, nothing more — is the whole reason
+// the line still reads this way. Nothing in the tooling prevents the change.
+//
+// A follow-up slice permitted to touch the reference should edit both texts in
+// one commit. The accurate statement of where the schema actually comes from
+// lives on LoadSchema in fileio.go.
 const usage = `usage: validate-intent                    # self-test the in-repo fixtures
        validate-intent -                  # validate one annotation JSON read from stdin
        validate-intent FILE...            # validate FILE(s)/glob(s) as valid intent JSON
@@ -110,8 +134,20 @@ func run(argv []string) int {
 			// but with different stderr — which is exactly the claim of
 			// reproduction this comment makes, broken in the one combination
 			// nobody diffs by hand. tests/parity/run_parity.sh section 7
-			// ("OS-level failures") now covers it (schema-less tree, bare
-			// `--json`). The section NAME is quoted alongside the number
+			// ("OS-level failures") covers it: a tree whose schema is present
+			// but MALFORMED, invoked with a bare `--json`.
+			//
+			// It used to be a tree with no schemas/ directory at all, and the
+			// difference matters to anyone editing that case. Since the
+			// embedded fallback landed (SPGD-131, see LoadSchema in fileio.go)
+			// a schema-LESS tree no longer fails to load here — the port finds
+			// its compiled-in copy — so the crossing would pass whichever side
+			// of the load this refusal sat on. The probe has to be a schema
+			// that EXISTS and cannot be loaded. Moving it back to a
+			// schema-less tree would leave a green case that had quietly
+			// stopped testing the thing it is named for.
+			//
+			// The section NAME is quoted alongside the number
 			// because that file renumbers as slices are added: if the two
 			// ever disagree the name is the one to trust, and
 			// tests/parity/check_section_refs.py fails the harness loudly
