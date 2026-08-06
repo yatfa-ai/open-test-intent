@@ -34,22 +34,20 @@ import (
 // Python script — it always lives at <repo>/bin/ — and is no longer true of
 // this binary. Since SPGD-131 an installed copy at /usr/local/bin/ validates
 // against its embedded schema; the path this line names does not exist there
-// and governs nothing. Correcting it was in that ticket's scope and was
-// deliberately NOT done, because it cannot be done from this side alone:
+// and governs nothing.
 //
-//   - changing it here only would break the --help comparison, deleting real
-//     coverage to fix a sentence;
-//   - changing it in both would make bin/validate-intent dirty, which trips the
-//     harness's "the oracle is unmodified" guard. That guard exists so a port
-//     can never be made to pass by editing the thing it is measured against,
-//     and it cannot distinguish a prose edit from a load-bearing one — which is
-//     the entire reason it is worth having. Relaxing it to admit this change
-//     would trade a standing integrity check for a cosmetic fix.
+// Because the two texts are compared byte-for-byte, they can only move
+// together: editing this constant alone fails section 6 ("--help") and every
+// refusal that prints the usage block, which is deleting real coverage to fix
+// a sentence.
 //
-// So the line stays wrong until a slice that is allowed to touch the oracle
-// changes both texts together. It is recorded here rather than left for the
-// next reader to rediscover, and the accurate statement of where the schema
-// comes from lives on LoadSchema in fileio.go.
+// The matched edit belongs in bin/validate-intent, and SPGD-131 put that file
+// out of scope. That — a scope boundary, nothing more — is the whole reason
+// the line still reads this way. Nothing in the tooling prevents the change.
+//
+// A follow-up slice permitted to touch the reference should edit both texts in
+// one commit. The accurate statement of where the schema actually comes from
+// lives on LoadSchema in fileio.go.
 const usage = `usage: validate-intent                    # self-test the in-repo fixtures
        validate-intent -                  # validate one annotation JSON read from stdin
        validate-intent FILE...            # validate FILE(s)/glob(s) as valid intent JSON
