@@ -32,15 +32,18 @@
 #
 # Excluded cases, and why
 # -----------------------
-# FOUR groups of inputs are deliberately NOT compared against Python. Each is
+# FIVE groups of inputs are deliberately NOT compared against Python. Each is
 # excluded for a stated reason, and each is still asserted against on the Go
 # side (see "Go-side refusals" at the bottom) so the exclusion cannot quietly
 # become "untested".
 #
-# (Four, not five: slice 1 listed five, slice 2 retired two of them — see
-# RETIRED EXCLUSIONS below — and slice 1's separate "unsupported schema
-# construct" group folded into group 4 when the `pattern` port landed. The
-# count is right; it just does not arithmetic down from five in one step.)
+# (Five, and the arithmetic has never gone in one direction, so it is worth
+# spelling out: slice 1 listed five, slice 2 retired two of them — see RETIRED
+# EXCLUSIONS below — and slice 1's separate "unsupported schema construct"
+# group folded into group 4 when the `pattern` port landed, which left four.
+# Slice 5 (SPGD-131) then ADDED group 5, when the Go binary gained an embedded
+# schema and stopped failing on trees the Python script still cannot run in.
+# The count is right; it just does not arithmetic down from five in one step.)
 #
 #   1. Recursive `**` glob patterns.
 #      Python globs with recursive=True; Go's filepath.Glob has no `**` at all,
@@ -83,6 +86,45 @@
 #      a check on what Python does with each of those schemas, so the refusal
 #      is a real divergence being declined rather than a failure both
 #      implementations share.
+#
+#   5. A tree with no schemas/ directory beside the binary.
+#      The Go port embeds schemas/open-test-intent.v1.json (see schema.go at the
+#      module root) and falls back to that copy when — and only when — the file
+#      at <exe>/../schemas/ is ABSENT. That is the entire point of SPGD-131: a
+#      released binary at /usr/local/bin/validate-intent has no repo around it,
+#      resolved its schema to /usr/local/schemas/open-test-intent.v1.json, and
+#      before the fix exited 2 in every working mode — adopter, --source,
+#      self-test, --json. Only --help worked. The Python reference has no such
+#      fallback and still fails on such a tree, by design, so the two genuinely
+#      diverge and cannot be compared.
+#
+#      This exclusion is NARROW, and the narrowness is the design. A schema that
+#      is PRESENT but unreadable, malformed or uncompilable is still compared,
+#      in section 7 ("OS-level failures"): a file that exists is a deliberate
+#      override, and falling back past a broken one would answer the user's own
+#      mistake with a clean green report. Note what that narrowness preserves —
+#      the crossing of "the schema fails to load" with "bare --json" in
+#      section 7 ("OS-level failures"),
+#      the crossing that once caught main.go refusing --json BEFORE LoadSchema,
+#      is NOT lost to this exclusion. It moved from a schema-less tree to a
+#      malformed-schema one and stayed a byte-for-byte comparison.
+#
+#      Asserted on the Go side in section 15 ("Go-side refusals — the excluded
+#      surfaces, still asserted"), which pins what the binary does instead for
+#      each of the five argument sets that used to be compared here — including
+#      the two that still FAIL. A bare self-test on such a tree exits 1 with
+#      four "no fixtures match" lines, because the fixture corpus is not
+#      embedded: that is SPGD-56's empty-fixture guard working correctly, and it
+#      is asserted rather than assumed so nobody later reads the exclusion as a
+#      claim that everything works out there.
+#
+#      One caveat worth stating plainly, in the same spirit as the decoder
+#      caveat below: this harness proves the embedded schema BEHAVES like the
+#      canonical one on the inputs it happens to reach. It does NOT prove they
+#      are the same bytes. That is pinned by SHA256 in schema_test.go at the
+#      module root, and THIS HARNESS DOES NOT RUN IT — run `go test ./...`
+#      separately (./... , not ./cmd/... , or the root package's guard is
+#      skipped and the pin verifies nothing).
 #
 # RETIRED EXCLUSIONS — slice 2 (SPGD-102) closed two of slice 1's five:
 #
@@ -414,35 +456,90 @@ else
 fi
 chmod 644 "$unreadable"
 
-# A missing schema: both implementations derive the schema path from their own
-# location, so copying both into a tree with no schemas/ directory makes them
-# compute the same missing path and report it identically. Exit 2.
-schema_root="$WORK/noschema"
-mkdir -p "$schema_root/bin"
-cp "$REFERENCE" "$schema_root/bin/validate-intent"
-cp "$GO_BIN" "$schema_root/bin/validate-intent-go"
-cp "$REPO_ROOT/examples/unit-order-total.json" "$schema_root/thing.json"
-compare_in "$schema_root" "$schema_root/bin/validate-intent" \
-  "$schema_root/bin/validate-intent-go" "missing schema (exit 2)" thing.json
+# A schema that fails to LOAD. Both implementations derive the schema path from
+# their own location, so copying both into a tree carrying a schema of our
+# choosing makes them compute the same path and read the same bytes.
+#
+# This was a tree with NO schemas/ directory at all until SPGD-131. It cannot be
+# any more: the Go port now embeds the schema (schema.go) and falls back to that
+# copy when the file is ABSENT, so a schema-less tree is exactly where the two
+# are supposed to diverge — that is excluded group 5, and what the Go binary
+# does there instead is pinned in section 15 ("Go-side refusals — the excluded
+# surfaces, still asserted").
+#
+# A MALFORMED schema replaces it, and is a strictly better probe:
+#
+#   * it still exercises the schema-load failure path in both implementations,
+#     byte for byte, JSONDecodeError prose included;
+#   * it is the case the new fallback must NOT swallow. A file that exists is a
+#     deliberate override; falling back past a broken one would turn the user's
+#     own typo into a clean green run against a schema they never wrote — a tool
+#     failure wearing the costume of a content failure, and the more dangerous
+#     kind because it SUCCEEDS;
+#   * unlike the unreadable-schema case below it needs no permission bit, so it
+#     does not evaporate into a SKIP when this suite runs as root. That matters
+#     more here than anywhere else in the file: root is precisely where a check
+#     of "the fallback does not fire on a broken schema" would otherwise be
+#     established by watching a case that never ran fail to complain.
+badschema_root="$WORK/badschema-json"
+mkdir -p "$badschema_root/bin" "$badschema_root/schemas"
+cp "$REFERENCE" "$badschema_root/bin/validate-intent"
+cp "$GO_BIN" "$badschema_root/bin/validate-intent-go"
+printf '{ "type": "object",\n' > "$badschema_root/schemas/open-test-intent.v1.json"
+cp "$REPO_ROOT/examples/unit-order-total.json" "$badschema_root/thing.json"
+compare_in "$badschema_root" "$badschema_root/bin/validate-intent" \
+  "$badschema_root/bin/validate-intent-go" "malformed schema (exit 2)" thing.json
 
 # The crossing of the two exit-2 paths, which neither one alone covers.
 #
 # The harness compares schema-load failures (just above) and it compares the
 # self-test `--json` refusal (section 10, "self-test (bare invocation)") — but
-# until now never both at once, and that is precisely where the port drifted:
-# main.go originally refused `--json` BEFORE loading the schema, so on a tree
-# with no schemas/ it answered "--json is not supported in self-test mode" plus
-# the usage block where Python answers "could not load schema ...". Same exit
-# code, different stderr, and no case in the suite that would notice. Both
-# orderings are exercised here now.
-compare_in "$schema_root" "$schema_root/bin/validate-intent" \
-  "$schema_root/bin/validate-intent-go" "missing schema + bare --json (schema load wins)" --json
-compare_in "$schema_root" "$schema_root/bin/validate-intent" \
-  "$schema_root/bin/validate-intent-go" "missing schema + self-test (no args)"
-compare_in "$schema_root" "$schema_root/bin/validate-intent" \
-  "$schema_root/bin/validate-intent-go" "missing schema + --source --json" --source thing.json --json
-compare_in "$schema_root" "$schema_root/bin/validate-intent" \
-  "$schema_root/bin/validate-intent-go" "missing schema + --source with no argument" --source
+# for a long time never both at once, and that is precisely where the port
+# drifted: main.go originally refused `--json` BEFORE loading the schema, so on
+# a tree whose schema would not load it answered "--json is not supported in
+# self-test mode" plus the usage block where Python answers "could not load
+# schema ...". Same exit code, different stderr, and no case in the suite that
+# would notice. Both orderings are exercised here.
+#
+# Read this next part before touching the tree above. This crossing only has
+# teeth while the schema genuinely fails to load in BOTH implementations. On a
+# schema-LESS tree it no longer does — Go finds its embedded copy, the load
+# succeeds, and the case would pass whichever side of LoadSchema the `--json`
+# refusal sat on. Moving these cases to a malformed schema is what keeps the
+# assertion sharp; putting them back on a schema-less tree would leave five
+# green cases that had quietly stopped testing the thing they are named for.
+compare_in "$badschema_root" "$badschema_root/bin/validate-intent" \
+  "$badschema_root/bin/validate-intent-go" "malformed schema + bare --json (schema load wins)" --json
+compare_in "$badschema_root" "$badschema_root/bin/validate-intent" \
+  "$badschema_root/bin/validate-intent-go" "malformed schema + self-test (no args)"
+compare_in "$badschema_root" "$badschema_root/bin/validate-intent" \
+  "$badschema_root/bin/validate-intent-go" "malformed schema + --source --json" --source thing.json --json
+compare_in "$badschema_root" "$badschema_root/bin/validate-intent" \
+  "$badschema_root/bin/validate-intent-go" "malformed schema + --source with no argument" --source
+
+# The counterweight to the embedded fallback: a schema that IS present must
+# still be the one that governs.
+#
+# The 21 compare_root cases below already depend on this, but they depend on it
+# implicitly — each places a schema and would go red if it were ignored, which
+# makes them a good regression net and a poor statement of intent. This case
+# states it, and states it in the only form that cannot be satisfied by
+# accident: the override ACCEPTS a document the canonical schema REJECTS. `{}`
+# has none of the four required properties, so a binary that quietly used its
+# embedded copy would answer FAIL/1 here where the override says PASS/0. An
+# override that merely differed could be passed by agreeing.
+#
+# It is a comparison rather than a Go-side assertion because Python reads the
+# same override, so both must accept `{}` — which also pins that the fallback
+# introduced no divergence on the path where a file exists.
+override_root="$(make_schema_root override-beats-embedded <<'JSON'
+{
+  "type": "object"
+}
+JSON
+)"
+printf '{}\n' > "$override_root/empty.json"
+compare_root "$override_root" "an on-disk schema beats the embedded copy (it accepts {})" empty.json
 
 # An unreadable schema is the same code path with a different errno.
 schema_root2="$WORK/badschema"
@@ -1061,6 +1158,146 @@ assert_not_refused "self-test mode is implemented"
 assert_not_refused "source mode (--source) is implemented" --source 'examples/sources/*'
 assert_not_refused "source mode (-s) is implemented" -s 'examples/sources/*'
 assert_not_refused "--source --json is implemented" --source 'examples/sources/*' --json
+
+# --------------------------------------------------------------------------- #
+# Excluded group 5: a tree with no schemas/ directory beside the binary
+# --------------------------------------------------------------------------- #
+#
+# These five argument sets USED to be compared, in section 7 ("OS-level
+# failures"), against a tree with no schemas/ directory. Since SPGD-131 the Go
+# binary embeds the schema and falls back to it when the file is absent, so it
+# no longer fails there and Python still does. That is a real divergence, and it
+# is the divergence the change exists to create: a released binary has no repo
+# around it.
+#
+# Deleting the five cases would have been the easy move and the wrong one. One
+# of them — the crossing of a failed schema load with a bare `--json` — is on
+# record as having caught a real ordering drift in main.go, and coverage with a
+# history of catching something is the last coverage to discard quietly. So the
+# crossing stayed a byte-for-byte COMPARISON (section 7, "OS-level failures",
+# now runs it against a
+# malformed schema, which fails to load in both), and what the Go binary does on
+# a schema-less tree is pinned HERE, argument set for argument set.
+#
+# "Excluded" must not mean "unchecked", and it must not mean "assumed to work"
+# either: two of the five still fail, and they are asserted failing.
+echo
+echo "== excluded group 5: no schemas/ beside the binary (Go only) =="
+
+noschema_root="$WORK/noschema"
+mkdir -p "$noschema_root/bin"
+cp "$REFERENCE" "$noschema_root/bin/validate-intent"
+cp "$GO_BIN" "$noschema_root/bin/validate-intent-go"
+cp "$REPO_ROOT/examples/unit-order-total.json" "$noschema_root/thing.json"
+
+# The group's premise, asserted rather than assumed. If a schemas/ directory
+# ever appeared in this tree, every expectation below would still hold — Go
+# would read the file and answer the same way — while the block had stopped
+# testing the fallback at all. A test whose setup silently stopped applying is
+# the quietest way to lose coverage.
+if [ -e "$noschema_root/schemas" ]; then
+  failed=$((failed + 1))
+  red "  FAIL  excluded group 5 — this tree must have NO schemas/ directory, and it has one"
+fi
+
+# assert_no_schema_tree <label> <want-rc> <want-stdout> <want-stderr> [args...]
+#
+# <want-stdout>/<want-stderr> are substrings that must appear, or the literal
+# EMPTY meaning that stream must be empty. Both are always checked: asserting an
+# exit code alone would pass a binary that exited 0 having printed nothing,
+# which is the shape this whole file exists to refuse.
+#
+# It also asserts, first, that python3 STILL fails to load the schema on this
+# tree with these arguments. Without that the case could sit in the "excluded"
+# list long after the divergence had gone, and nobody would find out — an
+# exclusion that is no longer a divergence is comparison coverage given up for
+# free, which is the expensive half of this file being paid for nothing.
+assert_no_schema_tree() {
+  local label="$1" want_rc="$2" want_out="$3" want_err="$4"
+  shift 4
+
+  local py_rc
+  (cd "$noschema_root" && "$PYTHON" "$noschema_root/bin/validate-intent" "$@" \
+    >"$WORK/py.out" 2>"$WORK/py.err")
+  py_rc=$?
+  if [ "$py_rc" -ne 2 ] || ! grep -q 'could not load schema' "$WORK/py.err"; then
+    failed=$((failed + 1))
+    red "  FAIL  $label — the reference no longer diverges here (exit $py_rc)"
+    printf '        This case is excluded because python3 cannot run on a schema-less\n'
+    printf '        tree. It now can, so the case belongs in a compare_in, not here.\n'
+    return 1
+  fi
+
+  local rc
+  (cd "$noschema_root" && "$noschema_root/bin/validate-intent-go" "$@" \
+    >"$WORK/go.out" 2>"$WORK/go.err")
+  rc=$?
+
+  local problems=()
+  [ "$rc" = "$want_rc" ] || problems+=("exit code: want $want_rc, got $rc")
+
+  if [ "$want_out" = "EMPTY" ]; then
+    [ ! -s "$WORK/go.out" ] || problems+=("stdout: want empty, got '$(head -c 80 "$WORK/go.out")'")
+  else
+    grep -qF -- "$want_out" "$WORK/go.out" || problems+=("stdout: want it to contain '$want_out'")
+  fi
+
+  if [ "$want_err" = "EMPTY" ]; then
+    [ ! -s "$WORK/go.err" ] || problems+=("stderr: want empty, got '$(head -c 80 "$WORK/go.err")'")
+  else
+    grep -qF -- "$want_err" "$WORK/go.err" || problems+=("stderr: want it to contain '$want_err'")
+  fi
+
+  if [ ${#problems[@]} -eq 0 ]; then
+    passed=$((passed + 1))
+    printf '  ok    %s (exit %s)\n' "$label" "$rc"
+    return 0
+  fi
+
+  failed=$((failed + 1))
+  red "  FAIL  $label"
+  printf '        args: %s\n' "$*"
+  local problem
+  for problem in "${problems[@]}"; do
+    printf '        %s\n' "$problem"
+  done
+  return 1
+}
+
+# The two that now WORK — the release-asset case, and the reason for the change.
+# Before SPGD-131 both of these exited 2 with "could not load schema".
+assert_no_schema_tree "adopter mode works with no schemas/ (was exit 2)" \
+  0 "PASS  thing.json" EMPTY thing.json
+assert_no_schema_tree "--source --json works with no schemas/ (was exit 2)" \
+  0 '"mode": "source"' EMPTY --source thing.json --json
+
+# The ordering crossing, Go side. Python answers "could not load schema"; the
+# port loads its embedded copy and therefore REACHES the self-test --json
+# refusal. Both exit 2; the reasons differ, and that is the divergence.
+#
+# Note what this can and cannot prove. It pins the message, so a fall-through
+# would be caught. It does NOT prove the refusal still sits below LoadSchema —
+# on this tree the load succeeds either way. The malformed-schema crossing in
+# section 7 ("OS-level failures")
+# is what proves the ordering, and it must stay there.
+assert_no_schema_tree "bare --json still refuses: self-test is not a --json surface" \
+  2 EMPTY "--json is not supported in self-test mode" --json
+
+# The two that still FAIL, asserted failing.
+#
+# Fixing the schema did not make the binary self-contained: RepoRoot() resolves
+# the fixture CORPUS the same executable-relative way, and examples/ is not
+# embedded. So a bare self-test on a schema-less tree finds no fixtures and says
+# so, four times, and exits 1. That is SPGD-56's empty-fixture guard working as
+# designed — a self-test that verified nothing must not report success — and
+# --help already calls this mode "self-test the in-repo fixtures". Whether a
+# released binary should carry the corpus is a real question and a separate
+# slice. Until then, this assertion is what keeps "the schema is embedded" from
+# being read as "the binary is self-contained".
+assert_no_schema_tree "bare self-test still fails loudly: the corpus is not embedded" \
+  1 EMPTY "no fixtures match 'examples/*.json'"
+assert_no_schema_tree "--source with no argument still refuses" \
+  2 EMPTY "--source requires at least one FILE/glob argument" --source
 
 # --------------------------------------------------------------------------- #
 # 16. Go-side refusals — schemas carrying a pattern RE2 cannot reproduce

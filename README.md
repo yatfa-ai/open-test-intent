@@ -195,9 +195,26 @@ go build -o bin/validate-intent-go ./cmd/validate-intent
 ./bin/validate-intent-go 'examples/*.json'
 ```
 
-Build it into `bin/`. Like the Python script, the binary locates
-`schemas/open-test-intent.v1.json` relative to its own directory's parent, so a binary
-placed elsewhere will not find the schema.
+Build it into `bin/`. Like the Python script, the binary looks for
+`schemas/open-test-intent.v1.json` relative to its own directory's parent, and that copy
+wins whenever it is there — which is what lets the parity harness point both
+implementations at a schema of its choosing.
+
+Unlike the Python script, a binary that finds **no such file** falls back to a copy of the
+canonical schema compiled into it (`schema.go`), so a released binary works from
+`/usr/local/bin/` or anywhere else. The fallback is narrow on purpose: it fires only when
+the file is *absent*. A schema that is present but unreadable or malformed still fails
+exactly as before, because a file that exists is a deliberate override and silently
+validating against a different schema than the one you wrote is worse than stopping.
+
+The embedded copy is pinned to `schemas/open-test-intent.v1.json` by SHA256 in
+`schema_test.go`, so editing the canonical schema fails loudly rather than leaving two
+copies of the contract to drift. That guard runs under `go test ./...` — note the `./...`,
+not `./cmd/...`.
+
+Note that the *fixture corpus* is not embedded, only the schema: a bare self-test outside
+the repo still reports `no fixtures match ...` and exits 1, which is the empty-fixture
+guard working as intended rather than a regression.
 
 ```sh
 tests/parity/run_parity.sh   # the acceptance test for the port
@@ -211,7 +228,8 @@ look green). Cases excluded from the comparison are listed at the top of the scr
 the reason for each.
 
 ```sh
-go test ./cmd/...            # unit coverage for the Python-emulation layer
+go test ./...                # unit coverage for the Python-emulation layer,
+                             # plus the SHA256 pin on the embedded schema
 ```
 
 ## Versioning

@@ -6,11 +6,14 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"unicode/utf8"
+
+	opentestintent "github.com/yatfa-ai/open-test-intent"
 )
 
 // CheckFile is the port of `check_file` (bin/validate-intent:219-247).
@@ -73,6 +76,9 @@ func readSourceText(path string) (text string, readError string) {
 // holding the executable, so a Go binary built into `bin/` resolves the schema
 // to exactly the path the Python script does — which is what lets the
 // "could not load schema" diagnostic be byte-identical too.
+//
+// This path is where the schema is LOOKED FOR, which is no longer the same
+// claim as where it is FOUND. See LoadSchema.
 func SchemaPath() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -82,8 +88,15 @@ func SchemaPath() (string, error) {
 	return filepath.Join(root, "schemas", "open-test-intent.v1.json"), nil
 }
 
+// EmbeddedSchemaLabel is what LoadSchema reports as the schema's origin when it
+// falls back to the compiled-in copy. It is not a path and is not meant to look
+// like one: it appears only in a diagnostic about the EMBEDDED schema, and
+// printing a filesystem path there would send a reader to a file that had
+// nothing to do with the failure.
+const EmbeddedSchemaLabel = "<embedded schema>"
+
 // LoadSchema is the port of `load_schema` (bin/validate-intent:250-252). It
-// returns the schema path alongside the error so the caller can render the
+// returns the schema's origin alongside the error so the caller can render the
 // reference's diagnostic verbatim.
 //
 // It does one thing the reference does not: CompileSchema translates and
@@ -93,14 +106,71 @@ func SchemaPath() (string, error) {
 // and it is deliberate. The alternative is a binary that loads happily and then
 // disagrees with the reference about whether a document is valid. See
 // pypattern.go for what is accepted, what is refused, and why.
+//
+// # The embedded fallback, and why it is a fallback
+//
+// SchemaPath derives its answer from the executable's own location. That is
+// right for a Python script that always lives at <repo>/bin/ and wrong for a
+// distributable binary: installed at /usr/local/bin/validate-intent it computed
+// /usr/local/schemas/open-test-intent.v1.json, found nothing, and exited 2 in
+// every working mode — adopter, --source, self-test, --json. Only --help
+// worked. A released binary that installs cleanly and then fails at everything
+// it exists to do (SPGD-131).
+//
+// The obvious fix — embed the schema and stop reading disk — is WRONG here, and
+// the reason is worth stating because it is invisible from this file.
+// tests/parity/run_parity.sh proves the validator keywords the shipped schema
+// does not declare (`pattern`, numeric bounds, `items`) by copying both
+// implementations into a throwaway tree carrying a schema of its choosing. Its
+// compare_root and assert_pattern_refusal cases — the large majority of the
+// suite's schema coverage — work ONLY because the binary reads a schema from
+// beside itself. A pure embed would make it ignore every one of those synthetic
+// schemas while the harness went on reporting green: coverage deleted without a
+// single case going red, which is this project's house defect wearing a new hat.
+// (No count is given on purpose. It moves whenever cases are added, and a stale
+// figure in a comment is the same drift check_section_refs.py exists to stop.)
+//
+// So disk wins whenever there is a file to win with, and the ABSENT/UNREADABLE
+// distinction carries the whole design:
+//
+//   - ABSENT (ENOENT) — nobody has expressed an intention about this path, so
+//     the compiled-in copy is used. This is the release-asset case, and the
+//     only behaviour that changes.
+//
+//   - PRESENT but unreadable, undecodable, malformed, or uncompilable — fail
+//     exactly as before. A file that EXISTS is a deliberate override, and
+//     falling back past a broken one would answer the user's own mistake with a
+//     confident, clean, wrong report: a tool failure wearing the costume of a
+//     content failure. Worse here than usual, because the fallback would
+//     succeed — the run would go green against a schema the user never asked
+//     for and cannot see.
+//
+// Only ENOENT counts as absent. EACCES, EISDIR and ENOTDIR all mean something
+// is there, so they all fail.
 func LoadSchema() (*Schema, string, error) {
 	path, err := SchemaPath()
 	if err != nil {
 		return nil, "", err
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, path, errors.New(pyOSError(err))
+	return loadSchemaFrom(path)
+}
+
+// loadSchemaFrom is LoadSchema with the path injected, so the absent/present
+// rule above can be asserted directly in a unit test rather than only through a
+// harness case. That matters more than the usual testability argument: the
+// harness's present-but-unreadable case is chmod 000, which does nothing when
+// the suite runs as root, and it SKIPs rather than fails. Verifying "a broken
+// schema does not fall back" by watching a skipped case not go red would be a
+// vacuous check of the fix for a vacuous check.
+func loadSchemaFrom(path string) (*Schema, string, error) {
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		if !errors.Is(readErr, fs.ErrNotExist) {
+			// Present, but we could not have it. Not our call to substitute.
+			return nil, path, errors.New(pyOSError(readErr))
+		}
+		data = opentestintent.SchemaJSON()
+		path = EmbeddedSchemaLabel
 	}
 	if !utf8.Valid(data) {
 		return nil, path, errors.New(pyUnicodeDecodeError(data))
