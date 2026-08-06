@@ -76,10 +76,13 @@
 #      The port accepts only the constructs that provably agree (rewriting a
 #      trailing `$` to `(?:\n?\z)`, its exact equivalent) and REFUSES the whole
 #      schema with exit 2 otherwise — see cmd/validate-intent/pypattern.go. The
-#      accepted half is compared here, over a grown schema, in section 8; the
-#      refused half is asserted in section 16, including a check on what Python
-#      does with each of those schemas, so the refusal is a real divergence
-#      being declined rather than a failure both implementations share.
+#      accepted half is compared here, over a grown schema, in section 8 ("a
+#      grown schema — the validator keywords the shipped one does not
+#      declare"); the refused half is asserted in section 16 ("Go-side
+#      refusals — schemas carrying a pattern RE2 cannot reproduce"), including
+#      a check on what Python does with each of those schemas, so the refusal
+#      is a real divergence being declined rather than a failure both
+#      implementations share.
 #
 # RETIRED EXCLUSIONS — slice 2 (SPGD-102) closed two of slice 1's five:
 #
@@ -90,20 +93,24 @@
 #     typo'd annotation produces, i.e. the case adopters actually hit — so the
 #     port now carries its own CPython-compatible decoder
 #     (cmd/validate-intent/pyjson.go) that reproduces json.JSONDecodeError's
-#     message, line, column and character offset. Compared here in section 11.
+#     message, line, column and character offset. Compared here in section 11
+#     ("malformed payloads and documents — the retired exclusions").
 #
-#     Caveat worth stating plainly: section 11 compares the decoder only
+#     Caveat worth stating plainly: that section compares the decoder only
 #     through the CLI, on the payloads the corpus and fixtures happen to reach
 #     it with. The broad evidence for that decoder is a differential fuzzer
 #     against python3's json.loads in cmd/validate-intent/pyjson_fuzz_test.go,
 #     and THIS HARNESS DOES NOT RUN IT — run `go test ./cmd/validate-intent`
-#     separately. Passing 164/164 here is not by itself a claim about the
-#     decoder's general correctness.
+#     separately. Passing every case here is not by itself a claim about the
+#     decoder's general correctness. (Deliberately not stated as a case count:
+#     the count moves whenever cases are added, and a stale figure in prose is
+#     the same drift the section cross-references above guard against.)
 #
 #   * `NaN` / `Infinity` / `-Infinity` literals. Python's json accepts them and
 #     encoding/json rejected them, so the two classified such a document
 #     differently (schema violation vs parse failure). The new decoder accepts
-#     them exactly as Python does. Compared here in section 11.
+#     them exactly as Python does. Compared here in section 11 ("malformed
+#     payloads and documents — the retired exclusions").
 #
 set -uo pipefail
 
@@ -139,6 +146,32 @@ fi
 dim "building $GO_BIN ..."
 if ! (cd "$REPO_ROOT" && "$GO" build -o "$GO_BIN" ./cmd/validate-intent); then
   red "error: go build failed"
+  exit 2
+fi
+
+# --------------------------------------------------------------------------- #
+# preflight: section cross-references
+# --------------------------------------------------------------------------- #
+#
+# This suite is cited BY NUMBER from other files -- notably
+# cmd/validate-intent/main.go, which tells a future maintainer not to hoist the
+# self-test `--json` refusal back above LoadSchema(), on the grounds that
+# section 7 ("OS-level failures") proves the hoist breaks parity. Those numbers
+# drift every time a slice inserts a section, and a citation that points at the
+# wrong section is a comment that has quietly stopped being evidence while
+# still reading like it.
+#
+# The check requires each citation to carry the section's NAME as well as its
+# number, and compares the two. Merely checking that section N exists would
+# have passed on every instance of this defect the repo has actually seen --
+# they all pointed at real sections -- which is the vacuous-green shape this
+# project keeps having to name.
+#
+# It runs BEFORE the comparisons rather than after, because its failure is a
+# documentation failure: you want to see it even on a run you abandon once the
+# first diff goes red.
+if ! "$PYTHON" "$REPO_ROOT/tests/parity/check_section_refs.py"; then
+  red "error: section cross-references are stale (see above)"
   exit 2
 fi
 
@@ -395,12 +428,13 @@ compare_in "$schema_root" "$schema_root/bin/validate-intent" \
 # The crossing of the two exit-2 paths, which neither one alone covers.
 #
 # The harness compares schema-load failures (just above) and it compares the
-# self-test `--json` refusal (section 12) — but until now never both at once,
-# and that is precisely where the port drifted: main.go originally refused
-# `--json` BEFORE loading the schema, so on a tree with no schemas/ it answered
-# "--json is not supported in self-test mode" plus the usage block where Python
-# answers "could not load schema ...". Same exit code, different stderr, and no
-# case in the suite that would notice. Both orderings are exercised here now.
+# self-test `--json` refusal (section 10, "self-test (bare invocation)") — but
+# until now never both at once, and that is precisely where the port drifted:
+# main.go originally refused `--json` BEFORE loading the schema, so on a tree
+# with no schemas/ it answered "--json is not supported in self-test mode" plus
+# the usage block where Python answers "could not load schema ...". Same exit
+# code, different stderr, and no case in the suite that would notice. Both
+# orderings are exercised here now.
 compare_in "$schema_root" "$schema_root/bin/validate-intent" \
   "$schema_root/bin/validate-intent-go" "missing schema + bare --json (schema load wins)" --json
 compare_in "$schema_root" "$schema_root/bin/validate-intent" \
@@ -541,7 +575,8 @@ JSON
 compare_root "$grown" "grown: minLength" lengths.json
 
 # A quantifier on a *grouped* anchor is legal in Python and in RE2 alike, so it
-# must survive the refusal that rejects the bare `^*` form (section 10). Both
+# must survive the refusal that rejects the bare `^*` form (section 16,
+# "Go-side refusals — schemas carrying a pattern RE2 cannot reproduce"). Both
 # documents are compared, so an over-refusal here is a loud failure rather than
 # a silently smaller accepted language: the port would exit 2 where the
 # reference answers.

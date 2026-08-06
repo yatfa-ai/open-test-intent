@@ -109,8 +109,13 @@ func run(argv []string) int {
 			// reaches this branch at all. Refusing earlier would still exit 2,
 			// but with different stderr — which is exactly the claim of
 			// reproduction this comment makes, broken in the one combination
-			// nobody diffs by hand. tests/parity/run_parity.sh section 8 now
-			// covers it (schema-less tree, bare `--json`).
+			// nobody diffs by hand. tests/parity/run_parity.sh section 7
+			// ("OS-level failures") now covers it (schema-less tree, bare
+			// `--json`). The section NAME is quoted alongside the number
+			// because that file renumbers as slices are added: if the two
+			// ever disagree the name is the one to trust, and
+			// tests/parity/check_section_refs.py fails the harness loudly
+			// when they do.
 			fmt.Fprintln(os.Stderr, "error: --json is not supported in self-test mode "+
 				"(it needs -, FILE... or --source FILE...)")
 			os.Stderr.WriteString(usage)
