@@ -14,7 +14,9 @@ __pycache__/
 /inspect-artifact
 *.test
 
-# Cross-compiled release artifacts from tests/cross/run_cross_build.sh. Four
-# binaries, one per roadmap target. Built on demand and verified in place; this
-# repo does not publish them, so nothing here is committed.
+# Cross-compiled artifacts for the four roadmap targets. Two producers write
+# here: tests/cross/run_cross_build.sh, which builds them unstamped and
+# verifies them in place, and scripts/build-release.sh, which builds them with
+# a version stamped in. Both are on-demand; this repo publishes neither, so
+# nothing under here is committed.
 /dist/

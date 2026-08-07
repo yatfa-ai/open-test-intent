@@ -48,20 +48,21 @@
 #
 # Excluded cases, and why
 # -----------------------
-# FOUR groups of inputs are deliberately NOT compared against Python. Each is
+# FIVE groups of inputs are deliberately NOT compared against Python. Each is
 # excluded for a stated reason, and each is still asserted against on the Go
 # side (see "Go-side refusals" at the bottom) so the exclusion cannot quietly
 # become "untested".
 #
-# (Four, and the arithmetic has never gone in one direction, so it is worth
+# (Five, and the arithmetic has never gone in one direction, so it is worth
 # spelling out: slice 1 listed five, slice 2 retired two of them — see RETIRED
 # EXCLUSIONS below — and slice 1's separate "unsupported schema construct"
 # group folded into group 3 when the `pattern` port landed, which left four.
 # Slice 5 (SPGD-131) then ADDED a group, when the Go binary gained an embedded
 # schema and stopped failing on trees the Python script still cannot run in,
 # which made five; slice 4 (SPGD-123) then retired the recursive-glob group
-# when `**` was implemented, which brings it back to four. The count is right;
-# it just does not arithmetic down from five in one step.)
+# when `**` was implemented, which brought it back to four. Slice 6 (SPGD-141)
+# then ADDED group 5, the `--version` flag, which makes five again. The count is
+# right; it just does not arithmetic down from five in one step.)
 #
 #   1. Non-UTF-8 input — the PROSE only.
 #      A file whose bytes do not decode raises UnicodeDecodeError in Python, and
@@ -136,6 +137,33 @@
 #      module root, and THIS HARNESS DOES NOT RUN IT — run `go test ./...`
 #      separately (./... , not ./cmd/... , or the root package's guard is
 #      skipped and the pin verifies nothing).
+#
+#   5. `--version`.
+#      A Go-only flag (slice 6, SPGD-141, cmd/validate-intent/version.go). The
+#      reference has no such flag: it reads `--version` as a filename, reports
+#      "no file(s) match '--version'" and exits 1 — the code the contract
+#      reserves for "at least one annotation is malformed". That is faithfully
+#      ported behaviour and NOT a defect to fix on either side; it is simply the
+#      wrong answer for a released binary being asked what it is. The natural CI
+#      preflight `validate-intent --version || echo "not installed"` reports a
+#      malformed annotation that does not exist.
+#
+#      This group is the ODD ONE OUT. Every other excluded surface is a REFUSAL
+#      — exit 2, a diagnostic on stderr, nothing on stdout. `--version` exits 0
+#      and writes to stdout, so assert_refusal fails it on all three counts and
+#      could not be reused. It is asserted by assert_version_line instead, in
+#      section 16 ("Go-side refusals — the excluded surfaces, still asserted"),
+#      whose header prose had to stop saying every member of it exits 2. That
+#      helper pins the exit code, the empty stderr, the single line, and — the
+#      point of the flag — that the identity token is neither empty nor a
+#      placeholder.
+#
+#      The crossing WITH `--help` is not excluded, because it does not diverge:
+#      `--help` wins over everything in both implementations, so the reference
+#      prints usage for `--help --version` exactly as the port does. It is
+#      compared byte-for-byte in section 7 ("--help") rather than asserted here,
+#      which is what keeps "--help still wins" from becoming a Go-side claim
+#      about the port checked only against itself.
 #
 # RETIRED EXCLUSIONS — slice 2 (SPGD-102) closed two of slice 1's five, and
 # slice 4 (SPGD-123) closed a third:
@@ -589,6 +617,17 @@ compare "--help"                   --help
 compare "-h"                       -h
 compare "--help wins over a file"  'examples/*.json' --help
 compare "--help wins over a missing file" nope.json -h
+# --help wins over --version too, in either order. This is a real COMPARISON and
+# not a Go-side assertion, which is the whole reason it is worth having:
+# `--version` is a Go-only flag (excluded group 6), so the tempting move is to
+# check it only against the port. But the reference has an answer here — its own
+# --help loop pre-empts the argument before anything reads it as a filename — so
+# the two agree byte-for-byte, and a port that let --version win would go red
+# against the oracle rather than against a hand-written expectation that could
+# encode the same mistake twice.
+compare "--help wins over --version"        --help --version
+compare "--help wins over --version (reversed)" --version --help
+compare "-h wins over --version"            --version -h
 
 # --------------------------------------------------------------------------- #
 # 8. OS-level failures
@@ -1251,10 +1290,22 @@ compare_root "$noann_root" "self-test: a fixture with no annotations is a mismat
 #
 # These are the inputs listed as excluded in the header. They are not compared
 # against Python (the outputs differ by design), but "excluded" must not mean
-# "unchecked": each has to exit 2 with a diagnostic on stderr. The failure this
-# guards against is a fall-through — `--source foo.rb` reaching adopter mode and
+# "unchecked": each is pinned here to what the port does instead.
+#
+# Most of them are REFUSALS — exit 2, a diagnostic on stderr, nothing on stdout
+# — and assert_refusal below is the helper for those. The failure that shape
+# guards against is a fall-through: `--source foo.rb` reaching adopter mode and
 # being reported as a filename that matched nothing, which looks like a real
 # answer.
+#
+# One is NOT a refusal, and the distinction is deliberate rather than an
+# oversight in the prose. `--version` (excluded group 6, slice 6 / SPGD-141) is
+# a Go-only surface that SUCCEEDS: exit 0, a line on stdout, nothing on stderr.
+# assert_refusal asserts the exact opposite of all three, so it could not be
+# stretched to cover it — assert_version_line below is its counterpart, and it
+# checks the same three streams with the expectations inverted, plus the one
+# thing a refusal never has to prove: that the payload on stdout actually says
+# something.
 echo
 echo "== excluded surfaces refuse loudly (Go only) =="
 assert_refusal() {
@@ -1318,6 +1369,185 @@ assert_not_refused "--source --json is implemented" --source 'examples/sources/*
 assert_not_refused "recursive glob is implemented" 'examples/**/*.json'
 assert_not_refused "recursive glob under --source is implemented" --source 'examples/**/*.rb'
 assert_not_refused "recursive glob, bare, is implemented" '**'
+
+# --------------------------------------------------------------------------- #
+# Excluded group 5: --version, the Go-only surface that SUCCEEDS
+# --------------------------------------------------------------------------- #
+#
+# assert_refusal above cannot be reused for this one. It asserts exit 2, a
+# non-empty stderr and an EMPTY stdout; `--version` is exit 0, an empty stderr
+# and a non-empty stdout, so it fails all three by design. This is the inverted
+# counterpart.
+#
+# It checks four things, and the fourth is the one that matters:
+#
+#   * exit 0 — the whole point of the flag. Before slice 6 (SPGD-141) this
+#     surface exited 1, the code the contract reserves for "at least one
+#     annotation is malformed", so `validate-intent --version || echo "not
+#     installed"` reported a content failure for a tool failure;
+#   * stderr empty — a version report is not a diagnostic;
+#   * stdout is exactly ONE line, matching
+#     `validate-intent <identity> (<goversion> <goos>/<goarch>)`;
+#   * the IDENTITY is the right one. Not merely "non-empty" — an assertion that
+#     the line is non-blank would pass on `validate-intent  (go1.22 linux/amd64)`
+#     and on a binary reporting an unexpanded build template, which is this
+#     project's house defect wearing a version number. The harness builds the
+#     port with a plain `go build` and no ldflags (see the build step at the top
+#     of this file), so tier 2 of resolveVersion applies and the identity must
+#     be exactly the HEAD revision git reports, optionally suffixed `-dirty`.
+#     That makes every run of this harness a live exercise of the VCS fallback
+#     rather than a one-off claim made once at review time.
+#
+# Where the expectation cannot be computed — no git, or not a checkout, which is
+# the extracted-tarball case where resolveVersion's third tier legitimately
+# answers `unknown` — the revision check degrades to "non-empty and not a
+# placeholder" and says so, rather than silently asserting less.
+echo
+echo "== --version reports an identity (Go only) =="
+
+want_identity=""
+if command -v git >/dev/null 2>&1 && git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+  want_identity="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
+fi
+if [ -z "$want_identity" ]; then
+  dim "note: not a git checkout — --version's identity is checked for shape only,"
+  dim "      not against a revision (resolveVersion's third tier applies here)"
+fi
+
+# assert_version_line_in <cwd> <bin> <label> [args...]
+assert_version_line_in() {
+  local cwd="$1" gobin="$2" label="$3"
+  shift 3
+
+  local rc
+  (cd "$cwd" && "$gobin" "$@" >"$WORK/go.out" 2>"$WORK/go.err")
+  rc=$?
+
+  local problems=()
+  [ "$rc" -eq 0 ] || problems+=("exit code: want 0, got $rc")
+  [ ! -s "$WORK/go.err" ] \
+    || problems+=("stderr: want empty, got '$(head -c 80 "$WORK/go.err")'")
+
+  local count
+  count="$(wc -l < "$WORK/go.out" | tr -d ' ')"
+  [ "$count" = "1" ] || problems+=("stdout: want exactly one line, got $count")
+
+  local line identity
+  line="$(head -1 "$WORK/go.out")"
+  if [[ "$line" =~ ^validate-intent\ ([^[:space:]]+)\ \(go[^[:space:]]+\ [^[:space:]/]+/[^[:space:]/]+\)$ ]]; then
+    identity="${BASH_REMATCH[1]}"
+    case "$identity" in
+      *'$'*|*'{'*|*'}'*|*'%!'*)
+        problems+=("identity '$identity' looks like an unexpanded build template") ;;
+    esac
+    if [ -n "$want_identity" ] \
+       && [ "$identity" != "$want_identity" ] \
+       && [ "$identity" != "$want_identity-dirty" ]; then
+      problems+=("identity: want '$want_identity' (optionally '-dirty'), got '$identity'")
+    fi
+  else
+    problems+=("stdout: '$line' is not 'validate-intent <identity> (<goversion> <goos>/<goarch>)'")
+  fi
+
+  if [ ${#problems[@]} -eq 0 ]; then
+    passed=$((passed + 1))
+    printf '  ok    %s (%s)\n' "$label" "$line"
+    return 0
+  fi
+
+  failed=$((failed + 1))
+  red "  FAIL  $label"
+  printf '        args: %s\n' "$*"
+  local problem
+  for problem in "${problems[@]}"; do
+    printf '        %s\n' "$problem"
+  done
+  return 1
+}
+
+# assert_version_line <label> [args...] — the common case: from the repo root.
+assert_version_line() {
+  local label="$1"
+  shift
+  assert_version_line_in "$REPO_ROOT" "$GO_BIN" "$label" "$@"
+}
+
+assert_version_line "--version"                              --version
+# Position independence, for the same reason --json has it: a user who has
+# learned that --json goes anywhere will write `validate-intent FILE --version`,
+# and a version flag that only worked in first position would answer that with
+# "no file(s) match '--version'" and exit 1 — the exact false red this surface
+# exists to remove.
+assert_version_line "--version after a file"                 'examples/*.json' --version
+assert_version_line "--version between two arguments"        nope.json --version also.json
+assert_version_line "--version with --json"                  --json --version
+assert_version_line "--version after --source"               --source 'examples/sources/*' --version
+# The flag is answered before anything reads a positional, so arguments that
+# would otherwise decide the exit code never get to. Two shapes, deliberately,
+# because they fail differently: a REFUSAL (exit 2, stdin mode) and a real
+# REPORT (exit 1 — since slice 4, SPGD-123, `examples/**/*.json` is expanded
+# rather than refused, and over this corpus it finds genuine failures). Both
+# must lose to --version, and asserting only the refusal would stop proving that
+# the moment a refusal is retired — which is exactly what happened to `**`.
+assert_version_line "--version ahead of the stdin refusal"   --version -
+assert_version_line "--version ahead of a recursive-glob report" --version 'examples/**/*.json'
+
+# The release-artifact case, and the one this whole slice is for: a copy
+# installed under a prefix with NO repo around it, invoked from an unrelated
+# working directory. Slice 5 (SPGD-131) is on record for exactly this gap — a
+# binary that worked in <repo>/bin/ and failed everywhere else — so `--version`
+# is proven where it will actually be run rather than only where it is built.
+installprefix="$WORK/installprefix"
+mkdir -p "$installprefix/bin"
+cp "$GO_BIN" "$installprefix/bin/validate-intent"
+if [ -e "$installprefix/schemas" ] || [ -e "$installprefix/examples" ]; then
+  failed=$((failed + 1))
+  red "  FAIL  install-prefix case — this tree must have no schemas/ or examples/, and it does"
+fi
+assert_version_line_in "/" "$installprefix/bin/validate-intent" \
+  "--version from an install prefix, run from /" --version
+
+# What the case above does NOT prove, and this one does.
+#
+# It is tempting to read "no schemas/ beside it, and it still answers" as
+# proving that `--version` is handled ABOVE LoadSchema in run(). It is not: the
+# port embeds the schema (SPGD-131), so the load SUCCEEDS on a schema-less tree
+# and the assertion would stay green with --version moved anywhere below it.
+#
+# The probe has to be a schema that EXISTS and cannot be loaded — the same
+# distinction excluded group 4 draws, for the same reason. On this tree
+# LoadSchema genuinely fails, so a `--version` that had drifted below it would
+# answer `could not load schema ...` on stderr with exit 2, and every check in
+# assert_version_line fires at once.
+#
+# This one is a Go-side assertion rather than a comparison because Python has no
+# --version to compare against. The reference's behaviour on this tree is
+# already pinned, as a comparison, in section 8 ("OS-level failures").
+versionbadschema_root="$WORK/version-badschema"
+mkdir -p "$versionbadschema_root/bin" "$versionbadschema_root/schemas"
+cp "$GO_BIN" "$versionbadschema_root/bin/validate-intent"
+printf '{ "type": "object",\n' > "$versionbadschema_root/schemas/open-test-intent.v1.json"
+# The premise, asserted rather than assumed: if this schema ever became loadable
+# the case below would still pass, while having stopped testing the ordering it
+# is named for.
+#
+# Written with a temp file rather than a pipe on purpose. This file runs under
+# `set -o pipefail`, so `binary ... | grep -q ...` takes the BINARY's exit code
+# — 2 here, by design — and the `if` reads that as "the pattern did not match"
+# no matter what the pattern did. The first draft of this check did exactly
+# that and reported the probe broken while the probe was fine.
+(cd "$versionbadschema_root" && "$versionbadschema_root/bin/validate-intent" \
+  thing.json >"$WORK/probe.out" 2>"$WORK/probe.err")
+if grep -q 'could not load schema' "$WORK/probe.err"; then
+  passed=$((passed + 1))
+  printf '  ok    the ordering probe'"'"'s schema really does fail to load\n'
+else
+  failed=$((failed + 1))
+  red "  FAIL  the ordering probe's schema loads fine — it can no longer prove the ordering"
+  printf '        stderr: %s\n' "$(head -1 "$WORK/probe.err")"
+fi
+assert_version_line_in "$versionbadschema_root" "$versionbadschema_root/bin/validate-intent" \
+  "--version is answered above LoadSchema (unloadable schema present)" --version
 
 # --------------------------------------------------------------------------- #
 # Excluded group 4: a tree with no schemas/ directory beside the binary
