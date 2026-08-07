@@ -34,8 +34,10 @@
 #
 #   * the native one is RUN — `--version` must exit 0 and report the requested
 #     semver. That is the only check that proves the flag reached the var;
-#   * every artifact is scanned for the literal version bytes, which is the
-#     cross-compiled stand-in for running it;
+#   * every artifact is scanned for the literal version bytes. This is a
+#     per-target corroborator of the check above, NOT an independent proof of
+#     it — a version that is a substring of something the toolchain already
+#     embeds passes it either way. See the comment on check 1;
 #   * every artifact is checked to be statically linked, because "static" is
 #     half of what the DoD asks for and a cgo-enabled build would still pass
 #     the two checks above.
@@ -143,14 +145,33 @@ for target in "${TARGETS[@]}"; do
 
   # --- check 1: the stamp is physically in the artifact ------------------- #
   #
-  # The cross-compiled stand-in for running it. This catches the linker's
-  # silent no-op on every target rather than only the one target that happens
-  # to match the host.
+  # A per-target CORROBORATOR of check 3, not an independent proof of it. The
+  # distinction matters, so it is stated rather than implied: this check can
+  # pass without verifying anything.
   #
-  # It is stronger than it first looks, thanks to dead-code elimination: a
-  # Version var that is stamped but never READ is dropped from the binary
-  # entirely, so its value never appears here either. Both halves of "the stamp
-  # landed and something uses it" fail this check, on all four targets.
+  # `grep -F "$VERSION"` asks whether some bytes appear, not whether THESE
+  # bytes came from the stamp. Any version that is a substring of something the
+  # toolchain already embeds matches whether or not `-X` landed --
+  # `scripts/build-release.sh 1.22.12` matches the `go1.22.12` build string in
+  # all four artifacts, and a semver that happens to sit inside the vcs.revision
+  # hex would do the same. A false PASS, which is the direction this repo cares
+  # about.
+  #
+  # It is kept anyway, for the case it does cover: check 3 can only run the
+  # artifact whose target matches the host, and a per-target `-X` failure that
+  # somehow spared the native build would show up here and nowhere else. When it
+  # is not defeated by a collision it is also stronger than it first looks,
+  # thanks to dead-code elimination -- a Version var that is stamped but never
+  # READ is dropped from the binary entirely, so its value never appears here
+  # either.
+  #
+  # What would make it independent: build each target a second time WITHOUT the
+  # ldflag and require the version bytes to be absent from that control. That is
+  # a real differential and it doubles the build. It is not done because `-X
+  # main.Version=` either resolves the symbol or does not, uniformly across
+  # targets -- so check 3, which RUNS the native artifact, already settles the
+  # question this one approximates. Read a failure here as real and a pass here
+  # as agreement, not as proof.
   if ! grep -qF -- "$VERSION" "$out"; then
     die "$out does not contain the string '$VERSION' — the -X stamp did not land.
        -X silently does nothing when the symbol path is wrong; check that

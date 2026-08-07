@@ -619,7 +619,7 @@ compare "--help wins over a file"  'examples/*.json' --help
 compare "--help wins over a missing file" nope.json -h
 # --help wins over --version too, in either order. This is a real COMPARISON and
 # not a Go-side assertion, which is the whole reason it is worth having:
-# `--version` is a Go-only flag (excluded group 6), so the tempting move is to
+# `--version` is a Go-only flag (excluded group 5), so the tempting move is to
 # check it only against the port. But the reference has an answer here — its own
 # --help loop pre-empts the argument before anything reads it as a filename — so
 # the two agree byte-for-byte, and a port that let --version win would go red
@@ -1299,7 +1299,7 @@ compare_root "$noann_root" "self-test: a fixture with no annotations is a mismat
 # answer.
 #
 # One is NOT a refusal, and the distinction is deliberate rather than an
-# oversight in the prose. `--version` (excluded group 6, slice 6 / SPGD-141) is
+# oversight in the prose. `--version` (excluded group 5, slice 6 / SPGD-141) is
 # a Go-only surface that SUCCEEDS: exit 0, a line on stdout, nothing on stderr.
 # assert_refusal asserts the exact opposite of all three, so it could not be
 # stretched to cover it — assert_version_line below is its counterpart, and it
