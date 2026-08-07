@@ -39,6 +39,16 @@ the two to agree. A renumbering that moves a section now breaks the build
 instead of rotting a comment, and a reader who hits a disagreement has the name
 -- the durable half -- to recover the intent from.
 
+WHAT ELSE IT REFUSES
+====================
+
+A line that reads like a section heading but carries no divider rule beneath it
+defines nothing, and every check here is blind to it. run_parity.sh carried one
+for three slices -- a stale "# 16." duplicate directly above the real "# 17."
+for the same section -- so the file named that section by two different numbers
+and nothing complained. That is now an error too: add the divider, or delete
+the leftover.
+
 USAGE
 =====
 
@@ -103,11 +113,27 @@ def read_lines(rel_path):
 def parse_sections(lines):
     """Return {number: (heading_text, line_no)} for the real sections."""
     sections = {}
+    orphans = []
     for index, line in enumerate(lines):
         match = HEADING_RE.match(line)
         if not match:
             continue
         if index + 1 >= len(lines) or not DIVIDER_RE.match(lines[index + 1]):
+            # A line that READS like a section heading but is not followed by
+            # the divider rule. Historically this was skipped in silence, and
+            # that silence is how run_parity.sh came to carry a stale duplicate
+            # heading ("# 16. Go-side refusals -- schemas carrying a pattern
+            # RE2 cannot reproduce") sitting directly above the real "# 17."
+            # for the same section: the file said two different numbers named
+            # that section, and the only thing stopping the wrong one from
+            # being believed was that this script happened to ignore it.
+            #
+            # That is the same defect class this script exists for -- a comment
+            # that has quietly stopped being true while still reading like
+            # evidence -- so it is now an error rather than a `continue`. The
+            # divider is cheap to add when the heading is real; when it is a
+            # leftover, deleting it is the fix.
+            orphans.append((index + 1, line))
             continue
         number, heading = match.group(1), match.group(2)
         if number in sections:
@@ -116,6 +142,19 @@ def parse_sections(lines):
                 % (SECTION_FILE, number, sections[number][1], index + 1)
             )
         sections[number] = (heading, index + 1)
+    if orphans:
+        fail_hard(
+            "%s has %d line(s) that read as a section heading but carry no\n"
+            "  divider rule beneath them, so they define nothing and are\n"
+            "  invisible to every check below:\n%s\n"
+            "  Add the '# ---- #' divider if the section is real, or delete\n"
+            "  the line if it is a leftover from a renumbering."
+            % (
+                SECTION_FILE,
+                len(orphans),
+                "\n".join("    %s:%d  %s" % (SECTION_FILE, no, text) for no, text in orphans),
+            )
+        )
     return sections
 
 

@@ -228,6 +228,25 @@ look green). Cases excluded from the comparison are listed at the top of the scr
 the reason for each.
 
 ```sh
+tests/parity/run_ruby_parity.sh   # the second oracle: the specguard-rspec gem
+```
+
+A third participant, run as the last section of `run_parity.sh` and also standalone. The
+[specguard-rspec](https://github.com/yatfa-ai/specguard-rspec) gem's `specguard-lint` is
+an independent implementation of the same protocol — written against `PROTOCOL.md`, not
+against this port — so its agreement is evidence the Python↔Go comparison cannot give on
+its own. It compares the surface the two tools share, normalising out the four report
+differences a CI linter is ratified to have against a fixture self-test, and cross-checks
+the annotation counts carried by the normalised-away lines so a clean corpus cannot pass
+by comparing nothing to nothing.
+
+It is a separate script because it must stay runnable **without a Go toolchain**, where
+`run_parity.sh` (which rebuilds the port first) cannot. Point it at a gem checkout with
+`SPECGUARD_RSPEC=/path/to/specguard-rspec`; without one it exits 2 and says nothing was
+compared, rather than passing. Two read-failure differences between the gem and the port
+are ratified rather than fixed, with the reasons and the assertions in the script's header.
+
+```sh
 go test ./...                # unit coverage for the Python-emulation layer,
                              # plus the SHA256 pin on the embedded schema
 ```
