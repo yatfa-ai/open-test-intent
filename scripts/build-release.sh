@@ -18,6 +18,28 @@
 # drift this script exists to prevent. One /dist/ entry in .gitignore covers
 # both trees.
 #
+# The same drift, turned inward: dist/release/ holds THIS run and nothing else
+# ------------------------------------------------------------------------------
+# The paragraph above closes the collision against the OTHER producer. The
+# likelier collision is this script's own previous run — same four filenames,
+# same directory, and the survivors are stale rather than merely unstamped, so
+# they are PLAUSIBLE, which is worse. Building in place meant a run that died
+# partway left the previous run's artifacts standing for the targets it never
+# reached: four files, the four canonical names, two semvers, and nothing on
+# disk to say which run wrote which. That reads exactly like a finished release.
+#
+# So the invariant is: everything is built in a staging directory and promoted
+# into $DIST in a single rename, only after every target has been built and
+# every check below has passed. dist/release/ therefore contains a complete,
+# fully verified set or is left exactly as it was — never a half of one. "The
+# artifacts exist" and "the release passed" become the same statement, which is
+# the property the rest of this header already asserts in prose.
+#
+# Promotion REPLACES $DIST rather than writing into it, which closes the second
+# shape of the same defect: a target dropped or renamed in TARGETS used to leave
+# its artifact behind to be published as current by every later run, under a
+# green summary line that counted only what that run built.
+#
 # This is the SOURCE half of releasing, deliberately separated from publishing.
 # It is not a CI workflow and it does not upload anything: a pipeline that
 # publishes artifacts which cannot identify themselves is the wrong order, so
@@ -152,18 +174,56 @@ if command -v git >/dev/null 2>&1 && git -C "$REPO_ROOT" rev-parse --git-dir >/d
   fi
 fi
 
-mkdir -p "$DIST"
+# --- where this run builds, and when it becomes the release ----------------- #
+#
+# See the header. Artifacts are staged and promoted in one move at the end, so
+# $DIST is never a partial or mixed-version set.
+#
+# Promoting means DELETING $DIST, so its value is checked before anything else
+# uses it. It is env-overridable and this is the one destructive thing here: a
+# path that is not a directory this build owns must be refused rather than
+# emptied. The parent is canonicalised first so a relative or dot-suffixed
+# override cannot slip past the comparisons.
+dist_base="$(basename "$DIST")"
+case "$dist_base" in
+  ""|"."|".."|"/") die "refusing '$DIST' as the artifact directory: it has no directory
+       name of its own to replace, and promoting a release deletes it." ;;
+esac
+mkdir -p "$(dirname "$DIST")" || die "could not create the parent of $DIST"
+dist_parent="$(cd "$(dirname "$DIST")" && pwd -P)" || die "could not resolve the parent of $DIST"
+DIST="$dist_parent/$dist_base"
+if [ "$DIST" = "$REPO_ROOT" ] || [ "$DIST" = "${HOME:-}" ] || [ "$DIST" = "/" ]; then
+  die "refusing '$DIST' as the artifact directory: promoting a release DELETES it,
+       so it must be a directory owned by the build, not the repo or a home."
+fi
+
+# A sibling of $DIST rather than mktemp's default, so promotion is a
+# same-filesystem rename — one atomic swap instead of a four-file copy that
+# could itself fail halfway and leave the exact state this staging is here to
+# prevent. It lands under the same /dist/ .gitignore entry as its destination.
+STAGE="$(mktemp -d "$dist_parent/.build-release.XXXXXX")" \
+  || die "could not create a staging directory beside $DIST"
 
 # The inspector is built for the HOST, up front, because it is a tool this
 # script runs rather than an artifact it ships. Building it before the loop
 # means a compile error in it surfaces once, as "could not check", instead of
 # four times as an apparent per-target failure.
 #
-# Into a temp dir rather than $DIST: everything in $DIST is a release artifact,
-# and a host-only helper sitting among four cross-compiled binaries under a
-# similar name is an invitation to publish it.
+# Into its own temp dir, kept out of BOTH $DIST and the staging dir: everything
+# staged is promoted verbatim, so a host-only helper sitting among four
+# cross-compiled binaries under a similar name is an invitation to publish it.
 INSPECT_DIR="$(mktemp -d)"
-trap 'rm -rf "$INSPECT_DIR"' EXIT
+
+cleanup() {
+  # The promotion below clears $STAGE once that directory has BECOME $DIST, so a
+  # successful run has nothing to remove here, and a failed one discards its
+  # half-built set rather than leaving it to be mistaken for a release.
+  if [ -n "${STAGE:-}" ]; then rm -rf "$STAGE"; fi
+  if [ -n "${INSPECT_DIR:-}" ]; then rm -rf "$INSPECT_DIR"; fi
+  return 0
+}
+trap cleanup EXIT
+
 INSPECT="$INSPECT_DIR/inspect-artifact"
 (cd "$REPO_ROOT" && "$GO" build -o "$INSPECT" "$INSPECTOR_PACKAGE") \
   || die "could not build $INSPECTOR_PACKAGE.
@@ -178,7 +238,7 @@ built=0
 for target in "${TARGETS[@]}"; do
   goos="${target%%/*}"
   goarch="${target##*/}"
-  out="$DIST/validate-intent-${goos}-${goarch}"
+  out="$STAGE/validate-intent-${goos}-${goarch}"
 
   dim "building $goos/$goarch ..."
   # -trimpath keeps absolute build paths out of the artifact, so the same
@@ -272,7 +332,10 @@ for target in "${TARGETS[@]}"; do
     native_verified=1
   fi
 
-  green "  ok    $out"
+  # The basename, not $out: the artifact is still in staging and is not the
+  # release until the promotion below, so naming either path here would claim
+  # something that is not true yet.
+  green "  ok    validate-intent-${goos}-${goarch}"
 done
 
 # The premise of the whole run, asserted rather than assumed. If no target
@@ -285,6 +348,25 @@ if [ "$native_verified" -ne 1 ]; then
        RUN to confirm the version stamp actually applied. Add the host's target
        to TARGETS, or run this on a host one of them matches."
 fi
+
+# --- promote: the staged set becomes the release, in one move --------------- #
+#
+# Only reached when every target built and every check above passed, which is
+# what makes "$DIST exists" mean "the release passed". $DIST is REPLACED, not
+# written into, so an artifact from a target no longer in TARGETS is retired
+# here rather than left behind to be published by every later run.
+chmod 755 "$STAGE" || die "could not set permissions on the staged artifacts"
+rm -rf "$DIST" || die "could not clear $DIST to promote this run's artifacts into it"
+if ! mv "$STAGE" "$DIST"; then
+  # Deliberately NOT cleaned up: these artifacts are built and fully verified,
+  # and the only thing that failed is putting them where they belong. Deleting
+  # them to keep the temp tree tidy would throw away the whole run.
+  staged="$STAGE"
+  STAGE=""
+  die "built and verified $built artifacts, but could not move them into $DIST.
+       They have been left in $staged."
+fi
+STAGE=""   # promoted — it IS $DIST now, and the EXIT trap must not remove it
 
 echo
 green "$built artifacts in $DIST, all reporting ${VERSION}${DIRTY}"
