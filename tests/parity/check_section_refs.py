@@ -61,10 +61,10 @@ WHAT ELSE IT REFUSES
 
 A line that reads like a section heading but carries no divider rule beneath it
 defines nothing, and every check here is blind to it. run_parity.sh carried one
-for three slices -- a stale "# 16." duplicate directly above the real "# 17."
-for the same section -- so the file named that section by two different numbers
-and nothing complained. That is now an error too: add the divider, or delete
-the leftover.
+for three slices -- a stale duplicate heading, numbered one lower, sitting
+directly above the real heading for the same section -- so the file named that
+section by two different numbers and nothing complained. That is now an error
+too: add the divider, or delete the leftover.
 
 THE SECOND SCHEME: EXCLUDED GROUPS
 ==================================
@@ -194,7 +194,25 @@ SELF_FILE = os.path.join("tests", "parity", "check_section_refs.py")
 # section after it, and nothing noticed, because a definition sample is not a
 # citation and no check looked at this file at all. It is the same rot in the
 # same file, one syntactic form over.
-SELF_DEFINITION_RE = re.compile(r'"#\s+(\d+)\.')
+#
+# BOTH quote characters, and the reason is this file's own house style rather
+# than completeness for its own sake. Where the illustrated text already
+# contains double quotes -- 'section N ("<name>")' is the shape most of these
+# take -- the surrounding quote flips to a single one, so an author writing a
+# heading sample by analogy with the citation samples above reaches for
+# '# N. <name>'. A double-quote-only pattern is green on exactly the spelling
+# the surrounding prose invites, which is the blind spot moving rather than
+# closing. This comment is checked by the falsifier pair in the commit that
+# widened it: plant the single-quoted form, the run must go red.
+#
+# The UNQUOTED form -- a bare `# 7. --help` in running prose -- is deliberately
+# NOT matched, and this is a known limit rather than an oversight. The quote is
+# the only thing separating an illustration from ordinary comment punctuation:
+# `# 1.22.12` in a note about the Go toolchain, or a numbered list in a
+# docstring, both match a bare pattern and neither is a definition sample. The
+# false-positive rate would make the check unrunnable, so the anchor stays and
+# the gap is written down here. Quote your illustrations.
+SELF_DEFINITION_RE = re.compile(r"""['"]#\s+(\d+)\.""")
 
 
 # A section heading: "# N. <name>", immediately followed by the divider rule.
@@ -271,11 +289,12 @@ def parse_sections(lines):
             # A line that READS like a section heading but is not followed by
             # the divider rule. Historically this was skipped in silence, and
             # that silence is how run_parity.sh came to carry a stale duplicate
-            # heading ("# 16. Go-side refusals -- schemas carrying a pattern
-            # RE2 cannot reproduce") sitting directly above the real "# 17."
-            # for the same section: the file said two different numbers named
-            # that section, and the only thing stopping the wrong one from
-            # being believed was that this script happened to ignore it.
+            # heading -- '# N. Go-side refusals -- schemas carrying a pattern
+            # RE2 cannot reproduce', numbered one lower -- sitting directly
+            # above the real heading for the same section: the file said two
+            # different numbers named that section, and the only thing stopping
+            # the wrong one from being believed was that this script happened
+            # to ignore it.
             #
             # That is the same defect class this script exists for -- a comment
             # that has quietly stopped being true while still reading like

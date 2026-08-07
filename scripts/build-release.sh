@@ -9,7 +9,14 @@
 # Cross-compiles cmd/validate-intent for the four targets the roadmap's DoD
 # names, with CGO_ENABLED=0 so each is a static binary that runs on
 # node:alpine, scratch, distroless — anywhere, with no Go toolchain and no libc
-# to match. Artifacts land in dist/.
+# to match. Artifacts land in dist/release/.
+#
+# Not dist/ itself, which is where tests/cross/run_cross_build.sh puts the
+# UNSTAMPED builds it verifies — and under exactly the same filenames. Sharing
+# the directory would let a cross-build run silently replace a release artifact
+# with a byte-different one reporting a different version, which is the quiet
+# drift this script exists to prevent. One /dist/ entry in .gitignore covers
+# both trees.
 #
 # This is the SOURCE half of releasing, deliberately separated from publishing.
 # It is not a CI workflow and it does not upload anything: a pipeline that
@@ -38,12 +45,36 @@
 #     per-target corroborator of the check above, NOT an independent proof of
 #     it — a version that is a substring of something the toolchain already
 #     embeds passes it either way. See the comment on check 1;
-#   * every artifact is checked to be statically linked, because "static" is
-#     half of what the DoD asks for and a cgo-enabled build would still pass
-#     the two checks above.
+#   * every artifact is handed to tests/cross/inspect-artifact, which reads the
+#     ELF/Mach-O headers and asserts it really is the OS and architecture it was
+#     asked to be, and really is free of a runtime the target machine would have
+#     to supply.
 #
 # A failure in any of these fails the whole script. There is no "warn and
 # continue" tier — a release you were warned about is a release you shipped.
+#
+#
+# Why the linkage check is delegated rather than done here with `ldd`
+# -------------------------------------------------------------------
+# It used to be `ldd`, grepping its output for a resolved shared-library line.
+# That check was real on the two linux targets and VACUOUS on the two darwin
+# ones: `ldd` cannot read a Mach-O file at all, so it printed a refusal, the
+# grep for `=>` found nothing in it, and the absence of evidence was scored as
+# evidence of absence. Half the release matrix passed a check that had not run
+# — this project's house defect, inside the script whose own header paragraph
+# is about exactly that.
+#
+# tests/cross/inspect-artifact (SPGD-171) is the checker without that gap:
+# debug/elf and debug/macho rather than a shell tool that only speaks one of
+# them, an emptiness assertion on linux and an OS-baseline dylib allowlist on
+# darwin, plus the OS/arch identity this script never checked at all. A release
+# script reaching into tests/ is deliberate: the alternative is a second,
+# weaker copy of it under scripts/, and two implementations of "is this
+# artifact what we think it is" is one more than can be kept honest.
+#
+# If the inspector cannot be built, this script STOPS rather than falling back.
+# "Could not check" is not a pass, and a release is the last place to start
+# making that trade.
 #
 #
 # The UNSTAMPED build is not a bug
@@ -61,7 +92,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 GO="${GO:-go}"
 PACKAGE="./cmd/validate-intent"
-DIST="${DIST:-$REPO_ROOT/dist}"
+DIST="${DIST:-$REPO_ROOT/dist/release}"
+INSPECTOR_PACKAGE="./tests/cross/inspect-artifact"
 
 # The four targets named by the roadmap's DoD. Adding a fifth here is all it
 # takes; every check below is per-target.
@@ -122,6 +154,22 @@ fi
 
 mkdir -p "$DIST"
 
+# The inspector is built for the HOST, up front, because it is a tool this
+# script runs rather than an artifact it ships. Building it before the loop
+# means a compile error in it surfaces once, as "could not check", instead of
+# four times as an apparent per-target failure.
+#
+# Into a temp dir rather than $DIST: everything in $DIST is a release artifact,
+# and a host-only helper sitting among four cross-compiled binaries under a
+# similar name is an invitation to publish it.
+INSPECT_DIR="$(mktemp -d)"
+trap 'rm -rf "$INSPECT_DIR"' EXIT
+INSPECT="$INSPECT_DIR/inspect-artifact"
+(cd "$REPO_ROOT" && "$GO" build -o "$INSPECT" "$INSPECTOR_PACKAGE") \
+  || die "could not build $INSPECTOR_PACKAGE.
+       Without it no artifact can be verified as the target it claims to be,
+       so nothing below would be checked. Refusing to build a release on that."
+
 HOST_OS="$("$GO" env GOHOSTOS)"
 HOST_ARCH="$("$GO" env GOHOSTARCH)"
 native_verified=0
@@ -178,29 +226,32 @@ for target in "${TARGETS[@]}"; do
        cmd/validate-intent/version.go still declares 'var Version' in package main."
   fi
 
-  # --- check 2: statically linked ----------------------------------------- #
+  # --- check 2: it is the target it claims, and needs no runtime ----------- #
   #
-  # CGO_ENABLED=0 is set above, but asserting the property beats trusting the
-  # flag: an import that pulls in cgo, or an inherited CGO_ENABLED from the
-  # environment, changes the answer without changing this file.
+  # CGO_ENABLED=0 and GOOS/GOARCH are set above, but asserting the properties
+  # beats trusting the flags: an import that pulls in cgo, or an inherited
+  # CGO_ENABLED from the environment, changes the answer without changing this
+  # file — and a check whose only evidence is a playback of its own env vars
+  # could not have caught that anyway.
   #
-  # `ldd` exits non-zero on a static binary and on a Mach-O one it cannot read
-  # at all, so its exit code says nothing useful. What is diagnostic is a
-  # resolved shared-library line ("libc.so.6 => /lib/..."), and its absence is
-  # the assertion.
+  # Delegated to tests/cross/inspect-artifact, which reads the ELF/Mach-O
+  # headers. See the header of this file for why this is not `ldd`: `ldd`
+  # cannot read Mach-O, so it scored both darwin targets as passing a check it
+  # had not performed.
   #
-  # Captured into a variable rather than piped into grep, because this script
-  # runs under `set -o pipefail`: `ldd x | grep -q '=>'` takes ldd's exit code,
-  # so a dynamically-linked binary whose ldd happened to exit non-zero would
-  # read as static and pass.
-  if command -v ldd >/dev/null 2>&1; then
-    ldd_output="$(ldd "$out" 2>&1 || true)"
-    if printf '%s\n' "$ldd_output" | grep -q '=>'; then
-      red "  ldd $out:"
-      printf '%s\n' "$ldd_output" | sed 's/^/    /'
-      die "$out is dynamically linked — it will not run on scratch/alpine"
-    fi
-  fi
+  # The inspector's exit codes are kept apart on purpose — it distinguishes
+  # "examined and wrong" (1) from "could not examine" (2), and collapsing them
+  # with `if !` would report an UNCHECKED artifact as a checked-and-wrong one.
+  # Both stop the release here, but they stop it saying different things.
+  inspect_rc=0
+  "$INSPECT" -os "$goos" -arch "$goarch" "$out" || inspect_rc=$?
+  case "$inspect_rc" in
+    0) ;;
+    1) die "$out is not the artifact it was asked to be (see above)" ;;
+    *) die "could not examine $out (see above).
+       The artifact may be perfectly correct; the inspector could not tell.
+       That is not a failure and it is certainly not a release." ;;
+  esac
 
   # --- check 3: the native artifact actually reports it -------------------- #
   #
