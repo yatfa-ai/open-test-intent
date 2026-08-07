@@ -6,6 +6,15 @@ __pycache__/
 # binary has to sit beside bin/validate-intent for their schema paths to agree.
 /bin/validate-intent-go
 /bin/validate-intent-go.exe
-# `go build ./...` from the repo root drops the binary here under its package name.
+# A single-package build from the repo root drops the binary here under its
+# package name, e.g. `go build ./cmd/validate-intent`. (`go build ./...` no
+# longer does: since tests/cross/inspect-artifact added a second main package,
+# Go discards the results of a multi-package build rather than writing them.)
 /validate-intent
+/inspect-artifact
 *.test
+
+# Cross-compiled release artifacts from tests/cross/run_cross_build.sh. Four
+# binaries, one per roadmap target. Built on demand and verified in place; this
+# repo does not publish them, so nothing here is committed.
+/dist/

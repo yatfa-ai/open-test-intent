@@ -259,6 +259,41 @@ go test ./...                # unit coverage for the Python-emulation layer,
                              # plus the SHA256 pin on the embedded schema
 ```
 
+```sh
+tests/cross/run_cross_build.sh   # the four release targets, built and verified
+```
+
+Cross-compiles `./cmd/validate-intent` for `linux/amd64`, `linux/arm64`, `darwin/amd64` and
+`darwin/arm64` with `CGO_ENABLED=0` into `dist/`, and then checks that each artifact is
+what it claims to be. The verification reads the **ELF and Mach-O headers** rather than the
+build settings the toolchain recorded, because those settings are a playback of the
+environment the script itself just exported — agreement with them proves nothing about the
+file. The recorded `CGO_ENABLED` is still read as corroboration, and it is not redundant:
+a cgo-enabled build of this binary links statically anyway (nothing in its import graph
+calls into C), so the header assertions pass on it and the recorded setting is the only
+thing that catches it.
+
+"Statically linked" is asserted differently per platform, because on darwin it cannot mean
+what it means on linux. Linux artifacts must have no `PT_INTERP` and no `DT_NEEDED` at all.
+macOS has no stable raw syscall ABI — the supported interface is libSystem — so every
+darwin Go binary links `/usr/lib/libSystem.B.dylib`, and any binary importing `os` also
+links `/usr/lib/libresolv.9.dylib`. Those are OS-provided and present on every install, so
+the darwin assertion is an allowlist bounded by that baseline: still runtime-free for an
+adopter, and still failing loudly on a cgo build or a third-party dylib.
+
+The script then runs the artifact for **this** host from an installed layout outside
+`bin/` — a prefix with no `schemas/` directory — and requires the good fixtures to exit `0`
+and the bad ones to exit `1`, which is the embedded fallback described above working
+end to end through a real binary for the first time. `cmd/validate-intent/fileio_schema_test.go`
+skips precisely this case when `os.Executable()` is unavailable, so it could not establish it.
+A second prefix that *does* carry an on-disk schema (deliberately malformed) must still exit `2`
+naming the path it derived; without that control, the first result would pass just as happily
+if the executable-relative lookup were deleted and the embedded copy became the only path.
+
+No toolchain, or no artifact this host can execute, exits `2` and says what went unchecked —
+never a pass. The script builds and verifies only: publishing, tagging and release-asset
+upload are deliberately not here, for the reason `.agents/README.md` gives.
+
 ## Versioning
 
 Current: **v1**. Breaking changes (renamed/removed fields, narrowed enums) bump to `v2` under a new
