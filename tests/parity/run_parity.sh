@@ -14,10 +14,26 @@
 # Any single mismatch fails the whole run with a non-zero exit and a unified
 # diff naming the case. There is no "close enough" tier.
 #
-# Python is the sole oracle here. specguard-rspec has no ported validator logic
-# yet, so there is no second implementation to cross-check against — which is
-# why the port is proven by differential testing rather than by a hand-written
-# expectation file that could encode the same mistake twice.
+# Python is the oracle here, and the port is proven by differential testing
+# against it rather than by a hand-written expectation file that could encode
+# the same mistake twice.
+#
+# This paragraph used to go on to say that specguard-rspec "has no ported
+# validator logic yet, so there is no second implementation to cross-check
+# against". That stopped being true: the gem's linter is complete end to end
+# (lib/specguard/rspec/{scanner,linter,schema}.rb), which makes it a genuinely
+# independent re-derivation of PROTOCOL.md §1 — written against the spec, not
+# against this port. It is now cross-checked, in tests/parity/run_ruby_parity.sh
+# and in section 19 ("the Ruby leg — specguard-lint vs. the port") below.
+#
+# That leg is a SEPARATE script rather than more sections in this file, for one
+# reason: this file refuses to start without a Go toolchain (it rebuilds the
+# port before comparing it, which is right for a leg whose subject is the Go
+# code), while the Ruby leg's subject is the GEM and has to stay runnable on a
+# Ruby machine with no Go installed. See that file's header for the four report
+# differences it normalises out, the two read-failure differences it ratifies,
+# and — because the normalisation deletes both sides' output for a clean file —
+# how it avoids comparing nothing to nothing and calling it parity.
 #
 #
 # Why the Go binary must live in bin/
@@ -1411,7 +1427,6 @@ assert_no_schema_tree "--source with no argument still refuses" \
   2 EMPTY "--source requires at least one FILE/glob argument" --source
 
 # --------------------------------------------------------------------------- #
-# 16. Go-side refusals — schemas carrying a pattern RE2 cannot reproduce
 # 17. Go-side refusals — schemas carrying a pattern RE2 cannot reproduce
 # --------------------------------------------------------------------------- #
 #
@@ -1566,6 +1581,54 @@ if command -v git >/dev/null 2>&1 && git -C "$REPO_ROOT" rev-parse --git-dir >/d
 else
   skipped=$((skipped + 1))
   red "  SKIP  not a git checkout — cannot verify the reference is unmodified"
+fi
+
+# --------------------------------------------------------------------------- #
+# 19. the Ruby leg — specguard-lint vs. the port
+# --------------------------------------------------------------------------- #
+#
+# The second oracle. Everything above proves the port reproduces PYTHON; this
+# runs tests/parity/run_ruby_parity.sh, which proves it agrees with an
+# implementation that was never written from it — the specguard-rspec gem's
+# linter, derived from PROTOCOL.md directly. Two implementations agreeing is
+# evidence; three, one of which shares no ancestry with the other two, is
+# considerably better evidence.
+#
+# It is run LAST and as a subprocess because it is a standalone script with its
+# own exit contract, its own participants, and its own reasons to be
+# unrunnable. Its output is passed through verbatim rather than summarised: the
+# reason a Ruby case failed is not recoverable from a count.
+#
+# Its three exit codes are mapped, deliberately, onto three different verdicts
+# here — 0 is one pass, 1 is one failure, and 2 is "a participant is missing or
+# cannot run". That last one is NOT folded into the pass count. It is a red
+# SKIP, it survives to the verdict line, and the verdict says the skipped cases
+# were not verified, because the one thing this harness must never do is report
+# a green on behalf of a leg that never ran.
+echo
+echo "== the Ruby leg (specguard-lint vs. the port) =="
+RUBY_LEG="$REPO_ROOT/tests/parity/run_ruby_parity.sh"
+if [ ! -x "$RUBY_LEG" ]; then
+  failed=$((failed + 1))
+  red "  FAIL  $RUBY_LEG is missing or not executable"
+else
+  # GO_BIN is passed explicitly so the leg compares the binary this run just
+  # built, rather than resolving one of its own.
+  if GO_BIN="$GO_BIN" "$RUBY_LEG"; then
+    passed=$((passed + 1))
+    printf '  ok    the Ruby leg passed (see its own output above)\n'
+  else
+    ruby_leg_rc=$?
+    if [ "$ruby_leg_rc" = "2" ]; then
+      skipped=$((skipped + 1))
+      red "  SKIP  the Ruby leg could not run (exit 2) — see its diagnostic above."
+      red "        Nothing about specguard-lint was verified by this run. Point"
+      red "        SPECGUARD_RSPEC at a specguard-rspec checkout to include it."
+    else
+      failed=$((failed + 1))
+      red "  FAIL  the Ruby leg reported a disagreement (exit $ruby_leg_rc)"
+    fi
+  fi
 fi
 
 # --------------------------------------------------------------------------- #
