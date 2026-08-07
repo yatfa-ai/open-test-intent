@@ -135,6 +135,10 @@ red()   { printf '\033[31m%s\033[0m\n' "$*"; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
 dim()   { printf '\033[2m%s\033[0m\n' "$*"; }
 
+# ok/bad are the SCORE. Each call moves the counters, so exactly one of them
+# stands for exactly one assertion — a multi-line failure explanation uses red
+# for its continuation lines, or one wrong assertion would inflate the failure
+# count and float the denominator of the report.
 ok()   { passed=$((passed + 1)); green "  PASS  $*"; }
 bad()  { failed=$((failed + 1)); red   "  FAIL  $*"; }
 
@@ -162,6 +166,11 @@ fi
 
 mkdir -p "$DIST" || { red "error: could not create $DIST"; exit 2; }
 
+# Resolve DIST to an absolute path before anything derives artifact paths from
+# it: the installed-layout section below changes cwd, and a relative DIST would
+# quietly stop pointing at the artifacts after that.
+DIST="$(cd "$DIST" && pwd -P)" || { red "error: could not resolve $DIST"; exit 2; }
+
 # --------------------------------------------------------------------------- #
 # build and verify each target
 # --------------------------------------------------------------------------- #
@@ -185,10 +194,25 @@ for target in "${TARGETS[@]}"; do
     continue
   fi
 
-  if ! "$INSPECT" -os "$goos" -arch "$goarch" "$artifact"; then
-    bad "$target — artifact is not what was asked for (see above)"
-    continue
-  fi
+  # inspect-artifact keeps "wrong" (1) and "could not examine" (2) distinct on
+  # purpose — see its main.go. `if ! ...` would flatten both into a failure and
+  # report an UNCHECKED target as a checked-and-wrong one, which is the same
+  # substitution this harness exists to refuse. So the two are kept apart here.
+  "$INSPECT" -os "$goos" -arch "$goarch" "$artifact"
+  case $? in
+    0) ;;
+    1)
+      bad "$target — artifact is not what was asked for (see above)"
+      continue
+      ;;
+    *)
+      red "error: could not examine $artifact (see above)"
+      red "       $target was NOT checked. The artifact may be perfectly correct;"
+      red "       the inspector could not tell. That is not a failure and it is"
+      red "       certainly not a pass."
+      exit 2
+      ;;
+  esac
 
   ok "$target — built and verified: $(basename "$artifact")"
   if [ "$goos" = "$HOST_OS" ] && [ "$goarch" = "$HOST_ARCH" ]; then
@@ -219,6 +243,21 @@ fi
 dim "installed-layout smoke test using $(basename "$built_host_artifact") ..."
 echo
 
+# cwd moves to $WORK — outside the checkout entirely — for every invocation
+# below, and fixtures are passed as absolute paths, so nothing here can be
+# resolved relative to the repo.
+#
+# The move is made ONCE, here, and checked. Doing it as `(cd "$WORK" && binary)`
+# per call would make a failed cd short-circuit to exit status 1 — which the
+# BAD_FIXTURES assertions would read as a legitimate "invalid" verdict from a
+# binary that never ran. A 1 that came from somewhere other than the validator
+# is precisely the substitution this section is otherwise careful about.
+cd "$WORK" || {
+  red "error: could not enter $WORK"
+  red "       The installed-layout claim was NOT checked."
+  exit 2
+}
+
 # --- prefix A: no schema on disk, so the embedded copy has to carry it ------ #
 PREFIX_A="$WORK/prefix-embedded"
 mkdir -p "$PREFIX_A/bin"
@@ -233,10 +272,11 @@ if [ -e "$PREFIX_A/schemas" ]; then
 fi
 ok "installed prefix has no schemas/ on disk (so a pass below means the embedded copy was used)"
 
-# cwd is $WORK, i.e. outside the repo entirely, and fixtures are passed as
-# absolute paths — so nothing here can be resolved relative to the checkout.
+# $? is now unambiguously the validator's own exit code: no `&&` in front of it
+# that could contribute a status of its own. cwd is already $WORK (asserted
+# above) and the fixture arrives as an absolute path.
 run_installed() {
-  (cd "$WORK" && "$PREFIX_A/bin/validate-intent" "$@" >"$WORK/out" 2>"$WORK/err")
+  "$PREFIX_A/bin/validate-intent" "$@" >"$WORK/out" 2>"$WORK/err"
   echo $?
 }
 
@@ -269,16 +309,16 @@ mkdir -p "$PREFIX_B/bin" "$PREFIX_B/schemas"
 cp "$built_host_artifact" "$PREFIX_B/bin/validate-intent"
 printf '{ this is not valid json' > "$PREFIX_B/schemas/open-test-intent.v1.json"
 
-(cd "$WORK" && "$PREFIX_B/bin/validate-intent" "$REPO_ROOT/$GOOD_FIXTURE" >"$WORK/out" 2>"$WORK/err")
+"$PREFIX_B/bin/validate-intent" "$REPO_ROOT/$GOOD_FIXTURE" >"$WORK/out" 2>"$WORK/err"
 rc=$?
 if [ "$rc" != "2" ]; then
   bad "control: prefix with a malformed on-disk schema exits $rc, want 2"
-  bad "         The executable-relative lookup did not run, so the embedded-schema"
-  bad "         passes above no longer prove a FALLBACK — they may just be the only path."
+  red "        The executable-relative lookup did not run, so the embedded-schema"
+  red "        passes above no longer prove a FALLBACK — they may just be the only path."
   sed 's/^/        /' "$WORK/err" >&2
 elif ! grep -qF "$PREFIX_B/schemas/open-test-intent.v1.json" "$WORK/err"; then
   bad "control: exit 2 as expected, but the diagnostic never names the derived path"
-  bad "         $PREFIX_B/schemas/open-test-intent.v1.json"
+  red "        $PREFIX_B/schemas/open-test-intent.v1.json"
   sed 's/^/        /' "$WORK/err" >&2
 else
   ok "control: on-disk schema is still preferred (exit 2 naming the derived path)"
