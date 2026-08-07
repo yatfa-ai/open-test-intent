@@ -9,6 +9,11 @@
 //	<no arguments>     self-test           (slice 2)
 //	--source --json    machine-readable    (slice 2)
 //
+// Every glob-expanding mode above accepts Python's recursive `**` (slice 4,
+// SPGD-123). It expands to the same set of files the reference's
+// `glob.glob(pattern, recursive=True)` does, rather than being downgraded to a
+// single `*` — see cmd/validate-intent/pyglob.go.
+//
 // Still a later slice: stdin (`-`), and `--json` for the stdin and FILE... modes.
 // They are not silently absent — each refuses with exit 2 and a diagnostic
 // naming itself. That matters more than it looks. Python's main() falls through
@@ -25,7 +30,7 @@ import (
 )
 
 // usage is compared byte-for-byte against the reference's USAGE
-// (bin/validate-intent) by tests/parity/run_parity.sh, in section 6 ("--help")
+// (bin/validate-intent) by tests/parity/run_parity.sh, in section 7 ("--help")
 // and wherever a refusal prints the usage block.
 //
 // KNOWN-MISLEADING LAST LINE, and why it is still here.
@@ -37,7 +42,7 @@ import (
 // and governs nothing.
 //
 // Because the two texts are compared byte-for-byte, they can only move
-// together: editing this constant alone fails section 6 ("--help") and every
+// together: editing this constant alone fails section 7 ("--help") and every
 // refusal that prints the usage block, which is deleting real coverage to fix
 // a sentence.
 //
@@ -106,11 +111,6 @@ func run(argv []string) int {
 		// answer a --json request with prose the consumer then fails to parse.
 		return notImplemented("--json output for adopter (FILE...) mode")
 	}
-	for _, arg := range positional {
-		if hasRecursiveComponent(arg) {
-			return notImplemented("recursive `**` glob patterns, as in " + PyReprString(arg))
-		}
-	}
 
 	schema, schemaPath, err := LoadSchema()
 	if err != nil {
@@ -133,7 +133,7 @@ func run(argv []string) int {
 			// reaches this branch at all. Refusing earlier would still exit 2,
 			// but with different stderr — which is exactly the claim of
 			// reproduction this comment makes, broken in the one combination
-			// nobody diffs by hand. tests/parity/run_parity.sh section 7
+			// nobody diffs by hand. tests/parity/run_parity.sh section 8
 			// ("OS-level failures") covers it: a tree whose schema is present
 			// but MALFORMED, invoked with a bare `--json`.
 			//
