@@ -178,6 +178,59 @@
 #       files named alongside a missing one are still fully checked by both.
 #
 #
+# The THIRD leg: the gem's own Go backend
+# ---------------------------------------
+# Everything above compares two IMPLEMENTATIONS. Section 8 compares two
+# BACKENDS of the same implementation: `specguard-lint` with
+# SPECGUARD_VALIDATE_INTENT pointing at the port, against `specguard-lint` with
+# it unset. That is the slice the roadmap's final clause actually needs — "the
+# Ruby gem invoking it for linting" — and the claim it makes is stronger than
+# anything above, because there is nothing to normalise away: the leading
+# selection line, the trailing summary line, every FAIL block, stderr and the
+# exit code must be IDENTICAL, byte for byte, with no rules applied at all.
+#
+# That strength is exactly why it needs its own anti-vacuity guard, and it is a
+# different one from the counts above. A gem checkout that predates
+# SPECGUARD_VALIDATE_INTENT does not fail when handed it — it IGNORES it, runs
+# the Ruby path twice, and compares two identical reports to a perfect green.
+# So the preflight below points the variable at a path that does not exist and
+# requires exit 2: a gem that honours the variable refuses, and a gem that does
+# not answers 0. Nothing else in this file can tell those two apart.
+#
+# The gem retains its Ruby path deliberately (see SpecGuard::RSpec::
+# ValidatorBackend) — the port is a build artifact with no release, so a
+# default-on shell-out would break every existing user — which is why "the two
+# backends agree" is the property under test rather than "the Ruby code is
+# gone".
+#
+# THREE ENUMERATED DIFFERENCES, all of them read-failure PROSE, all of them
+# asserted in section 8b rather than discovered:
+#
+#   (i)   a file that is not valid UTF-8 — ratified difference (a) again, now
+#         seen from inside the gem: with the backend on, the gem emits the
+#         PORT's decoder text verbatim instead of `Scanner.scan_text`'s fixed
+#         string. Same classification, same prefix, same counts, same exit.
+#   (ii)  a path that does not exist, and (iii) a path that is not a regular
+#         file. Both are the port's `no-match` kind, which has no
+#         `Finding::KIND_*` of its own and folds into KIND_READ. The gem cannot
+#         name the errno the Ruby path names (`No such file or directory @
+#         rb_sysopen - ...`, `Is a directory @ io_fread - ...`) because the
+#         backend never told it one, so it says `could not read file: no file
+#         at this path` in its own words. Everything else — the stream, the
+#         `FAIL <file> — could not read file: ` prefix, the "N file(s) could
+#         not be read" clause, the exit code — is identical.
+#
+# Each is asserted to STILL DIFFER, like the ratifications above, so closing one
+# fails this file rather than leaving a stale exclusion.
+#
+# WHAT SECTION 8 PROVES THAT NOTHING ELSE DOES: the gem's arguments are PATHS
+# and the port's are GLOB PATTERNS, so the backend escapes every path with the
+# port of Python's `glob.escape` before handing it over. `bracket[1]_spec.rb`
+# and `star*_spec.rb` are in the corpus below for that reason alone — unescaped,
+# the first matches nothing and the second can match OTHER files, and both
+# failures look like a clean run.
+#
+#
 # Invocation
 # ----------
 #     tests/parity/run_ruby_parity.sh
@@ -218,6 +271,11 @@ passed=0
 failed=0
 skipped=0
 annotations_compared=0
+# Section 8's own non-vacuity counter, kept separate from the one above so the
+# two legs cannot borrow each other's evidence: a Go-vs-Ruby run that compared
+# 300 annotations says nothing about whether the gem's two BACKENDS were ever
+# pointed at one.
+backend_annotations_compared=0
 
 red()   { printf '\033[31m%s\033[0m\n' "$*"; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
@@ -307,6 +365,55 @@ fi
 dim "gem:  $GEM_ROOT"
 dim "port: $GO_BIN"
 
+# The gem's Go BACKEND, which is a third participant and needs its own probe.
+#
+# A gem checkout that predates SPECGUARD_VALIDATE_INTENT does not fail when it
+# is set — it ignores it. Section 8 would then run the Ruby path twice, compare
+# two identical reports, and report perfect agreement having exercised no Go at
+# all. That is this project's house defect ("vacuous green") in the one place
+# the rest of the file cannot see, because section 8's whole claim is that two
+# runs produce identical bytes.
+#
+# So: point the variable at a path that does not exist. A gem that honours it
+# refuses with exit 2 and `specguard-lint: error: ...`; a gem that ignores it
+# lints the file and answers 0. Then point it at the real binary and require a
+# clean 0 on the same known-good file the gem preflight used, so "the backend is
+# wired" and "the backend works" are two separate findings.
+SPECGUARD_VALIDATE_INTENT="$WORK/there-is-no-binary-here" \
+  "$RUBY" -I"$GEM_ROOT/lib" "$GEM_LINT" "$WORK/preflight_spec.rb" \
+  >"$WORK/backend_probe.out" 2>"$WORK/backend_probe.err"
+backend_probe_rc=$?
+if [ "$backend_probe_rc" != "2" ] || ! grep -q '^specguard-lint: error: ' "$WORK/backend_probe.err"; then
+  red "error: the gem at $GEM_ROOT does not honour SPECGUARD_VALIDATE_INTENT"
+  red "       pointed at a path that does not exist it exited $backend_probe_rc,"
+  red "       where a gem carrying the Go backend exits 2 with"
+  red "       'specguard-lint: error: ...' on stderr."
+  red "       This checkout predates SpecGuard::RSpec::ValidatorBackend, or the"
+  red "       backend no longer refuses a missing binary. Either way section 8"
+  red "       would compare the Ruby path against itself and call it parity."
+  if [ -s "$WORK/backend_probe.err" ]; then
+    sed 's/^/       /' "$WORK/backend_probe.err"
+  fi
+  red "       nothing was compared — this is NOT a pass"
+  exit 2
+fi
+
+SPECGUARD_VALIDATE_INTENT="$GO_BIN" \
+  "$RUBY" -I"$GEM_ROOT/lib" "$GEM_LINT" "$WORK/preflight_spec.rb" \
+  >"$WORK/backend_live.out" 2>"$WORK/backend_live.err"
+backend_live_rc=$?
+if [ "$backend_live_rc" != "0" ] || ! grep -q '^specguard-lint: checked ' "$WORK/backend_live.out"; then
+  red "error: the gem cannot run $GO_BIN as its validator backend"
+  red "       it exited $backend_live_rc on a file carrying one valid annotation,"
+  red "       where the only correct answer is 0 and a summary line."
+  if [ -s "$WORK/backend_live.err" ]; then
+    sed 's/^/       /' "$WORK/backend_live.err"
+  fi
+  red "       nothing was compared — this is NOT a pass"
+  exit 2
+fi
+dim "backend: the gem honours SPECGUARD_VALIDATE_INTENT and runs $GO_BIN"
+
 # --------------------------------------------------------------------------- #
 # the normalisation, in one place
 # --------------------------------------------------------------------------- #
@@ -344,9 +451,25 @@ run_go() {
 run_ruby() {
   local name="$1"
   shift
-  (cd "$REPO_ROOT" && "$RUBY" -I"$GEM_ROOT/lib" "$GEM_LINT" "$@" \
+  # SPECGUARD_VALIDATE_INTENT is blanked, not merely left alone. Blank means
+  # unset to the gem (SpecGuard::RSpec::ValidatorBackend.resolve, following
+  # Configuration's blank_to_nil idiom), and an operator who happened to have
+  # the backend exported would otherwise make every case above compare the port
+  # against ITSELF through the gem — a green run that proved nothing about the
+  # Ruby implementation this leg exists to check.
+  (cd "$REPO_ROOT" && SPECGUARD_VALIDATE_INTENT= "$RUBY" -I"$GEM_ROOT/lib" "$GEM_LINT" "$@" \
     >"$WORK/$name.rb.out" 2>"$WORK/$name.rb.err")
   printf '%s' "$?" > "$WORK/$name.rb.rc"
+}
+
+# run_ruby_go <name> [args...] — the same gem, same directory, same arguments,
+# with its Go backend switched on. Writes $WORK/<name>.rbgo.{out,err,rc}.
+run_ruby_go() {
+  local name="$1"
+  shift
+  (cd "$REPO_ROOT" && SPECGUARD_VALIDATE_INTENT="$GO_BIN" "$RUBY" -I"$GEM_ROOT/lib" "$GEM_LINT" "$@" \
+    >"$WORK/$name.rbgo.out" 2>"$WORK/$name.rbgo.err")
+  printf '%s' "$?" > "$WORK/$name.rbgo.rc"
 }
 
 # --------------------------------------------------------------------------- #
@@ -466,6 +589,74 @@ compare() {
   if [ -s "$WORK/$name.go.err" ]; then
     printf '        --- the port'"'"'s stderr ---\n'
     sed 's/^/        /' "$WORK/$name.go.err"
+  fi
+  return 1
+}
+
+# compare_backends <label> [files...] — the SAME gem, twice, with and without
+# its Go backend. No normalisation: this pair has no ratified differences to
+# remove, so every byte of stdout, every byte of stderr and the exit code must
+# be identical. Anything that survives here survives because it is genuinely the
+# same, not because a rule deleted it.
+compare_backends() {
+  local label="$1"
+  shift
+  local name="backend$((passed + failed))"
+
+  run_ruby    "$name" "$@"
+  run_ruby_go "$name" "$@"
+
+  local rb_rc go_rc
+  rb_rc="$(cat "$WORK/$name.rb.rc")"
+  go_rc="$(cat "$WORK/$name.rbgo.rc")"
+
+  local problems=()
+
+  # Exit 2 from either side means the gem checked nothing. On the backend side
+  # that is the whole failure class this slice had to get right — a missing or
+  # broken binary must never be mistaken for a verdict — so it is named rather
+  # than left to show up as an empty-report diff.
+  [ "$rb_rc" = "2" ] && problems+=("the gem exited 2 on its Ruby path — it checked nothing")
+  [ "$go_rc" = "2" ] && problems+=("the gem exited 2 with the Go backend — it checked nothing (see its stderr below)")
+
+  [ "$rb_rc" = "$go_rc" ] || problems+=("exit code: ruby=$rb_rc backend=$go_rc")
+  cmp -s "$WORK/$name.rb.out" "$WORK/$name.rbgo.out" || problems+=("stdout differs")
+  cmp -s "$WORK/$name.rb.err" "$WORK/$name.rbgo.err" || problems+=("stderr differs")
+
+  # Non-vacuity, the same argument the counts make for the Go-vs-Ruby leg: two
+  # runs that both died before printing anything compare equal. The summary
+  # line has to be there, and the corpus has to have contributed annotations.
+  local rb_c go_c
+  if ! rb_c="$(ruby_counts "$WORK/$name.rb.out")"; then
+    problems+=("the Ruby path printed no summary line — nothing was checked")
+    rb_c=""
+  fi
+  if ! go_c="$(ruby_counts "$WORK/$name.rbgo.out")"; then
+    problems+=("the Go backend printed no summary line — nothing was checked")
+    go_c=""
+  fi
+
+  if [ ${#problems[@]} -eq 0 ]; then
+    backend_annotations_compared=$((backend_annotations_compared + ${rb_c%% *}))
+    passed=$((passed + 1))
+    printf '  ok    %s\n' "$label"
+    return 0
+  fi
+
+  failed=$((failed + 1))
+  red "  FAIL  $label"
+  printf '        files: %s\n' "$*"
+  local problem
+  for problem in "${problems[@]}"; do
+    printf '        %s\n' "$problem"
+  done
+  if ! cmp -s "$WORK/$name.rb.out" "$WORK/$name.rbgo.out"; then
+    printf '        --- stdout (-ruby +backend) ---\n'
+    diff -u "$WORK/$name.rb.out" "$WORK/$name.rbgo.out" | tail -n +3 | sed 's/^/        /'
+  fi
+  if ! cmp -s "$WORK/$name.rb.err" "$WORK/$name.rbgo.err"; then
+    printf '        --- stderr (-ruby +backend) ---\n'
+    diff -u "$WORK/$name.rb.err" "$WORK/$name.rbgo.err" | tail -n +3 | sed 's/^/        /'
   fi
   return 1
 }
@@ -925,7 +1116,327 @@ fi
 chmod 644 "$UNREADABLE" 2>/dev/null
 
 # --------------------------------------------------------------------------- #
-# 8. the participants are unmodified
+# 8. the gem's two backends — the roadmap's final clause
+# --------------------------------------------------------------------------- #
+#
+# See "The THIRD leg: the gem's own Go backend" in the header. Everything above
+# compares two implementations and normalises four ratified report differences
+# out of the way; this compares ONE implementation against itself with its
+# validator swapped, so there is nothing to normalise and the claim is exact
+# bytes.
+#
+# The participants were proven live in the preflight: a gem that ignores
+# SPECGUARD_VALIDATE_INTENT exits 2 there and never reaches this section, which
+# is the only thing standing between "the backends agree" and "the Ruby path was
+# run twice".
+echo
+echo "== 8a. the gem's Go backend == the gem's Ruby path, byte for byte =="
+
+# Two paths whose names are GLOB METACHARACTERS. The gem's arguments are paths;
+# the port's are patterns; the backend escapes every one before handing it over
+# (SpecGuard::RSpec::ValidatorBackend.escape_glob, the port of Python's
+# glob.escape). Without that escaping the first name is read as a character
+# class and matches nothing, and the second is read as a wildcard that can match
+# OTHER files — a linter checking something nobody asked about, or nothing at
+# all, in both cases reporting itself calmly. Neither failure is visible without
+# a file named like this in the corpus.
+#
+# They are deliberately NOT in the Go-vs-Ruby sections above: there the
+# path-vs-pattern difference is the ratified one, and comparing them would be
+# asserting the disagreement this file already documents.
+printf '# @intent: { entity: "Order", action: "create", behavior: "creates an order from a valid cart", layer: "unit" }\n' \
+  > "$SRC/bracket[1]_spec.rb"
+printf '# @intent: { entity: "Order", action: "create", behavior: "creates an order from a valid cart", layer: "unit" }\n# @intent: { entity: "Order" }\n' \
+  > "$SRC/star*_spec.rb"
+printf '# @intent: { entity: "Cart", action: "empty", behavior: "empties the cart when the order is placed", layer: "unit" }\n' \
+  > "$SRC/q?_spec.rb"
+
+# Every hazard file section 4 built, plus the three above, plus anything a later
+# edit adds to $SRC — enumerated with `find` rather than named, for the same
+# reason section 2's corpus is: a list that has to be maintained by hand goes
+# stale silently, and a file it forgets is uncovered without ever being reported
+# as uncovered.
+#
+# $BAD_UTF8 is the one exclusion, by VARIABLE rather than by name, because it is
+# section 8b's subject — an enumerated difference, not an agreement. $MISSING
+# was deleted and `find -type f` skips it for free; $UNREADABLE had its mode
+# restored at the end of section 7 and belongs here.
+backend_cases=()
+while IFS= read -r -d '' hazard; do
+  [ "$hazard" = "$BAD_UTF8" ] && continue
+  backend_cases+=("$hazard")
+done < <(find "$SRC" -type f -print0 | sort -z)
+
+if [ ${#backend_cases[@]} -eq 0 ]; then
+  fail_case "no hazard files to compare the backends over" \
+    "\$SRC is empty, which means sections 4-7 stopped building their fixtures"
+else
+  for hazard in "${backend_cases[@]}"; do
+    compare_backends "${hazard#"$SRC"/}" "$hazard"
+  done
+fi
+
+# The shipped corpus, one file at a time and then all at once — the same inputs
+# section 2 and section 3 put through the port, now put through the gem twice.
+for rel in "${corpus[@]}"; do
+  compare_backends "$rel" "$rel"
+done
+compare_backends "the whole corpus in one invocation" "${corpus[@]}"
+compare_backends "valid then invalid" \
+  examples/sources/order_spec.rb examples/sources/invalid/broken_intent_spec.rb
+compare_backends "invalid then valid" \
+  examples/sources/invalid/broken_intent_spec.rb examples/sources/order_spec.rb
+compare_backends "the same file twice (not de-duplicated)" \
+  examples/sources/invalid/broken_intent_spec.rb examples/sources/invalid/broken_intent_spec.rb
+# All three metacharacter names in one invocation, so the escaping is exercised
+# where one bad pattern could swallow its neighbours.
+compare_backends "three glob-metacharacter names at once" \
+  "$SRC/bracket[1]_spec.rb" "$SRC/star*_spec.rb" "$SRC/q?_spec.rb"
+
+# --------------------------------------------------------------------------- #
+echo
+echo "== 8b. the three enumerated backend differences =="
+#
+# All three are read-failure PROSE and nothing else. Each asserts the shared
+# half (classification, stream, prefix, counts, exit code) and asserts that the
+# text still differs, so closing one fails this file and retires the entry
+# rather than leaving it to rot.
+
+# backend_read_difference <label> <path> <expected-backend-tail-or-empty>
+#
+# Runs the gem both ways over one unreadable path and requires: exit 1 on both,
+# exactly one FAIL line on both, the same `FAIL <path> — could not read file: `
+# prefix on both, a 0-annotations/0-malformed/1-unread summary on both, empty
+# stderr on both — and DIFFERENT tails.
+backend_read_difference() {
+  local label="$1" path="$2" expected_tail="$3"
+  local name="backendread$((passed + failed))"
+  # Published so a caller can reach the files this case produced without
+  # re-deriving the counter arithmetic, which changes the moment a pass_case or
+  # fail_case is added anywhere above.
+  LAST_BACKEND_READ_NAME="$name"
+
+  run_ruby    "$name" "$path"
+  run_ruby_go "$name" "$path"
+
+  local rb_rc go_rc rb_line go_line prefix rb_tail go_tail rb_c go_c
+  rb_rc="$(cat "$WORK/$name.rb.rc")"
+  go_rc="$(cat "$WORK/$name.rbgo.rc")"
+  rb_line="$(grep '^FAIL  ' "$WORK/$name.rb.out" | head -n 1)"
+  go_line="$(grep '^FAIL  ' "$WORK/$name.rbgo.out" | head -n 1)"
+  prefix="FAIL  $path — could not read file: "
+  rb_tail="${rb_line#"$prefix"}"
+  go_tail="${go_line#"$prefix"}"
+
+  local problems=()
+  [ "$rb_rc" = "1" ] || problems+=("the Ruby path did not exit 1 (got $rb_rc)")
+  [ "$go_rc" = "1" ] || problems+=("the Go backend did not exit 1 (got $go_rc) — a broken backend must be 2, an unreadable file 1")
+  [ "$rb_tail" != "$rb_line" ] || problems+=("the Ruby path's line is not '$prefix...': $rb_line")
+  [ "$go_tail" != "$go_line" ] || problems+=("the Go backend's line is not '$prefix...': $go_line")
+  [ -n "$rb_tail" ] || problems+=("the Ruby path gave no reason at all")
+  [ -n "$go_tail" ] || problems+=("the Go backend gave no reason at all")
+  [ "$rb_line" != "$go_line" ] \
+    || problems+=("the two agree byte-for-byte now — RETIRE this entry and use compare_backends instead (header, THIRD leg)")
+  [ "$(count_matching "$WORK/$name.rb.out" '^FAIL  ')" = "1" ] \
+    || problems+=("the Ruby path reported more than the one read failure")
+  [ "$(count_matching "$WORK/$name.rbgo.out" '^FAIL  ')" = "1" ] \
+    || problems+=("the Go backend reported more than the one read failure")
+  cmp -s /dev/null "$WORK/$name.rb.err" || problems+=("the Ruby path wrote to stderr; findings belong on stdout")
+  cmp -s /dev/null "$WORK/$name.rbgo.err" || problems+=("the Go backend wrote to stderr; findings belong on stdout")
+  # The counts are where "same classification" stops being a claim about prose.
+  # An unread file contributes no annotation on either side (CLI#summary_line),
+  # and the backend's `read`/`no-match` findings have to land in the same clause.
+  if rb_c="$(ruby_counts "$WORK/$name.rb.out")"; then
+    [ "$rb_c" = "0 0 1" ] || problems+=("the Ruby path's summary should be [0 0 1] — got [$rb_c]")
+  else
+    problems+=("the Ruby path printed no summary line")
+  fi
+  if go_c="$(ruby_counts "$WORK/$name.rbgo.out")"; then
+    [ "$go_c" = "0 0 1" ] || problems+=("the Go backend's summary should be [0 0 1] — got [$go_c]")
+  else
+    problems+=("the Go backend printed no summary line")
+  fi
+  # An expected tail is given where the gem OWNS the wording (the no-match
+  # family) and omitted where it passes the port's text straight through.
+  if [ -n "$expected_tail" ] && [ "$go_tail" != "$expected_tail" ]; then
+    problems+=("the Go backend's wording changed: expected '$expected_tail', got '$go_tail'")
+  fi
+
+  if [ ${#problems[@]} -eq 0 ]; then
+    pass_case "$label"
+    dim "        ruby path:  $rb_tail"
+    dim "        go backend: $go_tail"
+  else
+    fail_case "$label — the enumerated difference no longer holds as written" "${problems[@]}"
+  fi
+}
+
+# (i) not valid UTF-8. The gem's Ruby path emits `Scanner.scan_text`'s fixed
+# string; with the backend on it emits the PORT's CPython-shaped decoder text
+# verbatim, which is why no expected tail is pinned here — the text is the
+# port's to change, and ratified difference (a) in section 5 is where it is
+# held to account.
+backend_read_difference "(i) non-UTF-8 input: the backend emits the port's decoder text" "$BAD_UTF8" ""
+
+# The same file, seen from the other side: with the backend on, the gem's line
+# must be exactly the port's line for it. This is what makes (i) a PASS-THROUGH
+# rather than a third independent wording.
+utf8_go_line="$(grep '^FAIL  ' "$WORK/utf8.go.out" | head -n 1)"
+utf8_backend_line="$(grep '^FAIL  ' "$WORK/$LAST_BACKEND_READ_NAME.rbgo.out" 2>/dev/null | head -n 1)"
+if [ -n "$utf8_go_line" ] && [ "$utf8_go_line" = "$utf8_backend_line" ]; then
+  pass_case "the backend passes the port's read-failure text through unaltered"
+else
+  fail_case "the backend did not reproduce the port's read-failure line" \
+    "port:    $utf8_go_line" "backend: $utf8_backend_line"
+fi
+
+# (ii) a path that does not exist. Section 6 ratified this between the PORT and
+# the gem as a difference in kind (stderr/no-match vs stdout/read failure).
+# Between the gem's two BACKENDS it is neither — both put a read failure on
+# stdout under the same prefix. Only the tail moves, because the port answered
+# `no-match` and never told the gem an errno.
+rm -f "$MISSING"
+backend_read_difference "(ii) a path that does not exist maps no-match onto a read failure" \
+  "$MISSING" "no file at this path"
+
+# (iii) a path that is not a regular file. The port's ExpandFiles drops
+# directories before anything opens them, so this is `no-match` too; the Ruby
+# path gets EISDIR from File.read. Same fold, different errno — worth its own
+# case because a reader who only saw (ii) would reasonably assume no-match means
+# "absent".
+NOT_A_FILE="$SRC/a_directory_spec.rb"
+rm -rf "$NOT_A_FILE"
+mkdir -p "$NOT_A_FILE"
+backend_read_difference "(iii) a directory named like a spec file maps no-match onto a read failure" \
+  "$NOT_A_FILE" "no file at this path"
+rmdir "$NOT_A_FILE"
+
+# The case with teeth, and the half that IS shared: an unreadable path alongside
+# real ones must not abort either backend, and everything except its own line
+# must be identical.
+echo
+run_ruby    "backendmixed" "$MISSING" examples/sources/order_spec.rb
+run_ruby_go "backendmixed" "$MISSING" examples/sources/order_spec.rb
+
+problems=()
+mixed_rb_rc="$(cat "$WORK/backendmixed.rb.rc")"
+mixed_go_rc="$(cat "$WORK/backendmixed.rbgo.rc")"
+mixed_rb_c="$(ruby_counts "$WORK/backendmixed.rb.out")" || mixed_rb_c="<none>"
+mixed_go_c="$(ruby_counts "$WORK/backendmixed.rbgo.out")" || mixed_go_c="<none>"
+# 7 annotations in order_spec.rb, none malformed, one file unread. IDENTICAL on
+# both backends — unlike section 6's port-vs-gem crossing, where the port
+# counted 0 unread because the missing file never became a file.
+[ "$mixed_rb_c" = "7 0 1" ] || problems+=("the Ruby path checked [$mixed_rb_c], expected [7 0 1]")
+[ "$mixed_go_c" = "7 0 1" ] || problems+=("the Go backend checked [$mixed_go_c], expected [7 0 1]")
+[ "$mixed_rb_rc" = "1" ] || problems+=("the Ruby path exited $mixed_rb_rc, expected 1")
+[ "$mixed_go_rc" = "1" ] || problems+=("the Go backend exited $mixed_go_rc, expected 1")
+grep -v "^FAIL  $MISSING — " "$WORK/backendmixed.rb.out"   > "$WORK/backendmixed.rb.norm"
+grep -v "^FAIL  $MISSING — " "$WORK/backendmixed.rbgo.out" > "$WORK/backendmixed.rbgo.norm"
+cmp -s "$WORK/backendmixed.rb.norm" "$WORK/backendmixed.rbgo.norm" \
+  || problems+=("the good file's report differs once the unreadable path's own line is set aside")
+cmp -s "$WORK/backendmixed.rb.err" "$WORK/backendmixed.rbgo.err" \
+  || problems+=("stderr differs")
+
+if [ ${#problems[@]} -eq 0 ]; then
+  backend_annotations_compared=$((backend_annotations_compared + 7))
+  pass_case "an unreadable path does not abort the rest of the run on either backend"
+else
+  fail_case "an unreadable path changed what else got checked" "${problems[@]}"
+fi
+
+# --------------------------------------------------------------------------- #
+echo
+echo "== 8c. the backend refuses rather than guessing =="
+#
+# Exit 1 means "an annotation is malformed" and the contract spends it on
+# nothing else (SpecGuard::RSpec::CLI). A backend that cannot produce a verdict
+# — no binary, a binary that will not run, output that is not a report — must
+# therefore be 2, and must say `specguard-lint: error:` rather than reaching the
+# CLI's `internal error:` backstop, which reads as a bug to file instead of a
+# variable to fix.
+#
+# The gem's own suite covers this exhaustively against stub binaries
+# (spec/specguard/rspec/validator_backend_spec.rb). What is here is the part
+# that suite structurally cannot do: the same refusals with the REAL binary and
+# the real gem entrypoint on the same machine.
+
+# backend_refusal <label> <binary> [args...]
+backend_refusal() {
+  local label="$1" binary="$2"
+  shift 2
+  local name="backendrefuse$((passed + failed))"
+  local rc
+
+  (cd "$REPO_ROOT" && SPECGUARD_VALIDATE_INTENT="$binary" "$RUBY" -I"$GEM_ROOT/lib" "$GEM_LINT" "$@" \
+    >"$WORK/$name.out" 2>"$WORK/$name.err")
+  rc=$?
+
+  local problems=()
+  [ "$rc" = "2" ] || problems+=("exited $rc, expected 2 — exit 1 is spent on 'an annotation is malformed'")
+  grep -q '^specguard-lint: error: ' "$WORK/$name.err" \
+    || problems+=("no 'specguard-lint: error: ' line on stderr")
+  grep -q 'internal error' "$WORK/$name.err" \
+    && problems+=("reported as an internal error, which sends the reader to file a gem bug")
+  grep -q '^FAIL  ' "$WORK/$name.out" \
+    && problems+=("printed findings from a run that produced no verdict")
+
+  if [ ${#problems[@]} -eq 0 ]; then
+    pass_case "$label"
+  else
+    fail_case "$label" "${problems[@]}" "$(sed 's/^/          /' "$WORK/$name.err" | head -n 3)"
+  fi
+}
+
+backend_refusal "a binary that does not exist is exit 2" \
+  "$WORK/definitely-not-here" examples/sources/order_spec.rb
+backend_refusal "a path that is a directory is exit 2" \
+  "$WORK" examples/sources/order_spec.rb
+
+printf '#!/bin/sh\necho "this is not a JSON document"\n' > "$WORK/not-a-validator"
+chmod +x "$WORK/not-a-validator"
+backend_refusal "a binary emitting unparseable output is exit 2" \
+  "$WORK/not-a-validator" examples/sources/order_spec.rb
+
+printf '#!/bin/sh\necho "error: could not load schema /nope" >&2\nexit 2\n' > "$WORK/failing-validator"
+chmod +x "$WORK/failing-validator"
+backend_refusal "a binary exiting 2 is exit 2, not 1" \
+  "$WORK/failing-validator" examples/sources/order_spec.rb
+
+# Death by signal has no exit status at all, which is the one shape a naive
+# `status.exitstatus == 1` check reads as nil and a naive `!= 0` reads as a
+# verdict. It is neither.
+printf '#!/bin/sh\nkill -9 $$\n' > "$WORK/suicidal-validator"
+chmod +x "$WORK/suicidal-validator"
+backend_refusal "a binary killed by a signal is exit 2" \
+  "$WORK/suicidal-validator" examples/sources/order_spec.rb
+
+# A binary that answers a `--source --json` request with the TEXT report, and
+# with the exit code that report deserves. The port refuses out-of-scope --json
+# surfaces itself; a future one that fell through to the wrong renderer would
+# hand the gem prose alongside a perfectly correct exit 1 — the quietest failure
+# available, because the exit code agrees and only the payload is wrong.
+{
+  printf '#!/bin/sh\n'
+  printf "echo 'FAIL  a_spec.rb:9'\n"
+  printf "echo '        -> <root>: missing required property '\\\\''entity'\\\\'''\n"
+  printf 'exit 1\n'
+} > "$WORK/text-mode-validator"
+chmod +x "$WORK/text-mode-validator"
+backend_refusal "a binary answering --json with the text report is exit 2" \
+  "$WORK/text-mode-validator" examples/sources/invalid/broken_intent_spec.rb
+
+# Non-vacuity for the whole of section 8: two runs that both printed nothing
+# compare equal, so a section that compared no annotation compared nothing.
+echo
+if [ "$backend_annotations_compared" -eq 0 ]; then
+  fail_case "section 8 compared zero annotations between the two backends" \
+    "every case normalised away to nothing, which is not agreement"
+else
+  pass_case "section 8 compared $backend_annotations_compared annotations across the two backends"
+fi
+
+# --------------------------------------------------------------------------- #
+# 9. the participants are unmodified
 # --------------------------------------------------------------------------- #
 #
 # This leg adds only. If parity were "achieved" by editing the corpus or the
@@ -934,7 +1445,7 @@ chmod 644 "$UNREADABLE" 2>/dev/null
 # is rebuilt from cmd/ above when a toolchain exists, and run_parity.sh already
 # guards the Python oracle.
 echo
-echo "== 8. the corpus is unmodified =="
+echo "== 9. the corpus is unmodified =="
 
 if command -v git >/dev/null 2>&1 && git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
   dirty="$(git -C "$REPO_ROOT" status --porcelain -- examples/sources schemas)"
@@ -970,6 +1481,7 @@ if [ "$annotations_compared" -eq 0 ]; then
   exit 1
 fi
 green "$passed/$total Ruby-parity cases passed ($annotations_compared annotations compared, $skipped skipped)"
+dim   "      section 8 compared $backend_annotations_compared annotations across the gem's two backends"
 if [ "$skipped" -gt 0 ]; then
   dim "note: skipped cases were not verified — see the SKIP lines above"
 fi

@@ -254,6 +254,16 @@ It is a separate script because it must stay runnable **without a Go toolchain**
 compared, rather than passing. Two read-failure differences between the gem and the port
 are ratified rather than fixed, with the reasons and the assertions in the script's header.
 
+Its section 8 compares a third pair: the gem against **itself**, once on its Ruby path and
+once with `SPECGUARD_VALIDATE_INTENT` pointing at this binary — the gem's opt-in Go backend.
+That pair has no ratified report differences to normalise away, so the requirement is exact
+bytes on stdout, stderr and the exit code. Three read-failure messages are enumerated as
+differing (the gem cannot name an errno the binary never gave it) and each is asserted to
+*still* differ, so closing one retires the entry instead of leaving it to rot. A gem checkout
+predating that backend ignores the variable rather than failing on it, which would compare the
+Ruby path against itself and report perfect agreement — so the preflight probes for the
+refusal first and exits 2 when it does not come.
+
 ```sh
 go test ./...                # unit coverage for the Python-emulation layer,
                              # plus the SHA256 pin on the embedded schema
