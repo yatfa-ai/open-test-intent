@@ -301,5 +301,13 @@ schema `$id`. Additive optional fields do not bump the major version, but
 `additionalProperties: false` means unknown keys are rejected — additions are an explicit, versioned
 choice, never silent forward-compatibility.
 
-**Status:** v1, specification stage. Built by yatfa agents — the normative specification is
+**Status:** v1, specification stage. Built by [yatfa](https://yatfa.com) agents — the normative specification is
 [PROTOCOL.md](PROTOCOL.md).
+
+---
+
+<p align="center">
+  <a href="https://yatfa.com">
+    <img src="assets/built-with-yatfa.png" alt="Built with yatfa — a team of AI agents that plans, builds &amp; ships software." width="620">
+  </a>
+</p>
