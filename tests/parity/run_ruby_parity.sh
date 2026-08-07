@@ -26,10 +26,11 @@
 #
 # This file is the missing half, and it lives HERE — in open-test-intent,
 # reaching OUT to the gem — rather than in the gem's RSpec suite, because
-# lib/specguard/rspec.rb:37 forbids the gem a cross-repo runtime dependency and
-# spec/specguard/rspec/message_parity_spec.rb:11-13 rules out shelling out from
-# the suite on purpose (it would pass on one container and be unrunnable
-# anywhere else). Neither of those decisions is disturbed here.
+# lib/specguard/rspec.rb's `SCHEMA_PATH` forbids the gem a cross-repo runtime
+# dependency and spec/specguard/rspec/message_parity_spec.rb's header, under
+# "WHAT THIS FILE IS NOT", rules out shelling out from the suite on purpose
+# (it would pass on one container and be unrunnable anywhere else). Neither of
+# those decisions is disturbed here.
 #
 # Why it is a SEPARATE script from run_parity.sh
 # ----------------------------------------------
@@ -52,8 +53,9 @@
 # ----------------------------------------------------------------
 # `validate-intent --source` is a FIXTURE SELF-TEST; `specguard-lint` is a CI
 # LINTER. They deliberately do not print the same report, and those differences
-# are ratified at lib/specguard/rspec/cli.rb:176-196. Each is named here and
-# removed by exactly one rule, so the exclusions are stated rather than implied:
+# are ratified at `CLI#report_results` in lib/specguard/rspec/cli.rb. Each is
+# named here and removed by exactly one rule, so the exclusions are stated
+# rather than implied:
 #
 #   1. `PASS  <file>:<line>` — Go only. The gem prints no line per healthy
 #      annotation; in a large repo that buries the failures.
@@ -99,13 +101,25 @@
 # red at all, by running known-unequal inputs through the real normalisation
 # and requiring a mismatch.
 #
-# A NOTE ON HOW THIS FILE'S SECTIONS ARE CITED, here and from the gem:
-# by NAME, never by number. tests/parity/check_section_refs.py enforces the
-# number↔name agreement for run_parity.sh only — it owns one numbering — so a
-# numeric citation of a section in THIS file, and especially one from the other
-# repo (lib/specguard/rspec/{scanner,linter}.rb both point back here), is
-# unchecked and rots the first time a section is inserted. The names are stable
-# and searchable; the numbers are for reading the output, not for citing.
+# A NOTE ON CROSS-REPO CITATIONS, in BOTH directions: by NAME, never by number.
+#
+# gem -> here: tests/parity/check_section_refs.py enforces the number↔name
+# agreement for run_parity.sh only — it owns one numbering — so a numeric
+# citation of a section in THIS file, and especially one from the other repo
+# (lib/specguard/rspec/{scanner,linter}.rb both point back here), is unchecked
+# and rots the first time a section is inserted. The names are stable and
+# searchable; the numbers are for reading the output, not for citing.
+#
+# here -> gem: the same rule, and it is not hypothetical. This file first
+# shipped citing the gem by line number while the companion commit added 35
+# lines above the cited site in the very same changeset — so the citation for
+# ratified difference (a) landed pointing at the code for ratified difference
+# (b). Nothing catches that: check_section_refs.py reads run_parity.sh section
+# numbers, not gem line numbers, and no checker in either repo can, because
+# neither repo has the other at test time by construction (that is the whole
+# premise above). So cite the gem by SYMBOL — `CLI#report_results`,
+# `Scanner.scan_text`, `SCHEMA_PATH` — which survives exactly the edit that
+# broke the numbers, and which `grep` resolves in one hop.
 #
 #
 # The two ratified read-failure differences
@@ -123,7 +137,10 @@
 #
 #       RATIFIED. The port reproduces CPython's UnicodeDecodeError text on
 #       purpose (cmd/validate-intent/fileio.go:69); the gem emits a fixed
-#       string (lib/specguard/rspec/scanner.rb:47-49). This harness's PYTHON
+#       string (`Scanner.scan_text` in lib/specguard/rspec/scanner.rb — (b)'s
+#       emitting site is `Scanner.scan_file`, one method up, so a line number
+#       here silently sends a reader to the OTHER ratified difference the first
+#       time that file grows a comment block; it did). This harness's PYTHON
 #       leg already declines to compare that same tail — run_parity.sh's
 #       excluded group 1, "Non-UTF-8 input — the PROSE only", excludes it
 #       between Python and Go on the grounds that only the tail can differ —
@@ -147,7 +164,7 @@
 #       (bin/validate-intent:493, cmd/validate-intent/main.go:231), so a
 #       pattern matching nothing is "no file(s) match" and is a statement about
 #       the pattern. The gem's arguments are PATHS: it does no globbing at all
-#       (explicit files are "checked as given", cli.rb:120-127; --changed
+#       (explicit files are "checked as given", `CLI#select`; --changed
 #       derives its list from git), so an unopenable named path is a read
 #       failure OF THAT PATH, which is why it can name the errno the port
 #       cannot. Making the gem emit "no file(s) match" would require giving it
@@ -213,9 +230,9 @@ dim()   { printf '\033[2m%s\033[0m\n' "$*"; }
 # A missing participant is the one outcome this file must never render as a
 # pass. It is not a skip and not a warning: nothing was compared, so the only
 # honest answer is "could not check", which is exit 2 in both tools' own
-# vocabulary. cli.rb:20-31 lists three shipped instances of the opposite
-# (SPGD-35, SPGD-52, SPGD-56); a parity harness that skipped itself into a
-# green would be the fourth.
+# vocabulary. `CLI#run`'s rescue-band comment lists three shipped instances of
+# the opposite (SPGD-35, SPGD-52, SPGD-56); a parity harness that skipped
+# itself into a green would be the fourth.
 
 if ! command -v "$RUBY" >/dev/null 2>&1; then
   red "error: no Ruby on PATH (set RUBY=/path/to/ruby)"
@@ -235,7 +252,7 @@ GEM_ROOT="$(cd "$GEM_ROOT" && pwd -P)"
 GEM_LINT="$GEM_ROOT/bin/specguard-lint"
 
 # A checkout on disk is not the same thing as a linter that runs. specguard-lint
-# maps "the gem could not load" onto exit 2 on purpose (cli.rb:20-31), so a
+# maps "the gem could not load" onto exit 2 on purpose (`CLI#run`), so a
 # missing runtime dependency or the wrong GEM_HOME produces a tool that answers
 # every input with 2 and inspects nothing. Comparing against that would fill the
 # screen with parity failures that are not parity failures — a false RED, which
@@ -348,7 +365,7 @@ count_matching() {
 # is one annotation. That distinction is the reference's own (KIND_READ,
 # bin/validate-intent:91) and it is what keeps the port's counts comparable
 # with the gem's, whose summary line deliberately does not fold unread files
-# into the annotation count (cli.rb:198-214).
+# into the annotation count (`CLI#summary_line`).
 go_counts() {
   local out="$1" pass fail_all fail_read
   pass="$(count_matching "$out" '^PASS  ')"
@@ -401,7 +418,7 @@ compare() {
   # exits 2 with "invalid option: --source" (files are positional), and a
   # harness that mirrored the port's flag would compare two empty reports and
   # call it parity. A gem that cannot LOAD — a missing runtime dependency, the
-  # wrong GEM_HOME — lands on the same 2 by design (cli.rb:20-31), and lands
+  # wrong GEM_HOME — lands on the same 2 by design (`CLI#run`), and lands
   # here too. Both are "it checked nothing", which is why the gem's stderr is
   # reproduced below rather than merely noted: the difference between those two
   # causes is in it, and neither is recoverable from a diff of empty reports.
@@ -561,9 +578,9 @@ fi
 # Everything below compares two validators. If they were reading DIFFERENT
 # schemas, agreement would be a coincidence and disagreement would be
 # unreadable — you could not tell a port defect from a stale vendored copy. The
-# gem vendors the schema deliberately (lib/specguard/rspec.rb:37-45: no
-# cross-repo runtime dependency), which is exactly the arrangement that lets
-# the two drift silently. Pin them.
+# gem vendors the schema deliberately (`SCHEMA_PATH` in lib/specguard/rspec.rb
+# — no cross-repo runtime dependency), which is exactly the arrangement that
+# lets the two drift silently. Pin them.
 echo
 echo "== 1. the vendored schema is the canonical one =="
 
@@ -601,19 +618,27 @@ done
 # 2. the shipped source corpus, one file at a time
 # --------------------------------------------------------------------------- #
 #
-# Every file under examples/sources/, not only the .rb ones. The gem checks the
-# files it is handed without inspecting the extension, and the .spec.js and
-# _test.py fixtures carry annotations in comment syntaxes the scanner has never
-# been shown by the gem's own suite — which makes them free coverage rather
-# than scope creep.
+# EVERY file under examples/sources/, at any depth, not only the .rb ones. The
+# gem checks the files it is handed without inspecting the extension, and the
+# .spec.js and _test.py fixtures carry annotations in comment syntaxes the
+# scanner has never been shown by the gem's own suite — which makes them free
+# coverage rather than scope creep.
+#
+# `find -type f`, not a glob, and deliberately: this enumerator decides what
+# "the corpus" MEANS, so anything it fails to list is uncovered without ever
+# being reported as uncovered. The two globs this replaced each dropped files
+# silently — `*.*` requires a dot, so an extensionless fixture vanished, and
+# naming `invalid/` explicitly covered exactly the one subdirectory that
+# existed the day it was written. That is the same silent-omission shape the
+# empty-corpus branch below exists to prevent, just with a smaller blast
+# radius, and it does not belong in the one file whose job is to be loud.
 echo
 echo "== 2. the shipped source corpus, one file at a time =="
 
 corpus=()
-for fixture in "$REPO_ROOT"/examples/sources/*.* "$REPO_ROOT"/examples/sources/invalid/*; do
-  [ -f "$fixture" ] || continue
+while IFS= read -r -d '' fixture; do
   corpus+=("${fixture#"$REPO_ROOT"/}")
-done
+done < <(find "$REPO_ROOT/examples/sources" -type f -print0 | sort -z)
 
 if [ ${#corpus[@]} -eq 0 ]; then
   fail_case "examples/sources/ is empty — there is no corpus to compare" \
@@ -752,7 +777,7 @@ problems=()
 [ "$(grep -c '^FAIL  ' "$WORK/utf8.go.out")" = "1" ] || problems+=("the port reported more than the one read failure")
 [ "$(grep -c '^FAIL  ' "$WORK/utf8.rb.out")" = "1" ] || problems+=("the gem reported more than the one read failure")
 cmp -s /dev/null "$WORK/utf8.go.err" || problems+=("the port wrote to stderr; the reference puts read failures on stdout")
-cmp -s /dev/null "$WORK/utf8.rb.err" || problems+=("the gem wrote to stderr; findings belong on stdout (cli.rb:176-196)")
+cmp -s /dev/null "$WORK/utf8.rb.err" || problems+=("the gem wrote to stderr; findings belong on stdout (CLI#report_results)")
 # The gem must also not count an unread file as an annotation it inspected.
 if rb_c="$(ruby_counts "$WORK/utf8.rb.out")"; then
   [ "$rb_c" = "0 0 1" ] || problems+=("the gem's summary should be 0 annotations, 0 malformed, 1 unread — got [$rb_c]")
@@ -798,7 +823,7 @@ cmp -s /dev/null "$WORK/missing.go.out" \
 grep -q "^FAIL  $MISSING — could not read file: " "$WORK/missing.rb.out" \
   || problems+=("the gem no longer writes 'FAIL <path> — could not read file: ...' to stdout")
 cmp -s /dev/null "$WORK/missing.rb.err" \
-  || problems+=("the gem wrote to stderr; findings belong on stdout (cli.rb:176-196)")
+  || problems+=("the gem wrote to stderr; findings belong on stdout (CLI#report_results)")
 if rb_c="$(ruby_counts "$WORK/missing.rb.out")"; then
   [ "$rb_c" = "0 0 1" ] || problems+=("the gem's summary should be 0 annotations, 0 malformed, 1 unread — got [$rb_c]")
 else
