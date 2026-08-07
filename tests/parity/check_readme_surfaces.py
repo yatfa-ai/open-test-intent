@@ -96,7 +96,7 @@ import sys
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-README = os.path.join("README.md")
+README = "README.md"
 
 # The two labels that own the status block. They are matched literally: a
 # reworded label is a parse failure (reported), not a silent empty run.
@@ -223,7 +223,7 @@ def normalise(text):
     rstrip('.'), because several surfaces are named with an ellipsis and
     `FILE...` must not be shortened to `FILE`.
     """
-    text = text.replace("`", "").replace("*(", "(")
+    text = text.replace("`", "")
     text = re.sub(r"\s+", " ", text).strip().lower()
     text = re.sub(r"^(?:and|or)\s+", "", text)
     text = re.sub(r"(?<!\.)\.$", "", text).strip()
