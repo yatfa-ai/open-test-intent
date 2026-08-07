@@ -242,6 +242,39 @@ if ! "$PYTHON" "$REPO_ROOT/tests/parity/check_section_refs.py"; then
 fi
 
 # --------------------------------------------------------------------------- #
+# preflight: the README's Go-port status block vs. the binary
+# --------------------------------------------------------------------------- #
+#
+# README.md's "Implemented so far" / "Not yet" lists are the only statement of
+# this port's surface an adopter ever reads, and until now the only one with no
+# checker behind it. Every other statement has one: main.go's `usage` const is
+# byte-compared in section 7 ("--help"), the excluded surfaces are asserted to
+# refuse in section 16 ("Go-side refusals — the excluded surfaces, still
+# asserted"), and the cross-references between them are checked immediately
+# above.
+#
+# It drifted exactly as an unchecked claim does. Two slices shipped self-test
+# mode, `--source`, `--source --json` and recursive `**` globs without touching
+# README.md, which went on telling readers all four refuse to run. The port was
+# fine; the only broken thing was the sentence, and nothing in the repo
+# disagreed with it.
+#
+# So the block is now executable: each surface it names is invoked against the
+# binary just built above, and a name in the wrong list fails the harness. The
+# checker calibrates itself first — feeding deliberately-wrong blocks through
+# its own parser and requiring the specific failure each should produce —
+# because a checker that only ever passes cannot be told apart from one that
+# cannot fail.
+#
+# Same placement rationale as the check above: this runs BEFORE the comparisons
+# because its failure is a documentation failure, and you want to see it even
+# on a run you abandon at the first diff.
+if ! VALIDATE_INTENT_GO="$GO_BIN" "$PYTHON" "$REPO_ROOT/tests/parity/check_readme_surfaces.py"; then
+  red "error: README.md disagrees with the built binary (see above)"
+  exit 2
+fi
+
+# --------------------------------------------------------------------------- #
 # the comparison primitive
 # --------------------------------------------------------------------------- #
 
