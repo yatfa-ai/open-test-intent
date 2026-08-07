@@ -473,9 +473,19 @@ compare_tree "hidden directory named literally" 'spec/**/.secret/*.json'
 # Python does not de-duplicate across two recursive components. Being tidier
 # than the oracle is a divergence like any other.
 compare_tree "two ** components duplicate matches" 'spec/**/**/*.json'
-# The zero-segment match is emitted only when the directory exists, so a missing
-# root stays a no-match rather than becoming a match on `nope/`.
+# A missing root is a no-match. Note this case does NOT pin the existence guard
+# in globRecursive — it answers empty either way, since the trailing `*.json`
+# finds nothing inside a directory that does not exist.
 compare_tree "** under a missing directory" 'nope/**/*.json'
+# The two shapes where the recursive component is LAST, covering both reasons
+# isDir can be false: the path is missing, and the path exists but is a regular
+# file. At THIS layer they are ordinary agreement checks — the guard is not
+# observable through the CLI at all, because ExpandFiles' isFile filter drops
+# `nope/` and `spec/a.json/` before either side prints anything, so removing the
+# guard leaves the harness fully green. The guard is pinned in pyglob_test.go
+# (`nope/**`, `spec/a.json/**`), which calls PyGlob directly and does see it.
+compare_tree "trailing ** under a missing directory" 'nope/**'
+compare_tree "trailing ** rooted at a file"          'spec/a.json/**'
 compare_tree "** mixed with an ordinary pattern" 'spec/**/*.json' 'spec/*.json'
 compare_tree "** mixed with a no-match"   'spec/**/*.json' 'nope/**/*.json'
 

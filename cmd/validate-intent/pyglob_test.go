@@ -163,8 +163,30 @@ var globCases = []struct {
 	{
 		pattern: "nope/**/*.json",
 		want:    nil,
-		why: "the zero-segment match is only emitted when the directory exists, so a " +
-			"missing root stays a no-match rather than becoming a match on `nope/`",
+		why: "a missing root is a no-match. NOTE: this case does NOT pin the " +
+			"existence guard — it answers empty either way, because the trailing " +
+			"`*.json` cannot match inside a directory that does not exist. The two " +
+			"cases below are the ones that discriminate",
+	},
+	// The existence guard in globRecursive (`dir == "" || isDir(dir)`) is what
+	// keeps the zero-segment match from being emitted under a path that is not a
+	// directory. It is invisible at the CLI — ExpandFiles' isFile filter drops
+	// `nope/` anyway — so it is only ever pinned here, and only by a pattern
+	// whose LAST component is the recursive one. Delete the guard and both of
+	// these turn red; every `nope/**/*.json`-shaped case stays green.
+	{
+		pattern: "nope/**",
+		want:    nil,
+		why: "a trailing `**` under a MISSING directory: the zero-segment match is " +
+			"emitted only when the directory exists, so this stays empty rather " +
+			"than becoming a match on `nope/`",
+	},
+	{
+		pattern: "spec/a.json/**",
+		want:    nil,
+		why: "the same guard for the other reason isDir can be false — the root " +
+			"EXISTS but is a regular file, so `**` has nothing to match, not even " +
+			"zero segments",
 	},
 	{
 		pattern: "spec/models/**/*.json",

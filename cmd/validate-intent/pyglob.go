@@ -145,8 +145,17 @@ func globComponent(dir, basename string, dirOnly bool) []string {
 // Joining "" onto dir is what produces the `spec/` prefix the caller then globs
 // `a.json` inside of.
 //
-// It is emitted only when dir actually exists, so `nope/**/*.json` stays a
-// no-match rather than becoming a match on `nope/`.
+// It is emitted only when dir actually exists AND is a directory, so `nope/**`
+// stays a no-match rather than becoming a match on `nope/`. CPython 3.13 gained
+// exactly this guard (`if not dirname or _isdir(dirname, dir_fd)`); older
+// versions yield unconditionally.
+//
+// Pinning it takes a pattern whose LAST component is the recursive one. A
+// `nope/**/*.json` shape cannot show it: the trailing `*.json` finds nothing
+// inside a directory that does not exist, so it answers empty with or without
+// the guard. ExpandFiles' isFile filter likewise hides the difference at the
+// CLI. See the `nope/**` and `spec/a.json/**` cases in pyglob_test.go — they
+// are the only thing standing between this guard and a well-meaning deletion.
 func globRecursive(dir string, dirOnly bool) []string {
 	matches := []string{}
 	if dir == "" || isDir(dir) {
