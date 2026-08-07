@@ -122,13 +122,17 @@
 # broke the numbers, and which `grep` resolves in one hop.
 #
 #
-# The two ratified read-failure differences
-# -----------------------------------------
-# Two inputs make the gem and the port disagree in TEXT while agreeing in
-# verdict and exit code. Both are ratified here rather than "fixed", and both
-# are ASSERTED — including the assertion that they still differ — so that
-# closing one of them fails this file and forces the ratification to be
+# The three ratified message differences
+# --------------------------------------
+# Three inputs make the gem and the port disagree in TEXT while agreeing in
+# verdict and exit code. All three are ratified here rather than "fixed", and
+# all three are ASSERTED — including the assertion that they still differ — so
+# that closing one of them fails this file and forces the ratification to be
 # retired, instead of leaving a stale exclusion nobody notices.
+#
+# Two are read failures. The third, (c), is not: it is an ANNOTATION-level
+# message, and it is the one an ordinary user actually meets, because it needs
+# nothing more exotic than a typo in an @intent payload.
 #
 #   (a) A spec file that is not valid UTF-8.
 #       port: FAIL <file> — could not read file: 'utf-8' codec can't decode
@@ -177,6 +181,39 @@
 #       case with real teeth — neither aborts the rest of the run, so the good
 #       files named alongside a missing one are still fully checked by both.
 #
+#   (c) An @intent payload that survives normalisation and still is not JSON.
+#       port: FAIL <file>:<line> — could not parse annotation: Expecting
+#             property name enclosed in double quotes: line 1 column 2 (char 1)
+#       gem:  FAIL <file>:<line> — could not parse annotation: expected object
+#             key, got 'bad_key}' at line 1 column 2
+#
+#       RATIFIED, and this is the one difference in this file that is NOT about
+#       an unreadable file. It went unnoticed for a whole slice, which is worth
+#       recording because the reason is structural rather than careless: the
+#       hazards in "the extraction and normalisation surface" all exercise
+#       PayloadNormalizer, whose JOB is to make PROTOCOL.md §1's permissive
+#       syntax parse SUCCESSFULLY — single quotes, bare-word keys, trailing
+#       commas. Every one of those compares byte-identical, correctly. Only a
+#       payload that is still broken AFTER normalisation reaches a JSON parser
+#       in an error state, and until section 4b existed the corpus contained no
+#       such file. A gap in the corpus is invisible by construction; this is the
+#       file that says so out loud.
+#
+#       The cause is the same one as (a), one layer up. `Scanner#parse`
+#       interpolates RUBY's `JSON::ParserError#message`; `bin/validate-intent`
+#       lets CPython describe the failure and the port reproduces CPython's
+#       wording deliberately (cmd/validate-intent/pyjson.go). Reproducing that
+#       tail in the gem would mean porting CPython's JSON diagnostics into a
+#       gem whose entire reason for vendoring the schema is to owe this repo
+#       nothing at runtime — (a)'s argument about CPython's DECODER, applied
+#       verbatim to its PARSER, which is why it is ratified rather than closed.
+#
+#       Asserted below: same classification, same file, the same LINE and even
+#       the same COLUMN (unlike a read failure this one is line-scoped, and the
+#       two normalisers agree on exactly where the payload went wrong), the same
+#       `could not parse annotation: ` prefix, the same counts, and exit 1. Only
+#       the tail is unpinned — and the fact that it still differs is pinned.
+#
 #
 # The THIRD leg: the gem's own Go backend
 # ---------------------------------------
@@ -203,8 +240,8 @@
 # backends agree" is the property under test rather than "the Ruby code is
 # gone".
 #
-# THREE ENUMERATED DIFFERENCES, all of them read-failure PROSE, all of them
-# asserted in section 8b rather than discovered:
+# FOUR ENUMERATED DIFFERENCES, three of them read-failure PROSE and one of them
+# not, all of them asserted in section 8b rather than discovered:
 #
 #   (i)   a file that is not valid UTF-8 — ratified difference (a) again, now
 #         seen from inside the gem: with the backend on, the gem emits the
@@ -219,6 +256,21 @@
 #         at this path` in its own words. Everything else — the stream, the
 #         `FAIL <file> — could not read file: ` prefix, the "N file(s) could
 #         not be read" clause, the exit code — is identical.
+#   (iv)  an @intent payload that survives normalisation and still is not JSON
+#         — ratified difference (c), seen from inside the gem. Like (i) it is a
+#         PASS-THROUGH: the backend reproduces the port's CPython-shaped
+#         diagnostic verbatim where the Ruby path spells it Ruby's way.
+#
+#         This is the ONLY one of the four that is not a read failure, and it
+#         deserves emphasis rather than a footnote: (i)-(iii) all need an
+#         unreadable path to reach at all, whereas (iv) fires on an ordinary
+#         typo in an annotation. `parse` is one of the three things the linter
+#         exists to report, so for a user flipping the variable on, this — not
+#         the read failures — is the difference they will actually see, on
+#         every malformed annotation in their CI log. Anything in this repo or
+#         the gem claiming the backends differ "only in read-failure messages"
+#         is wrong, and was: the claim shipped in both READMEs and in
+#         `ValidatorBackend`'s own comment before this entry existed.
 #
 # Each is asserted to STILL DIFFER, like the ratifications above, so closing one
 # fails this file rather than leaving a stale exclusion.
@@ -859,7 +911,7 @@ compare "the same file twice (not de-duplicated)" \
   examples/sources/invalid/broken_intent_spec.rb examples/sources/invalid/broken_intent_spec.rb
 
 # --------------------------------------------------------------------------- #
-# 4. the extraction and normalisation surface
+# 4a. the extraction and normalisation surface
 # --------------------------------------------------------------------------- #
 #
 # The shipped corpus exercises the happy paths and five failure shapes. These
@@ -868,8 +920,16 @@ compare "the same file twice (not de-duplicated)" \
 # only genuinely independent re-derivations of PROTOCOL.md §1 — the port was
 # written against the Python reference, the gem was not — so agreement here is
 # the strongest evidence in this file.
+#
+# NOTE what this section structurally cannot reach, and why 4b exists: every
+# hazard below goes THROUGH PayloadNormalizer, whose job is to make permissive
+# syntax parse SUCCESSFULLY. A payload it rescues renders identically on both
+# sides, which is what these cases prove. A payload it CANNOT rescue reaches a
+# JSON parser in an error state, and there the two implementations quote two
+# different parsers at each other. No case here builds one, so no case here can
+# see that — see 4b.
 echo
-echo "== 4. extraction and normalisation hazards =="
+echo "== 4a. extraction and normalisation hazards =="
 
 SRC="$WORK/sources"
 mkdir -p "$SRC"
@@ -933,10 +993,103 @@ printf '# @intent: [ "not", "an", "object" ]\n' > "$SRC/not_an_object_spec.rb"
 compare "a non-object payload" "$SRC/not_an_object_spec.rb"
 
 # --------------------------------------------------------------------------- #
+# 4b. ratified difference (c): a payload normalisation cannot rescue
+# --------------------------------------------------------------------------- #
+#
+# See "The three ratified message differences" in the header. This is the one
+# ratified difference that is not about an unreadable file, and the one this
+# harness was missing entirely until it was found by hand: 4a's hazards all
+# exercise the normalizer's SUCCESS path, so none of them reaches a JSON parser
+# in an error state, and the divergence was invisible to a corpus that looked
+# thorough.
+#
+# The two payloads below are the two shapes normalisation cannot fix — a
+# bare-word VALUE, and a token that is not a key at all. Everything about the
+# verdict is shared and is pinned: classification, file, line, column, prefix,
+# counts, exit code. Only the tail is unpinned, and the fact that it still
+# differs is itself pinned, so closing the gap breaks this case and retires the
+# ratification instead of rotting it.
+#
+# The first annotation is deliberately VALID: a file of nothing but failures
+# would compare two reports that agree only about what broke.
+echo
+echo "== 4b. ratified difference (c): a payload that is still not JSON =="
+
+PARSE_FAIL="$SRC/parse_failure_spec.rb"
+cat > "$PARSE_FAIL" <<'RUBY'
+# @intent: { entity: "Order", action: "create", behavior: "creates an order from a valid cart", layer: "unit" }
+# @intent: { "entity": "Order", "action": "create", "behavior": "rejects an order missing a customer", "layer": unit }
+# @intent: {bad_key}
+RUBY
+
+run_go   "parsefail" "$PARSE_FAIL"
+run_ruby "parsefail" "$PARSE_FAIL"
+
+go_rc="$(cat "$WORK/parsefail.go.rc")"; rb_rc="$(cat "$WORK/parsefail.rb.rc")"
+grep '^FAIL  ' "$WORK/parsefail.go.out" > "$WORK/parsefail.go.fails" || true
+grep '^FAIL  ' "$WORK/parsefail.rb.out" > "$WORK/parsefail.rb.fails" || true
+
+# Split each FAIL line at the ratified prefix: the LOCATION half must match, the
+# TAIL half must not. A line lacking the prefix survives the sed unchanged,
+# which the emptiness checks below then catch.
+PARSE_MARK=' — could not parse annotation: '
+sed "s/${PARSE_MARK}.*\$//"  "$WORK/parsefail.go.fails" > "$WORK/parsefail.go.loc"
+sed "s/${PARSE_MARK}.*\$//"  "$WORK/parsefail.rb.fails" > "$WORK/parsefail.rb.loc"
+sed "s/^.*${PARSE_MARK}//"   "$WORK/parsefail.go.fails" > "$WORK/parsefail.go.tail"
+sed "s/^.*${PARSE_MARK}//"   "$WORK/parsefail.rb.fails" > "$WORK/parsefail.rb.tail"
+
+problems=()
+[ "$go_rc" = "1" ] || problems+=("the port did not exit 1 (got $go_rc)")
+[ "$rb_rc" = "1" ] || problems+=("the gem did not exit 1 (got $rb_rc)")
+# Non-vacuity: without this, a run where neither side reported anything would
+# satisfy every "they are equal" and "they differ" check below trivially.
+[ "$(count_matching "$WORK/parsefail.go.fails" '^FAIL  ')" = "2" ] \
+  || problems+=("the port did not report exactly the two unparseable annotations")
+[ "$(count_matching "$WORK/parsefail.rb.fails" '^FAIL  ')" = "2" ] \
+  || problems+=("the gem did not report exactly the two unparseable annotations")
+# Both must carry the prefix on EVERY line: if either stopped classifying these
+# as parse failures, its tail file would still be non-empty and the "they
+# differ" check would pass for entirely the wrong reason.
+[ "$(count_matching "$WORK/parsefail.go.fails" "${PARSE_MARK}")" = "2" ] \
+  || problems+=("the port's lines are not all '<location> — could not parse annotation: ...'")
+[ "$(count_matching "$WORK/parsefail.rb.fails" "${PARSE_MARK}")" = "2" ] \
+  || problems+=("the gem's lines are not all '<location> — could not parse annotation: ...'")
+# The shared half: same file, same line, same column — the two normalisers agree
+# on exactly which annotation broke and where.
+cmp -s "$WORK/parsefail.go.loc" "$WORK/parsefail.rb.loc" \
+  || problems+=("the two disagree about WHICH annotations failed, or where — that is not a wording difference")
+# The ratified half, asserted from both sides.
+cmp -s "$WORK/parsefail.go.tail" "$WORK/parsefail.rb.tail" \
+  && problems+=("the two agree byte-for-byte now — RETIRE this ratification and move this file into 4a (header, ratified difference (c))")
+grep -q '[^[:space:]]' "$WORK/parsefail.go.tail" || problems+=("the port gave no reason at all")
+grep -q '[^[:space:]]' "$WORK/parsefail.rb.tail" || problems+=("the gem gave no reason at all")
+# 3 annotations examined, 2 malformed, 0 unread — a parse failure is an
+# annotation the tool INSPECTED, not a file it could not open, and both sides
+# have to file it under the same clause.
+if rb_c="$(ruby_counts "$WORK/parsefail.rb.out")"; then
+  [ "$rb_c" = "3 2 0" ] || problems+=("the gem's summary should be 3 annotations, 2 malformed, 0 unread — got [$rb_c]")
+else
+  problems+=("the gem printed no summary line")
+fi
+[ "$(go_counts "$WORK/parsefail.go.out")" = "3 2 0" ] \
+  || problems+=("the port's counts should be 3 annotations, 2 malformed, 0 unread — got [$(go_counts "$WORK/parsefail.go.out")]")
+cmp -s /dev/null "$WORK/parsefail.go.err" || problems+=("the port wrote to stderr; findings belong on stdout")
+cmp -s /dev/null "$WORK/parsefail.rb.err" || problems+=("the gem wrote to stderr; findings belong on stdout")
+
+if [ ${#problems[@]} -eq 0 ]; then
+  annotations_compared=$((annotations_compared + 3))
+  pass_case "same annotations, same locations, same counts, exit 1 — reason text ratified as different"
+  dim "        port: $(head -n 1 "$WORK/parsefail.go.tail")"
+  dim "        gem:  $(head -n 1 "$WORK/parsefail.rb.tail")"
+else
+  fail_case "ratified difference (c) no longer holds as written" "${problems[@]}"
+fi
+
+# --------------------------------------------------------------------------- #
 # 5. ratified difference (a): a spec file that is not valid UTF-8
 # --------------------------------------------------------------------------- #
 #
-# See "The two ratified read-failure differences" in the header. Verdict, file,
+# See "The three ratified message differences" in the header. Verdict, file,
 # stream, prefix and exit code are pinned; only the reason text is not — and
 # the fact that it still differs is itself pinned, so closing the gap breaks
 # this case and retires the ratification instead of rotting it.
@@ -989,7 +1142,7 @@ fi
 # 6. ratified difference (b): a named file that does not exist
 # --------------------------------------------------------------------------- #
 #
-# See "The two ratified read-failure differences" in the header. This one
+# See "The three ratified message differences" in the header. This one
 # differs in stream and shape, not only wording, because the port's argument is
 # a glob PATTERN and the gem's is a PATH. What is shared — and what is actually
 # load-bearing for CI — is asserted: neither goes green, both name the file,
@@ -1151,19 +1304,26 @@ printf '# @intent: { entity: "Order", action: "create", behavior: "creates an or
 printf '# @intent: { entity: "Cart", action: "empty", behavior: "empties the cart when the order is placed", layer: "unit" }\n' \
   > "$SRC/q?_spec.rb"
 
-# Every hazard file section 4 built, plus the three above, plus anything a later
-# edit adds to $SRC — enumerated with `find` rather than named, for the same
-# reason section 2's corpus is: a list that has to be maintained by hand goes
-# stale silently, and a file it forgets is uncovered without ever being reported
-# as uncovered.
+# Every hazard file section 4a built, plus the three above, plus anything a
+# later edit adds to $SRC — enumerated with `find` rather than named, for the
+# same reason section 2's corpus is: a list that has to be maintained by hand
+# goes stale silently, and a file it forgets is uncovered without ever being
+# reported as uncovered.
 #
-# $BAD_UTF8 is the one exclusion, by VARIABLE rather than by name, because it is
-# section 8b's subject — an enumerated difference, not an agreement. $MISSING
-# was deleted and `find -type f` skips it for free; $UNREADABLE had its mode
-# restored at the end of section 7 and belongs here.
+# TWO exclusions, both by VARIABLE rather than by name, and both because they
+# are section 8b's subject — an enumerated difference, not an agreement:
+# $BAD_UTF8 (difference (i)) and $PARSE_FAIL (difference (iv)). Dropping a file
+# from this loop is the one edit here that can hide a regression, so each
+# exclusion must have a matching entry in 8b that asserts the difference from
+# both sides; an exclusion with no entry is how the parse divergence went
+# unnoticed in the first place.
+#
+# $MISSING was deleted and `find -type f` skips it for free; $UNREADABLE had its
+# mode restored at the end of section 7 and belongs here.
 backend_cases=()
 while IFS= read -r -d '' hazard; do
   [ "$hazard" = "$BAD_UTF8" ] && continue
+  [ "$hazard" = "$PARSE_FAIL" ] && continue
   backend_cases+=("$hazard")
 done < <(find "$SRC" -type f -print0 | sort -z)
 
@@ -1195,12 +1355,18 @@ compare_backends "three glob-metacharacter names at once" \
 
 # --------------------------------------------------------------------------- #
 echo
-echo "== 8b. the three enumerated backend differences =="
+echo "== 8b. the four enumerated backend differences =="
 #
-# All three are read-failure PROSE and nothing else. Each asserts the shared
-# half (classification, stream, prefix, counts, exit code) and asserts that the
-# text still differs, so closing one fails this file and retires the entry
-# rather than leaving it to rot.
+# Three are read-failure PROSE; the fourth, (iv), is an annotation-level parse
+# message and is the one a user actually meets. Each asserts the shared half
+# (classification, stream, prefix, counts, exit code) and asserts that the text
+# still differs, so closing one fails this file and retires the entry rather
+# than leaving it to rot.
+#
+# Every file excluded from 8a's loop must appear here. That is the invariant
+# that was violated before (iv) existed — not by an exclusion without an entry,
+# but by the inverse: a divergence that was in NO corpus at all, so nothing was
+# excluded and nothing was enumerated, and the silence read as agreement.
 
 # backend_read_difference <label> <path> <expected-backend-tail-or-empty>
 #
@@ -1310,6 +1476,87 @@ mkdir -p "$NOT_A_FILE"
 backend_read_difference "(iii) a directory named like a spec file maps no-match onto a read failure" \
   "$NOT_A_FILE" "no file at this path"
 rmdir "$NOT_A_FILE"
+
+# (iv) an @intent payload that survives normalisation and still is not JSON —
+# ratified difference (c), now seen from inside the gem. Not a read failure:
+# this is the parse message, the one that fires on an ordinary typo, and the
+# reason this entry exists is that its absence let both READMEs and
+# `ValidatorBackend`'s own comment claim the backends differed only in
+# read-failure prose.
+#
+# It gets its own block rather than reusing backend_read_difference because
+# nothing about it is a read failure: the finding is line-scoped, it counts as
+# an annotation rather than an unread file, and there are two of them.
+echo
+run_ruby    "backendparse" "$PARSE_FAIL"
+run_ruby_go "backendparse" "$PARSE_FAIL"
+
+bp_rb_rc="$(cat "$WORK/backendparse.rb.rc")"
+bp_go_rc="$(cat "$WORK/backendparse.rbgo.rc")"
+grep '^FAIL  ' "$WORK/backendparse.rb.out"   > "$WORK/backendparse.rb.fails"   || true
+grep '^FAIL  ' "$WORK/backendparse.rbgo.out" > "$WORK/backendparse.rbgo.fails" || true
+sed "s/${PARSE_MARK}.*\$//" "$WORK/backendparse.rb.fails"   > "$WORK/backendparse.rb.loc"
+sed "s/${PARSE_MARK}.*\$//" "$WORK/backendparse.rbgo.fails" > "$WORK/backendparse.rbgo.loc"
+sed "s/^.*${PARSE_MARK}//"  "$WORK/backendparse.rb.fails"   > "$WORK/backendparse.rb.tail"
+sed "s/^.*${PARSE_MARK}//"  "$WORK/backendparse.rbgo.fails" > "$WORK/backendparse.rbgo.tail"
+# Everything that is NOT the ratified tail — the leading selection line, the
+# locations, the trailing summary — must be identical. Blanking the tail on both
+# sides and comparing whole files is what makes "only the tail moves" an
+# assertion about the WHOLE report rather than about the lines this block
+# happened to look at.
+sed "s/${PARSE_MARK}.*\$/${PARSE_MARK}<ratified>/" "$WORK/backendparse.rb.out"   > "$WORK/backendparse.rb.masked"
+sed "s/${PARSE_MARK}.*\$/${PARSE_MARK}<ratified>/" "$WORK/backendparse.rbgo.out" > "$WORK/backendparse.rbgo.masked"
+
+problems=()
+[ "$bp_rb_rc" = "1" ] || problems+=("the Ruby path did not exit 1 (got $bp_rb_rc)")
+[ "$bp_go_rc" = "1" ] || problems+=("the Go backend did not exit 1 (got $bp_go_rc) — a broken backend must be 2, a malformed annotation 1")
+[ "$(count_matching "$WORK/backendparse.rb.fails" "${PARSE_MARK}")" = "2" ] \
+  || problems+=("the Ruby path did not report exactly two parse failures")
+[ "$(count_matching "$WORK/backendparse.rbgo.fails" "${PARSE_MARK}")" = "2" ] \
+  || problems+=("the Go backend did not report exactly two parse failures")
+cmp -s "$WORK/backendparse.rb.loc" "$WORK/backendparse.rbgo.loc" \
+  || problems+=("the two backends disagree about WHICH annotations failed, or where")
+cmp -s "$WORK/backendparse.rb.masked" "$WORK/backendparse.rbgo.masked" \
+  || problems+=("the reports differ somewhere other than the ratified tail")
+cmp -s "$WORK/backendparse.rb.tail" "$WORK/backendparse.rbgo.tail" \
+  && problems+=("the two agree byte-for-byte now — RETIRE this entry and let 8a's loop pick \$PARSE_FAIL up (header, THIRD leg)")
+grep -q '[^[:space:]]' "$WORK/backendparse.rb.tail"   || problems+=("the Ruby path gave no reason at all")
+grep -q '[^[:space:]]' "$WORK/backendparse.rbgo.tail" || problems+=("the Go backend gave no reason at all")
+# A parse failure is an annotation examined, not a file unread — identical
+# counts on both, and specifically NOT in the "could not be read" clause.
+if bp_rb_c="$(ruby_counts "$WORK/backendparse.rb.out")"; then
+  [ "$bp_rb_c" = "3 2 0" ] || problems+=("the Ruby path's summary should be [3 2 0] — got [$bp_rb_c]")
+else
+  problems+=("the Ruby path printed no summary line")
+fi
+if bp_go_c="$(ruby_counts "$WORK/backendparse.rbgo.out")"; then
+  [ "$bp_go_c" = "3 2 0" ] || problems+=("the Go backend's summary should be [3 2 0] — got [$bp_go_c]")
+else
+  problems+=("the Go backend printed no summary line")
+fi
+cmp -s "$WORK/backendparse.rb.err" "$WORK/backendparse.rbgo.err" || problems+=("stderr differs")
+cmp -s /dev/null "$WORK/backendparse.rbgo.err" || problems+=("the Go backend wrote to stderr; findings belong on stdout")
+
+if [ ${#problems[@]} -eq 0 ]; then
+  backend_annotations_compared=$((backend_annotations_compared + 3))
+  pass_case "(iv) a payload that is still not JSON: same annotations and counts, parse text ratified as different"
+  dim "        ruby path:  $(head -n 1 "$WORK/backendparse.rb.tail")"
+  dim "        go backend: $(head -n 1 "$WORK/backendparse.rbgo.tail")"
+else
+  fail_case "(iv) the enumerated parse difference no longer holds as written" "${problems[@]}"
+fi
+
+# The same file, seen from the other side — the counterpart of the pass-through
+# check (i) carries. The backend's parse lines must be EXACTLY the port's, which
+# is what makes (iv) a pass-through of a text the port owns rather than a third
+# independent spelling this gem would then have to maintain. Section 4b already
+# ran the port over this very file.
+if cmp -s "$WORK/parsefail.go.fails" "$WORK/backendparse.rbgo.fails"; then
+  pass_case "the backend passes the port's parse-failure text through unaltered"
+else
+  fail_case "the backend did not reproduce the port's parse-failure lines" \
+    "$(diff -u "$WORK/parsefail.go.fails" "$WORK/backendparse.rbgo.fails" | tail -n +3 | sed 's/^/          /')"
+fi
 
 # The case with teeth, and the half that IS shared: an unreadable path alongside
 # real ones must not abort either backend, and everything except its own line

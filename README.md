@@ -251,18 +251,30 @@ by comparing nothing to nothing.
 It is a separate script because it must stay runnable **without a Go toolchain**, where
 `run_parity.sh` (which rebuilds the port first) cannot. Point it at a gem checkout with
 `SPECGUARD_RSPEC=/path/to/specguard-rspec`; without one it exits 2 and says nothing was
-compared, rather than passing. Two read-failure differences between the gem and the port
-are ratified rather than fixed, with the reasons and the assertions in the script's header.
+compared, rather than passing. Three message differences between the gem and the port are
+ratified rather than fixed — two read failures and one parse diagnostic, each of them a case
+of the gem declining to re-port a CPython error string — with the reasons and the assertions
+in the script's header.
 
 Its section 8 compares a third pair: the gem against **itself**, once on its Ruby path and
 once with `SPECGUARD_VALIDATE_INTENT` pointing at this binary — the gem's opt-in Go backend.
-That pair has no ratified report differences to normalise away, so the requirement is exact
-bytes on stdout, stderr and the exit code. Three read-failure messages are enumerated as
-differing (the gem cannot name an errno the binary never gave it) and each is asserted to
-*still* differ, so closing one retires the entry instead of leaving it to rot. A gem checkout
-predating that backend ignores the variable rather than failing on it, which would compare the
-Ruby path against itself and report perfect agreement — so the preflight probes for the
-refusal first and exits 2 when it does not come.
+Everything structural is required to be identical byte for byte: the selection line, the
+summary line, which annotation failed and where, stderr and the exit code. **Four messages
+are enumerated as differing in their trailing text**, and each is asserted to *still* differ,
+so closing one retires the entry instead of leaving it to rot.
+
+Three of the four are read failures — the gem cannot name an errno the binary never gave it.
+The fourth is the one to know about: a payload that survives normalisation and still is not
+JSON gets **CPython's** parser diagnostic through the backend and **Ruby's** through the Ruby
+path. That is an ordinary typo in an `@intent`, not an exotic input, so it is the difference a
+user flipping the variable on will actually see. It went unenumerated through a whole review
+cycle because the harness's hazard corpus exercised only payloads the normalizer *rescues*;
+section 4b now builds one it cannot, and ratifies the difference between the port and the gem
+directly.
+
+A gem checkout predating that backend ignores the variable rather than failing on it, which
+would compare the Ruby path against itself and report perfect agreement — so the preflight
+probes for the refusal first and exits 2 when it does not come.
 
 ```sh
 go test ./...                # unit coverage for the Python-emulation layer,
