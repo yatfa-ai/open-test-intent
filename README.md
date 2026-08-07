@@ -170,13 +170,22 @@ suite verifies the **validator logic** — run both.
 binary adopters can drop in without a Python 3 runtime. Python remains the reference
 implementation; the Go build is held to it byte for byte.
 
-**Implemented so far:** `FILE...` (adopter) mode and `-h`/`--help`.
-**Not yet:** self-test mode, stdin (`-`), `--source`, `--json`, and recursive `**` globs.
-Every one of those *refuses* with exit `2` and a diagnostic naming itself, rather than
-falling through to adopter mode — where `--source foo.rb` would be read as a filename
-glob and answered with a confident, correctly formatted, wrong result.
+**Implemented so far:** adopter (`FILE...`) mode, `-h`/`--help`, self-test mode,
+`--source`, `--source --json`, and recursive `**` globs.
 
-The same rule covers the schema's `pattern` keyword. Python's `re` and Go's RE2 are not
+**Not yet:** stdin (`-`), and `--json` for adopter (`FILE...`) mode.
+
+Both of those *refuse* with exit `2` and a diagnostic naming themselves, rather than
+falling through to the nearest surface that would accept the arguments — `-` read as a
+filename glob that matches nothing, or a `--json` request answered with the human
+report — and delivering a confident, correctly formatted, wrong result.
+
+Those two lists are not maintained by hand alone. `tests/parity/check_readme_surfaces.py`
+parses them and invokes the built binary once per surface named, so a surface that ships
+without this block being updated turns the parity harness red.
+
+That same refuse-rather-than-guess rule covers the schema's `pattern` keyword. Python's
+`re` and Go's RE2 are not
 the same regex language even where both accept the same source text — Python's `$` also
 matches before a trailing newline, `\d`/`\w`/`\s`/`\b` are Unicode-aware in Python and
 ASCII-only in RE2, `[[:alpha:]]` and `\p{L}` are RE2-only, and `{,n}` means `{0,n}` to

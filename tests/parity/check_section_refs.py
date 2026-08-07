@@ -73,6 +73,7 @@ SECTION_FILE = os.path.join("tests", "parity", "run_parity.sh")
 CITING_FILES = [
     os.path.join("tests", "parity", "run_parity.sh"),
     os.path.join("cmd", "validate-intent", "main.go"),
+    os.path.join("tests", "parity", "check_readme_surfaces.py"),
 ]
 
 # A section heading: "# 7. OS-level failures", immediately followed by the
