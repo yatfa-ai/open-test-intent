@@ -14,6 +14,14 @@
 // `glob.glob(pattern, recursive=True)` does, rather than being downgraded to a
 // single `*` — see cmd/validate-intent/pyglob.go.
 //
+// One surface is NOT in that table, because it is not byte-identical and never
+// will be: `--version` (slice 6, SPGD-141) is a Go-only flag. The reference has
+// no such flag — it reads `--version` as a filename, reports "no file(s) match"
+// and exits 1 — and a released binary that cannot state what it is cannot be
+// released. The divergence is declared in tests/parity/run_parity.sh (excluded
+// group 5 in its header) and asserted Go-side in section 16 ("Go-side refusals
+// — the excluded surfaces, still asserted"). See version.go.
+//
 // Still a later slice: stdin (`-`), and `--json` for the stdin and FILE... modes.
 // They are not silently absent — each refuses with exit 2 and a diagnostic
 // naming itself. That matters more than it looks. Python's main() falls through
@@ -77,6 +85,24 @@ func run(argv []string) int {
 	for _, arg := range argv {
 		if arg == "-h" || arg == "--help" {
 			os.Stdout.WriteString(usage)
+			return 0
+		}
+	}
+
+	// --version, checked second: a Go-only surface (see version.go), placed
+	// here so it answers from ANY argv position for the same reason --json does
+	// — the loop runs over the whole command line before anything reads a
+	// positional. It exits 0 and writes to stdout, which is what separates it
+	// from every other Go-only surface in this file: those are refusals.
+	//
+	// --help deliberately still wins when both are passed, consistent with the
+	// "wins over everything" comment above and with the reference, which prints
+	// usage for `--help --version` exactly as this does. That crossing is a
+	// real byte-for-byte comparison in tests/parity/run_parity.sh section 7
+	// ("--help"), not a Go-side assertion.
+	for _, arg := range argv {
+		if arg == "--version" {
+			fmt.Println(VersionLine())
 			return 0
 		}
 	}
