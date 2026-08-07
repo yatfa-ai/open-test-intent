@@ -4,12 +4,16 @@
 The file carries TWO independent numbering schemes, and both are cited from
 other files:
 
-  * SECTIONS -- "# 7. --help" and its divider rule. Checked by name as well as
-    number; see "WHY IT CHECKS THE NAME AND NOT JUST THE NUMBER" below.
-  * EXCLUDED GROUPS -- the "#   5. `--version`." entries in the "Excluded cases,
-    and why" header block, cited as "excluded group 5". Checked for existence
-    and against the spelled-out count in the header prose; see "THE SECOND
-    SCHEME" below.
+  * SECTIONS -- a "# N. <name>" heading and its divider rule, cited as
+    'section N ("<name>")'. Checked by name as well as number; see "WHY IT
+    CHECKS THE NAME AND NOT JUST THE NUMBER" below.
+  * EXCLUDED GROUPS -- the indented "#   N. <surface>." entries in the
+    "Excluded cases, and why" header block, cited as "excluded group N".
+    Checked for existence and against the spelled-out count in the header
+    prose; see "THE SECOND SCHEME" below.
+
+Both descriptions above use N rather than a real number on purpose, and so does
+every illustration below. See the note on CITING_FILES for why that matters.
 
 The script keeps its original name because run_parity.sh invokes it by path and
 because sections are still the bulk of what it checks.
@@ -66,11 +70,11 @@ THE SECOND SCHEME: EXCLUDED GROUPS
 ==================================
 
 Sections are not the only numbers in this file that drift, and the group
-numbering drifted first. Slice 6 (SPGD-141) added `--version` as excluded group
-6, was rebased onto slice 4 (SPGD-123) -- which had retired the recursive-glob
-group and freed the number 5 -- and renumbered it to 5 in four places and not in
-two. The file's header arithmetic said five groups; two comments pointed at
-group 6. Group 6 was nothing.
+numbering drifted first. Slice 6 (SPGD-141) added `--version` as a sixth
+excluded group, was rebased onto slice 4 (SPGD-123) -- which had retired the
+recursive-glob group and freed a number -- and renumbered it in four places and
+not in two. The file's header arithmetic said there were five; two comments
+still pointed at a sixth that had never existed.
 
 Section refs survived that same rebase intact, because THIS SCRIPT caught the
 one that had gone stale. Groups had no such guard, which is the whole reason
@@ -85,7 +89,7 @@ The contract here is weaker than the section contract, deliberately:
     deliberately NOT compared") must equal N.
 
 It is weaker because group citations are prose -- "`--version` is a Go-only flag
-(excluded group 5)" -- where the name is usually the surrounding sentence
+(excluded group N)" -- where the name is usually the surrounding sentence
 already, so demanding a quoted name would only add ceremony to text that says it
 better. Be clear about what that costs: this catches a citation pointing at a
 group that does not EXIST, and it catches the hand-maintained count going stale.
@@ -93,6 +97,17 @@ It does NOT catch a citation that points at a real but wrong group. The count
 check is what makes the pair worth having anyway -- a renumbering that shifts
 groups without touching the count word fails here, and a renumbering that
 touches both is one a human has already had to think about.
+
+One more thing it does not catch, because the guard against it is all-or-
+nothing. The "no group citations anywhere" check below fires at exactly zero, so
+it proves that SOME citation was checked -- not that THESE citations were. Move
+the "excluded group N" phrasing in some files but not others and coverage drops
+silently to whatever still matches, which the run reports as a smaller number on
+an otherwise green line. A partial rewording is the realistic shape, since
+nobody rewords five files in one edit. A threshold would only trade that for a
+number needing hand-maintenance, which is the problem it would be solving, so
+the honest closure is to say so here and read the printed count as the coverage
+figure it is.
 
 USAGE
 =====
@@ -121,26 +136,78 @@ SECTION_FILE = os.path.join("tests", "parity", "run_parity.sh")
 # prints a green "cross-references OK" line, having simply not looked. That is
 # this project's house defect wearing a checker's uniform, so the rule is: if it
 # says "section N" or "excluded group N", it goes in this list.
+#
+# The rule is unconditional, which is why THIS file is in it. That took work,
+# and the work is the point rather than an accident worth preserving: this file
+# has to describe both numbering schemes and illustrate the regexes that match
+# them, and every one of those descriptions used to carry a real, live number.
+# They passed -- the groups and sections they named did exist -- so they read
+# as correct while being the one place left in the repo where a renumbering
+# could rot a citation in silence, in the file whose whole job is to make that
+# impossible.
+#
+# The fix was to write every scheme description and every syntax illustration
+# with a metavariable ("section N", "excluded group N") instead of a live value.
+# A metavariable cannot rot, cannot be mistaken for a pointer at a real section,
+# and reads better in a regex comment than a sample value does. So this file
+# matches zero citations by construction, and contributes zero to the counts
+# printed at the end. That is the expected state, not a gap.
+#
+# Two consequences worth knowing before you edit the prose above:
+#
+#   * Do not "helpfully" put a real number back into an illustration. It will
+#     either fail here -- 'section N ("name")' with a live N is a citation whose
+#     name does not match -- or, worse, quietly pass and start rotting again.
+#   * The historical note in "THE SECOND SCHEME" deliberately says "a sixth that
+#     had never existed" rather than naming the number, so a story about a dead
+#     group does not read as a citation of one. Keep it that way, including if
+#     you reflow the paragraph.
 CITING_FILES = [
     os.path.join("tests", "parity", "run_parity.sh"),
     os.path.join("tests", "parity", "globtree", "README.md"),
+    os.path.join("tests", "parity", "check_section_refs.py"),
     os.path.join("cmd", "validate-intent", "main.go"),
     os.path.join("cmd", "validate-intent", "version.go"),
     os.path.join("cmd", "validate-intent", "version_test.go"),
     os.path.join("tests", "parity", "check_readme_surfaces.py"),
 ]
 
-# A section heading: "# 7. OS-level failures", immediately followed by the
-# divider rule. Requiring the divider is what keeps the EXCLUSIONS list at the
-# top of run_parity.sh -- whose entries are indented "#   1. ..." -- from being
+# This file, which is the one member of CITING_FILES held to a stricter rule:
+# it must cite NOTHING. See the note above for why -- it describes the schemes
+# and illustrates the regexes, so every number in it is a metavariable.
+#
+# This is mechanical rather than prose because the prose was demonstrably not
+# enough. Writing the paragraph above, in the commit whose entire subject is
+# that live numbers must not appear here, the author cited a real group in it
+# twice -- once in the explanation, once in this very note. The ordinary check
+# passed all three: the group existed, so they were correct citations, and the
+# run went green with the coverage count silently up. A rule that is violated
+# by the act of explaining it needs an assertion, not a reminder.
+SELF_FILE = os.path.join("tests", "parity", "check_section_refs.py")
+
+# The other shape a number reaches this file in: a quoted sample of the DEFINING
+# syntax rather than of a citation -- "# N. <name>" for a section heading,
+# "#   N. <surface>." for a group entry.
+#
+# This half is not hypothetical either. It shipped stale: the HEADING_RE comment
+# illustrated a section heading with a real number and a name belonging to the
+# section after it, and nothing noticed, because a definition sample is not a
+# citation and no check looked at this file at all. It is the same rot in the
+# same file, one syntactic form over.
+SELF_DEFINITION_RE = re.compile(r'"#\s+(\d+)\.')
+
+
+# A section heading: "# N. <name>", immediately followed by the divider rule.
+# Requiring the divider is what keeps the EXCLUSIONS list at the top of
+# run_parity.sh -- whose entries are indented "#   N. ..." -- from being
 # mistaken for sections. Those are exclusion groups; they share the numbering
 # space but not the meaning, and conflating them is its own way to be wrong.
 # They get their own parser below rather than being ignored.
 HEADING_RE = re.compile(r"^# (\d+)\. (.+?)\s*$")
 DIVIDER_RE = re.compile(r"^# -{3,} #\s*$")
 
-# An excluded-group definition: "#   5. `--version`." -- the indentation is what
-# separates it from a section heading, which starts at "# 1.".
+# An excluded-group definition: "#   N. <surface>." -- the indentation is what
+# separates it from a section heading, which starts at "# N.".
 GROUP_DEF_RE = re.compile(r"^#   (\d+)\. (.+?)\s*$")
 
 # The end of the group list. Everything after it describes groups that USED to
@@ -158,15 +225,18 @@ COUNT_WORDS = {
     "SIX": 6, "SEVEN": 7, "EIGHT": 8, "NINE": 9, "TEN": 10,
 }
 
-# "excluded group 5", or the bare "group 5" the header paragraph's arithmetic
+# "excluded group N", or the bare "group N" the header paragraph's arithmetic
 # uses. Anchored on the word so "grouped" and RE2's "(?  groups" cannot match.
+# The space before the digits is load-bearing for a second reason: it is what
+# keeps Python's own match.group(1) calls, all over this file, from parsing as
+# citations of a group that does not exist.
 GROUP_CITATION_RE = re.compile(r"\bgroup (\d+)\b", re.IGNORECASE)
 
-# "section 7", then its name in double quotes. The name is allowed to be on a
+# "section N", then its name in double quotes. The name is allowed to be on a
 # later line, and to wrap across several: these citations live inside comment
 # blocks in two languages, and hard-wrapping at 80 columns is not optional.
-# Both punctuations that read naturally are accepted -- section 7 ("name") and
-# section 7, "name" -- because forcing one house style here would only add a
+# Both punctuations that read naturally are accepted -- section N ("name") and
+# section N, "name" -- because forcing one house style here would only add a
 # second way for this check to fail on correct prose.
 CITATION_RE = re.compile(r"section (\d+)", re.IGNORECASE)
 NAME_RE = re.compile(r'[\s,]*\(?\s*"([^"]+)"')
@@ -353,6 +423,48 @@ def check_file_groups(rel_path, groups, problems):
     return count
 
 
+def check_self_cites_nothing(problems):
+    """This file must contain no citation at all -- every number in it is a
+    metavariable. A live one here would pass every other check in this script
+    (it names a section or group that really exists) while being the last place
+    in the repo a renumbering can rot something in silence."""
+    for index, line in enumerate(read_lines(SELF_FILE)):
+        for match in CITATION_RE.finditer(line):
+            problems.append(
+                '%s:%d writes "section %s" with a real number.\n'
+                "        This file must cite nothing -- it describes the\n"
+                "        numbering schemes rather than pointing into them, so\n"
+                "        illustrations use the metavariable N. A live number\n"
+                "        here passes every other check (the section exists)\n"
+                "        and then rots the next time the harness is\n"
+                '        renumbered. Write "section N".'
+                % (SELF_FILE, index + 1, match.group(1))
+            )
+        for match in GROUP_CITATION_RE.finditer(line):
+            problems.append(
+                '%s:%d writes "group %s" with a real number.\n'
+                "        This file must cite nothing -- it describes the\n"
+                "        numbering schemes rather than pointing into them, so\n"
+                "        illustrations use the metavariable N. A live number\n"
+                "        here passes every other check (the group exists) and\n"
+                "        then rots the next time the groups are renumbered.\n"
+                '        Write "group N", and tell a story about a retired\n'
+                "        group without naming its number."
+                % (SELF_FILE, index + 1, match.group(1))
+            )
+        for match in SELF_DEFINITION_RE.finditer(line):
+            problems.append(
+                '%s:%d illustrates a definition as "# %s. ..." with a real\n'
+                "        number.\n"
+                "        Same rule, other syntax: this file shows the SHAPE of\n"
+                "        a heading or group entry, never a particular one. A\n"
+                "        real number here pairs with a name that stops being\n"
+                "        its own on the next renumbering, and no citation\n"
+                '        check will see it. Write "# N. <name>".'
+                % (SELF_FILE, index + 1, match.group(1))
+            )
+
+
 def fail_hard(message):
     sys.stderr.write("check_section_refs: %s\n" % message)
     sys.exit(1)
@@ -464,6 +576,7 @@ def main():
 
     problems = []
     check_group_numbering(groups, declared, declared_line, problems)
+    check_self_cites_nothing(problems)
 
     citations = 0
     group_citations = 0
@@ -481,6 +594,18 @@ def main():
         fail_hard(
             "found no excluded-group citations across %d files -- the "
             '"group N" phrasing must have changed, so nothing was checked'
+            % len(CITING_FILES)
+        )
+
+    # Fourth, and the one the section half never had. It is the older and much
+    # larger contract, so it went the longest without the guard that says the
+    # work set was not empty -- and it fails the same way: reword "section N"
+    # out of existence and every name comparison below simply never runs, which
+    # from here is indistinguishable from all of them agreeing.
+    if citations == 0:
+        fail_hard(
+            "found no section citations across %d files -- the "
+            '"section N" phrasing must have changed, so nothing was checked'
             % len(CITING_FILES)
         )
 
