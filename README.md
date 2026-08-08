@@ -404,10 +404,19 @@ checks it against the manifest before it lands. It needs no Go toolchain and no 
 repository, which is the entire point: building from source is the wrong ask of someone who only
 wants to run the linter.
 
-```sh
+```bash
 scripts/install.sh --from dist/release --prefix /usr/local/bin
 scripts/install.sh --from https://host/owner/repo/releases/download/v1.4.0
+curl -fsSL https://host/owner/repo/raw/v1.4.0/scripts/install.sh | bash -s -- --from https://host/owner/repo/releases/download/v1.4.0
 ```
+
+**It is a bash script, and bash is the one dependency it cannot work around.** It needs no Go
+toolchain and no clone, but it does need its own interpreter — so it probes for it the way it
+probes for `sha256sum` and `curl`, rather than assuming it. Started by a shell that is not bash
+(`sh install.sh`, or a `/bin/sh` that is dash), it re-runs itself under a bash on `PATH`; a host
+with no bash **exits 2 and installs nothing**, naming the miss. The one case it cannot recover
+from is `curl … | sh`, where the script arrives on stdin and there is no file to hand to bash:
+pipe it into **`bash`**, as above.
 
 It maps `uname -s`/`uname -m` onto exactly one of the four artifact names, fetches that one and
 `SHA256SUMS`, verifies the **one manifest row that describes it**, and only then installs — into

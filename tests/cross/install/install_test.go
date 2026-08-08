@@ -50,6 +50,7 @@
 package install
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -62,6 +63,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // manifestName is the file install.sh verifies against — the same constant
@@ -883,6 +885,294 @@ func TestEitherDigestToolVerifiesTheDownload(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- the interpreter the script itself needs --------------------------------
+//
+// Everything above runs install.sh under bash — `run` through the shebang,
+// `runWithEnv` through an ABSOLUTE bash chosen precisely so that a restricted
+// PATH cannot turn a case about a missing digest tool into a case about a
+// missing interpreter. That is right for those cases and it left one axis
+// untested: the suite whose subject is what the HOST is missing never asked what
+// happens when the missing thing is bash itself.
+//
+// It was the one miss install.sh could not recover from. `sh install.sh` and
+// `curl … | sh` bypass the `#!/usr/bin/env bash` shebang entirely, and on the
+// common CI base /bin/sh is dash, which died on a raw shell syntax error at the
+// TARGETS array — no exit code from the script's own vocabulary and no
+// diagnostic naming what was missing.
+//
+// These cases are ADDITIVE and deliberately do NOT go through runWithEnv: a
+// helper that resolves bash is the thing being excluded here.
+
+// nonBashShell returns a command that runs a POSIX shell which is NOT bash, or
+// skips.
+//
+// The candidate is checked rather than trusted: `ash` and `sh` are bash under
+// another name on some hosts, and a case that thought it was exercising the
+// non-bash path while running bash would pass for the wrong reason forever —
+// which is the same vacuous green the rest of this file is built to refuse. A
+// candidate whose $BASH_VERSION is set is rejected and the next one tried.
+func nonBashShell(t *testing.T) []string {
+	t.Helper()
+	for _, cand := range [][]string{{"dash"}, {"ash"}, {"busybox", "sh"}, {"sh"}} {
+		bin, err := exec.LookPath(cand[0])
+		if err != nil {
+			continue
+		}
+		cmdline := append([]string{bin}, cand[1:]...)
+		out, err := exec.Command(cmdline[0], append(cmdline[1:], "-c", `echo "${BASH_VERSION:-none}"`)...).Output()
+		if err != nil || strings.TrimSpace(string(out)) != "none" {
+			continue // this one IS bash, whatever it is called
+		}
+		return cmdline
+	}
+	t.Skip("this host has no POSIX shell that is not bash, so install.sh's behaviour under one cannot be exercised here")
+	return nil
+}
+
+// runUnder executes install.sh through an interpreter this test chose, with an
+// optional PATH override and an optional script-on-stdin.
+//
+// The context bound is load-bearing rather than tidiness: the guard under test
+// re-execs the script under bash, and the failure mode of a re-exec that does
+// not converge is a process that never returns. A hang must be a failed test,
+// not a suite that sits there.
+func runUnder(t *testing.T, shell []string, path string, stdin string, args ...string) result {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	t.Cleanup(cancel)
+
+	argv := append([]string{}, shell[1:]...)
+	if stdin == "" {
+		argv = append(argv, installScript(t))
+		argv = append(argv, args...)
+	} else {
+		argv = append(argv, "-s", "--")
+		argv = append(argv, args...)
+	}
+
+	cmd := exec.CommandContext(ctx, shell[0], argv...)
+	cmd.Dir = repoRoot(t)
+	cmd.Env = append(os.Environ(), "no_proxy=*", "NO_PROXY=*")
+	if path != "" {
+		cmd.Env = append(cmd.Env, "PATH="+path)
+	}
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
+
+	got := runCmd(t, cmd)
+	if ctx.Err() != nil {
+		t.Fatalf("install.sh did not terminate under %v — a re-exec that does not converge:\n%s", shell, got.output)
+	}
+	return got
+}
+
+// TestTheScriptParsesUnderAPosixShell is the static half of the guard: the file
+// must PARSE as POSIX sh, which is a stronger statement than the guard running.
+//
+// dash parses and executes incrementally, so a guard at the top of the file runs
+// before the bash-only array further down is ever reached — that is why the
+// runtime cases below pass. But a shell that parsed the whole script before
+// executing any of it would die at the array without reaching the explanation,
+// and so would any `sh -n` lint an adopter points at the file. Hence the `eval`
+// around TARGETS in install.sh, and hence this check.
+//
+// Parseable is NOT the same as runnable, and the difference is deliberate:
+// install.sh is still bash to RUN — `${line:0:64}` and `shopt -s nocasematch`
+// are POSIX-parseable and POSIX-broken. Porting those is a larger change that
+// was consciously not made, and the guard is what makes not making it safe.
+func TestTheScriptParsesUnderAPosixShell(t *testing.T) {
+	shell := nonBashShell(t)
+
+	// The falsifier for this whole test. `-n` has to be a real parse, not a
+	// no-op: if this shell accepted a bash array, the assertion below would pass
+	// on a file that had never been made POSIX-parseable at all.
+	control := filepath.Join(t.TempDir(), "control.sh")
+	if err := os.WriteFile(control, []byte("X=(\n  \"a\"\n)\n"), 0o644); err != nil {
+		t.Fatalf("writing the control script: %v", err)
+	}
+	if got := runCmd(t, exec.Command(shell[0], append(append([]string{}, shell[1:]...), "-n", control)...)); got.code == 0 {
+		t.Skipf("%v -n accepts a bash array, so it cannot tell whether install.sh is POSIX-parseable", shell)
+	}
+
+	got := runCmd(t, exec.Command(shell[0], append(append([]string{}, shell[1:]...), "-n", installScript(t))...))
+	if got.code != 0 {
+		t.Fatalf("`%v -n scripts/install.sh` exited %d, want 0 — the file does not parse as POSIX sh, so a shell that parses before it runs would die on a syntax error instead of reaching the interpreter guard:\n%s",
+			shell, got.code, got.output)
+	}
+}
+
+// TestANonBashShellReExecsIntoBashRatherThanDyingOnASyntaxError is the case the
+// suite could not previously have: install.sh started by a shell that is not
+// bash, on a host that HAS bash.
+//
+// The required answer is a normal install. The script's shebang was bypassed, it
+// noticed, and it re-ran itself under the interpreter it needs — which is the
+// difference between a dependency probed and a dependency assumed.
+func TestANonBashShellReExecsIntoBashRatherThanDyingOnASyntaxError(t *testing.T) {
+	requireSupportedHost(t)
+	shell := nonBashShell(t)
+
+	source := stageSource(t, sourceOptions{})
+	prefix := t.TempDir()
+
+	got := runUnder(t, shell, "", "", "--from", source, "--prefix", prefix)
+	if got.code != 0 {
+		t.Fatalf("install.sh run under %v exited %d, want 0:\n%s", shell, got.code, got.output)
+	}
+	if strings.Contains(got.output, "Syntax error") || strings.Contains(got.output, "unexpected") {
+		t.Errorf("the run produced a shell syntax error rather than an install:\n%s", got.output)
+	}
+	if _, err := os.Stat(filepath.Join(prefix, installedName)); err != nil {
+		t.Fatalf("exited 0 under %v but installed nothing: %v\n%s", shell, err, got.output)
+	}
+}
+
+// TestAHostWithNoBashIsRefusedRatherThanRunUnchecked is criterion 3: the
+// interpreter is the one dependency whose absence used to produce a raw syntax
+// error. It now produces the same answer every other missing dependency here
+// does — exit 2, the miss named, nothing installed.
+//
+// The source it is given is perfectly good, so this stays a test about the
+// interpreter rather than about anything the run would have found later.
+func TestAHostWithNoBashIsRefusedRatherThanRunUnchecked(t *testing.T) {
+	requireSupportedHost(t)
+	shell := nonBashShell(t)
+
+	source := stageSource(t, sourceOptions{})
+	prefix := t.TempDir()
+
+	restricted := onlyTheseTools(t, baseTools...)
+	if _, err := os.Stat(filepath.Join(restricted, "bash")); err == nil {
+		t.Fatal("the restricted PATH still holds bash, so this test cannot be about its absence")
+	}
+
+	got := runUnder(t, shell, restricted, "", "--from", source, "--prefix", prefix)
+	if got.code != 2 {
+		t.Fatalf("a host with no bash exited %d, want 2 (could not check):\n%s", got.code, got.output)
+	}
+	if !strings.Contains(got.output, "bash") {
+		t.Errorf("the refusal did not name bash as the miss:\n%s", got.output)
+	}
+	requireNothingInstalled(t, prefix, map[string]string{})
+}
+
+// TestABashOnPathThatIsNotBashIsRefusedRatherThanReExecedForever pins the
+// termination of the re-exec.
+//
+// A guard that re-execs under `command -v bash` and re-runs the same guard is
+// one bad symlink away from an installer that never returns — and a hang is the
+// worst of the available failures, because it reports nothing at all. The second
+// pass refuses instead, and says which of the two things is wrong: not "no
+// bash", but "the bash on PATH is not bash".
+func TestABashOnPathThatIsNotBashIsRefusedRatherThanReExecedForever(t *testing.T) {
+	requireSupportedHost(t)
+	shell := nonBashShell(t)
+
+	source := stageSource(t, sourceOptions{})
+	prefix := t.TempDir()
+
+	restricted := onlyTheseTools(t, baseTools...)
+	if err := os.Symlink(shell[0], filepath.Join(restricted, "bash")); err != nil {
+		t.Fatalf("planting a fake bash on the restricted PATH: %v", err)
+	}
+
+	got := runUnder(t, shell, restricted, "", "--from", source, "--prefix", prefix)
+	if got.code != 2 {
+		t.Fatalf("a PATH whose `bash` is not bash exited %d, want 2 (could not check):\n%s", got.code, got.output)
+	}
+	if !strings.Contains(got.output, "bash") {
+		t.Errorf("the refusal did not name bash:\n%s", got.output)
+	}
+	requireNothingInstalled(t, prefix, map[string]string{})
+}
+
+// TestTheScriptOnStdinIsRefusedByANonBashShellAndWorksUnderBash is the
+// `curl … | sh` half of the boundary item this script exists for.
+//
+// Piped, there is no file for the script to hand to bash: it arrives on stdin
+// and $0 names the SHELL. That shell binary is a real, readable file, so an
+// existence test on $0 answers yes and a re-exec on it hands bash an ELF — which
+// is why the guard identifies itself by its shebang line instead. bash being
+// present on the host does not make this recoverable, so it is exit 2 with the
+// working invocation spelled out.
+//
+// The second half is the one that must NOT have regressed: `curl … | bash` is
+// the invocation the README documents, and it still installs.
+func TestTheScriptOnStdinIsRefusedByANonBashShellAndWorksUnderBash(t *testing.T) {
+	requireSupportedHost(t)
+	shell := nonBashShell(t)
+
+	body, err := os.ReadFile(installScript(t))
+	if err != nil {
+		t.Fatalf("reading install.sh to pipe it: %v", err)
+	}
+
+	t.Run("piped into a non-bash shell", func(t *testing.T) {
+		source := stageSource(t, sourceOptions{})
+		prefix := t.TempDir()
+
+		got := runUnder(t, shell, "", string(body), "--from", source, "--prefix", prefix)
+		if got.code != 2 {
+			t.Fatalf("the script piped into %v exited %d, want 2 (could not check):\n%s", shell, got.code, got.output)
+		}
+		if !strings.Contains(got.output, "bash") {
+			t.Errorf("the refusal did not name bash:\n%s", got.output)
+		}
+		requireNothingInstalled(t, prefix, map[string]string{})
+	})
+
+	t.Run("piped into bash", func(t *testing.T) {
+		source := stageSource(t, sourceOptions{})
+		prefix := t.TempDir()
+
+		bash, err := exec.LookPath("bash")
+		if err != nil {
+			t.Skipf("no bash on this host: %v", err)
+		}
+		got := runUnder(t, []string{bash}, "", string(body), "--from", source, "--prefix", prefix)
+		if got.code != 0 {
+			t.Fatalf("the script piped into bash exited %d, want 0 — the guard must not break `curl … | bash`:\n%s", got.code, got.output)
+		}
+		if _, err := os.Stat(filepath.Join(prefix, installedName)); err != nil {
+			t.Fatalf("exited 0 but installed nothing: %v\n%s", err, got.output)
+		}
+	})
+}
+
+// TestTheInterpreterGuardIsTheFirstCommandInTheScript pins the guard's
+// PLACEMENT, which is load-bearing and which no runtime case on this host can
+// observe.
+//
+// The line below the guard is `set -euo pipefail`, and `set -o pipefail` is not
+// POSIX: dash 0.5.12+ accepts it, older dash and busybox ash reject it at
+// runtime. On such a host a guard sitting below that line would be pre-empted by
+// a failure about `pipefail` — a refusal for the wrong reason, which is the
+// exact defect the guard exists to remove, reintroduced one line higher.
+//
+// This is asserted by inspection rather than by execution deliberately: it is
+// true of hosts this suite cannot be run on (the no-bash busybox images the
+// script is meant for), and an invariant that only holds where nobody checks it
+// is the kind that gets edited away.
+func TestTheInterpreterGuardIsTheFirstCommandInTheScript(t *testing.T) {
+	body, err := os.ReadFile(installScript(t))
+	if err != nil {
+		t.Fatalf("reading install.sh: %v", err)
+	}
+
+	for _, line := range strings.Split(string(body), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if trimmed != `if [ -z "${BASH_VERSION:-}" ]; then` {
+			t.Fatalf("the first command in install.sh is %q, but it must be the interpreter guard: anything above it runs on a shell that has not yet been established as bash, and `set -o pipefail` on the line below is itself not POSIX", trimmed)
+		}
+		return
+	}
+	t.Fatal("install.sh holds no commands at all, which is not the same as the guard being first")
 }
 
 // --- the remote source ------------------------------------------------------
