@@ -95,6 +95,37 @@ func SchemaPath() (string, error) {
 // nothing to do with the failure.
 const EmbeddedSchemaLabel = "<embedded schema>"
 
+// SchemaSource is what a load RESOLVED TO: where the schema came from, and what
+// the bytes that came from there digest to.
+//
+// It exists because those two facts were previously either discarded or
+// unobtainable. loadSchemaFrom already returned the origin, but main.go read it
+// only inside the error branch — a run that exited 0 never said which schema
+// produced the verdict — and the bytes were dropped on the floor after decoding,
+// so the digest could not be asked for at all. The only digest the binary could
+// report was opentestintent.SchemaSHA256, a pure fold of the COMPILED-IN copy
+// that by construction cannot know a schema beside the executable won.
+//
+// Carried as a struct rather than a third and fourth return value because the
+// two are one answer and are always right or wrong together: an origin without
+// the digest of what was read there is exactly the claim that was already
+// available and already insufficient.
+//
+//   - Origin is the absolute path the schema was read from, or
+//     EmbeddedSchemaLabel when the file was ABSENT and the compiled-in copy was
+//     substituted. It is the same string the "could not load schema" diagnostic
+//     names, so the failing and succeeding reports point at the same place.
+//
+//   - SHA256 is opentestintent.SHA256Hex of the bytes actually loaded — the file's
+//     bytes when disk won, the embedded bytes when it did not. It is EMPTY, and
+//     only empty, when the read itself failed: there were no bytes, and "" is
+//     not the digest of anything (the digest of zero bytes is a real, different
+//     64-hex value). A caller printing this field must not print it blank.
+type SchemaSource struct {
+	Origin string
+	SHA256 string
+}
+
 // LoadSchema is the port of `load_schema` (bin/validate-intent:250-252). It
 // returns the schema's origin alongside the error so the caller can render the
 // reference's diagnostic verbatim.
@@ -148,10 +179,18 @@ const EmbeddedSchemaLabel = "<embedded schema>"
 //
 // Only ENOENT counts as absent. EACCES, EISDIR and ENOTDIR all mean something
 // is there, so they all fail.
-func LoadSchema() (*Schema, string, error) {
+//
+// # What the caller gets back, and why it is more than a path
+//
+// The SchemaSource returned alongside the schema names the origin AND digests
+// the bytes that were loaded from it, so the question "which contract did this
+// run enforce?" has an answer for the first time. `--schema-source`
+// (schemasource.go) is that answer's only consumer today; the verdict path uses
+// the origin exactly as before, in its diagnostic.
+func LoadSchema() (*Schema, SchemaSource, error) {
 	path, err := SchemaPath()
 	if err != nil {
-		return nil, "", err
+		return nil, SchemaSource{}, err
 	}
 	return loadSchemaFrom(path)
 }
@@ -163,28 +202,35 @@ func LoadSchema() (*Schema, string, error) {
 // the suite runs as root, and it SKIPs rather than fails. Verifying "a broken
 // schema does not fall back" by watching a skipped case not go red would be a
 // vacuous check of the fix for a vacuous check.
-func loadSchemaFrom(path string) (*Schema, string, error) {
+//
+// The digest is taken from `data` at the moment the bytes are in hand and before
+// anything is done with them, so it is provably the digest of what was decoded
+// and compiled rather than of a second read that could see a different file.
+func loadSchemaFrom(path string) (*Schema, SchemaSource, error) {
 	data, readErr := os.ReadFile(path)
 	if readErr != nil {
 		if !errors.Is(readErr, fs.ErrNotExist) {
 			// Present, but we could not have it. Not our call to substitute.
-			return nil, path, errors.New(pyOSError(readErr))
+			// No bytes, so no digest: see SchemaSource on why that field is
+			// empty here rather than the digest of an empty input.
+			return nil, SchemaSource{Origin: path}, errors.New(pyOSError(readErr))
 		}
 		data = opentestintent.SchemaJSON()
 		path = EmbeddedSchemaLabel
 	}
+	source := SchemaSource{Origin: path, SHA256: opentestintent.SHA256Hex(data)}
 	if !utf8.Valid(data) {
-		return nil, path, errors.New(pyUnicodeDecodeError(data))
+		return nil, source, errors.New(pyUnicodeDecodeError(data))
 	}
 	root, err := DecodeOrdered(data)
 	if err != nil {
-		return nil, path, err
+		return nil, source, err
 	}
 	schema, err := CompileSchema(root)
 	if err != nil {
-		return nil, path, err
+		return nil, source, err
 	}
-	return schema, path, nil
+	return schema, source, nil
 }
 
 // --------------------------------------------------------------------------- //

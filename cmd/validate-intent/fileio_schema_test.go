@@ -61,12 +61,12 @@ func writeSchema(t *testing.T, dir, content string) string {
 func TestLoadSchemaFromFallsBackWhenTheFileIsAbsent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "schemas", "open-test-intent.v1.json")
 
-	schema, origin, err := loadSchemaFrom(path)
+	schema, source, err := loadSchemaFrom(path)
 	if err != nil {
 		t.Fatalf("expected the embedded fallback, got error: %v", err)
 	}
-	if origin != EmbeddedSchemaLabel {
-		t.Errorf("origin = %q, want %q", origin, EmbeddedSchemaLabel)
+	if source.Origin != EmbeddedSchemaLabel {
+		t.Errorf("origin = %q, want %q", source.Origin, EmbeddedSchemaLabel)
 	}
 
 	// Loading is not the claim; validating with the right rules is. The
@@ -85,12 +85,12 @@ func TestLoadSchemaFromFallsBackWhenTheFileIsAbsent(t *testing.T) {
 func TestLoadSchemaFromFallsBackWhenTheSchemasDirectoryIsAbsent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "no", "such", "tree", "schemas", "open-test-intent.v1.json")
 
-	_, origin, err := loadSchemaFrom(path)
+	_, source, err := loadSchemaFrom(path)
 	if err != nil {
 		t.Fatalf("expected the embedded fallback, got error: %v", err)
 	}
-	if origin != EmbeddedSchemaLabel {
-		t.Errorf("origin = %q, want %q", origin, EmbeddedSchemaLabel)
+	if source.Origin != EmbeddedSchemaLabel {
+		t.Errorf("origin = %q, want %q", source.Origin, EmbeddedSchemaLabel)
 	}
 }
 
@@ -101,12 +101,12 @@ func TestLoadSchemaFromPrefersAPresentFileOverTheEmbeddedCopy(t *testing.T) {
 	dir := t.TempDir()
 	path := writeSchema(t, dir, permissiveSchema)
 
-	schema, origin, err := loadSchemaFrom(path)
+	schema, source, err := loadSchemaFrom(path)
 	if err != nil {
 		t.Fatalf("loading the override: %v", err)
 	}
-	if origin != path {
-		t.Errorf("origin = %q, want the on-disk path %q", origin, path)
+	if source.Origin != path {
+		t.Errorf("origin = %q, want the on-disk path %q", source.Origin, path)
 	}
 	if errs := schema.Validate(mustDecode(t, `{}`)); len(errs) != 0 {
 		t.Errorf("the on-disk override was not used: it rejected `{}` the way the embedded copy would: %v", errs)
@@ -135,12 +135,12 @@ func TestLoadSchemaPrefersASchemaBesideTheExecutable(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Remove(path) })
 
-	schema, origin, err := LoadSchema()
+	schema, source, err := LoadSchema()
 	if err != nil {
 		t.Fatalf("LoadSchema: %v", err)
 	}
-	if origin != path {
-		t.Errorf("origin = %q, want %q", origin, path)
+	if source.Origin != path {
+		t.Errorf("origin = %q, want %q", source.Origin, path)
 	}
 	if errs := schema.Validate(mustDecode(t, `{}`)); len(errs) != 0 {
 		t.Errorf("LoadSchema ignored the schema beside the executable: %v", errs)
@@ -155,12 +155,12 @@ func TestLoadSchemaFromDoesNotFallBackPastAPresentButBrokenSchema(t *testing.T) 
 		dir := t.TempDir()
 		path := writeSchema(t, dir, "{ this is not json")
 
-		_, origin, err := loadSchemaFrom(path)
+		_, source, err := loadSchemaFrom(path)
 		if err == nil {
 			t.Fatal("a malformed schema was silently replaced by the embedded copy")
 		}
-		if origin != path {
-			t.Errorf("origin = %q, want the offending path %q", origin, path)
+		if source.Origin != path {
+			t.Errorf("origin = %q, want the offending path %q", source.Origin, path)
 		}
 	})
 
@@ -217,12 +217,18 @@ func TestLoadSchemaFromDoesNotFallBackPastAPresentButBrokenSchema(t *testing.T) 
 				"the malformed/EISDIR/ENOTDIR cases above still assert the rule")
 		}
 
-		_, origin, err := loadSchemaFrom(path)
+		_, source, err := loadSchemaFrom(path)
 		if err == nil {
 			t.Fatal("an unreadable schema was silently replaced by the embedded copy")
 		}
-		if origin != path {
-			t.Errorf("origin = %q, want the offending path %q", origin, path)
+		if source.Origin != path {
+			t.Errorf("origin = %q, want the offending path %q", source.Origin, path)
+		}
+		// No bytes were read, so there is no digest to report — and "" must be
+		// what says so. The digest of an empty input is a real 64-hex value, so
+		// emitting one here would name a schema that was never loaded.
+		if source.SHA256 != "" {
+			t.Errorf("SHA256 = %q after a failed read; want empty", source.SHA256)
 		}
 		if !strings.Contains(err.Error(), "Permission denied") {
 			t.Errorf("diagnostic lost the errno: %q", err.Error())

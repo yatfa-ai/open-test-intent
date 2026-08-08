@@ -22,7 +22,16 @@
 // group 5 in its header) and asserted Go-side in section 16 ("Go-side refusals
 // — the excluded surfaces, still asserted"). See version.go.
 //
-// It is also DOCUMENTED, in `--help` and only there, by a trailer appended to
+// `--schema-source` (slice 19, SPGD-301) is the second such flag, and it exists
+// because the first one answers a narrower question than it looks like it does.
+// `--version` reports the digest of the schema COMPILED IN; LoadSchema gives a
+// schema file found beside the executable priority over that copy, so a run can
+// enforce a contract `--version` has never seen. This flag runs the real loader
+// and reports the resolved origin plus the digest of the bytes actually loaded —
+// the contract a run on this host ENFORCES. Declared as excluded group 6 and
+// asserted in the same section 16. See schemasource.go.
+//
+// Both are also DOCUMENTED, in `--help` and only there, by a trailer appended to
 // the shared usage block (helpTrailer in version.go). On a host holding just
 // this binary, `--help` is the entire documentation set, and a flag the
 // installer runs cannot be invisible on it. Section 7 ("--help") still compares
@@ -127,6 +136,36 @@ func run(argv []string) int {
 		}
 	}
 
+	// --schema-source, checked third: the other Go-only surface that SUCCEEDS
+	// (schemasource.go). It reports the schema a run on this host actually
+	// ENFORCES — resolved origin plus the digest of the bytes loaded from it —
+	// which is the question `--version` above structurally cannot answer, since
+	// it returns before LoadSchema is ever called.
+	//
+	// Answered from any argv position, for the same reason --version and --json
+	// are: the loop runs over the whole command line before anything reads a
+	// positional.
+	//
+	// The ORDER of these three loops is the precedence, and each step of it is
+	// deliberate. --help wins over everything, in both implementations
+	// (bin/validate-intent:886), and the crossing with this flag is a real
+	// byte-for-byte comparison in tests/parity/run_parity.sh section 7 rather
+	// than a Go-side claim — the reference pre-empts `--schema-source` as a
+	// filename with its own help loop, so both print usage. --version wins over
+	// this flag because it is the surface scripts/install.sh, scripts/build-release.sh
+	// and specguard-rspec's identity probe already parse: a crossing that changed
+	// what --version prints would break them for a report none of them asked for.
+	//
+	// Unlike the two above, this one is NOT an early return that ignores the
+	// filesystem — it loads the schema, and exits 2 with the verdict path's own
+	// diagnostic if that fails. It therefore sits above the out-of-scope refusals
+	// below but does its own loading rather than sharing theirs.
+	for _, arg := range argv {
+		if arg == schemaSourceFlag {
+			return runSchemaSource()
+		}
+	}
+
 	// --json is stripped before the positional dispatch below, so it may be
 	// written anywhere on the command line (bin/validate-intent:891-893).
 	asJSON := false
@@ -158,9 +197,9 @@ func run(argv []string) int {
 		return notImplemented("--json output for adopter (FILE...) mode")
 	}
 
-	schema, schemaPath, err := LoadSchema()
+	schema, schemaSource, err := LoadSchema()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: could not load schema %s: %s\n", schemaPath, err)
+		os.Stderr.WriteString(schemaLoadError(schemaSource, err))
 		return 2
 	}
 
@@ -230,6 +269,29 @@ func notImplemented(surface string) int {
 		"error: %s is not implemented in the Go port yet; use `python3 bin/validate-intent` for it\n",
 		surface)
 	return 2
+}
+
+// schemaLoadError renders the reference's diagnostic for a schema that exists
+// and could not be loaded (bin/validate-intent:898), trailing newline included:
+//
+//	error: could not load schema /repo/schemas/open-test-intent.v1.json: [Errno 13] Permission denied: '...'
+//
+// It is a function rather than a format string written at each site because it
+// now HAS two sites — the verdict path in run(), and `--schema-source`
+// (schemasource.go) — and those two must fail identically. The port's whole
+// acceptance test is byte-for-byte agreement with python3 on this line, so a
+// second copy that drifted would produce a surface that reports this host's
+// broken schema in prose no comparison covers. tests/parity/run_parity.sh
+// asserts the two paths' stderr are equal on the same broken tree rather than
+// trusting that they share this function.
+//
+// The origin comes from the SchemaSource the load resolved, which is the path it
+// tried to read — or EmbeddedSchemaLabel, though not reachably from here: a
+// fallback to the embedded copy only happens when the file is ABSENT, and the
+// embedded bytes are pinned by schema_test.go, so an error carrying that label
+// would mean the compiled-in schema itself no longer loads.
+func schemaLoadError(source SchemaSource, err error) string {
+	return fmt.Sprintf("error: could not load schema %s: %s\n", source.Origin, err)
 }
 
 // RunAdopter is the port of `run_adopter` (bin/validate-intent:713-728):
