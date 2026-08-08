@@ -329,19 +329,46 @@ No toolchain, or no artifact this host can execute, exits `2` and says what went
 never a pass. The script builds and verifies only: publishing, tagging and release-asset
 upload are deliberately not here, for the reason `.agents/README.md` gives.
 
-### Verifying a downloaded artifact
+### Installing a built artifact, and verifying it
 
 `scripts/build-release.sh <semver>` produces the four stamped release binaries in
 `dist/release/` alongside a **`SHA256SUMS`** manifest listing each one by basename. All of the
 release script's other checks run on the build host and leave nothing behind; the manifest is
-what carries an artifact's identity off it. Keep it beside the binary you downloaded and verify
-with your own platform's tool — it is the standard coreutils/shasum format, so no knowledge of
-this repository is required:
+what carries an artifact's identity off it.
+
+`scripts/install.sh` is the other half of that seam — the step that puts a binary on a host and
+checks it against the manifest before it lands. It needs no Go toolchain and no clone of this
+repository, which is the entire point: building from source is the wrong ask of someone who only
+wants to run the linter.
+
+```sh
+scripts/install.sh --from dist/release --prefix /usr/local/bin
+scripts/install.sh --from https://host/owner/repo/releases/download/v1.4.0
+```
+
+It maps `uname -s`/`uname -m` onto exactly one of the four artifact names, fetches that one and
+`SHA256SUMS`, verifies the **one manifest row that describes it**, and only then installs — into
+the prefix under a temporary name, renamed onto `validate-intent` as the final act, after running
+`--version` from the prefix to confirm the installed binary actually works there. A host with no
+matching artifact, a source with no manifest, a manifest with no row for this host, or a host with
+neither `sha256sum` nor `shasum` all **exit 2 and install nothing**; a digest that does not match
+exits **1** and leaves the prefix untouched. "Could not check" is never a pass. It acquires and
+verifies only — the human-owned half above is unchanged by it.
+
+Note what `install.sh` deliberately does *not* run: `sha256sum -c SHA256SUMS`. The manifest
+describes four artifacts and a download brings one, so `-c` would report the three you did not
+download as missing files and fail every honest install.
+
+Verifying by hand is the same manifest read the same way, and needs nothing from this repository —
+it is the standard coreutils/shasum format:
 
 ```sh
 sha256sum -c SHA256SUMS        # GNU coreutils, e.g. Linux
 shasum -a 256 -c SHA256SUMS    # BSD/macOS
 ```
+
+(Run in a directory holding the manifest and **every** artifact it lists — a full `dist/release`,
+not a single downloaded binary beside it.)
 
 The digests themselves are computed with Go's `crypto/sha256`, not with a host tool: `sha256sum`
 is GNU coreutils and is absent from a stock macOS build host, which is one of only two host
@@ -350,7 +377,17 @@ families the release script can run on. The manifest is written into the staging
 matched — a manifest generated and never checked would be the vacuous green this project keeps
 having to name. It is an integrity and identity record, not a signature: the same run produced
 both, so it does not defend against an attacker who could replace both. Signing and provenance
-are a separate mechanism and are not claimed.
+are a separate mechanism and are not claimed — and `install.sh` verifying against a manifest it
+fetched from the same place as the artifact inherits exactly that limit.
+
+```sh
+go test ./tests/cross/install/   # the installer's own calibration
+```
+
+The installer's failure modes are asserted rather than assumed: a corrupted artifact, a manifest
+row that belongs to another target, an artifact that does not run, an unsupported host, a host with
+no digest tool, and a 404 for each of the two files it fetches. Run without `-short` it also builds
+a real release and installs it end to end.
 
 ## Versioning
 
