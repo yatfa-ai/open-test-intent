@@ -324,3 +324,69 @@ func TestValidateIgnoresNonObjectSchema(t *testing.T) {
 		t.Errorf("boolean schema produced %v, want no errors", errs)
 	}
 }
+
+// TestUEscapeNeedsATrailingCharacter pins CPython's bound on a \uXXXX escape at
+// end-of-document.
+//
+// The C scanner will not decode the escape unless a character FOLLOWS the four
+// hex digits, so an escape that ends the document is `Invalid \uXXXX escape`
+// reported at the 'u' — not `Unterminated string` at the opening quote. The
+// port's bound was one character short and produced the wrong message at the
+// wrong offset, which is a different errors[0] in the --json document.
+//
+// The parity harness sweeps this class against python3 in section 17b
+// ("truncation sweep — every prefix of a \uXXXX-bearing document"); this test
+// states the rule directly so it also fails in `go test`, without an oracle.
+// Every expectation below was measured against CPython 3.13.5.
+func TestUEscapeNeedsATrailingCharacter(t *testing.T) {
+	cases := []struct {
+		doc string
+		msg string
+		pos int
+	}{
+		// the escape ends the document: invalid, at the 'u'
+		{`"\u0041`, `Invalid \uXXXX escape`, 2},
+		// one more character present: it decodes, then the string runs out
+		{`"\u0041x`, "Unterminated string starting at", 0},
+		// the same boundary nested, so the offset is not an artefact of 0
+		{`{"a":"\u0041`, `Invalid \uXXXX escape`, 7},
+		{`[1,"\u0041`, `Invalid \uXXXX escape`, 5},
+		// the LOW half of a surrogate pair carries the bound independently:
+		// the high half decoded fine, the second one has no trailing character
+		{`"\ud800\udc00`, `Invalid \uXXXX escape`, 8},
+		// a high surrogate that does not combine still reaches unterminated
+		{`"\ud800x`, "Unterminated string starting at", 0},
+		// short escapes were already correct; the corrected bound keeps them so
+		{`"\u004`, `Invalid \uXXXX escape`, 2},
+		{`"\u`, `Invalid \uXXXX escape`, 2},
+		// non-hex digits are the other route to the same message and offset
+		{`"\uZZZZ`, `Invalid \uXXXX escape`, 2},
+		// and a complete document must still parse
+		{`"\u0041"`, "", 0},
+	}
+
+	for _, tc := range cases {
+		value, err := DecodeOrderedString(tc.doc)
+		if tc.msg == "" {
+			if err != nil {
+				t.Errorf("DecodeOrderedString(%q): unexpected error %v", tc.doc, err)
+			} else if value != "A" {
+				t.Errorf("DecodeOrderedString(%q) = %#v, want %q", tc.doc, value, "A")
+			}
+			continue
+		}
+		if err == nil {
+			t.Errorf("DecodeOrderedString(%q): want error %q, got value %#v", tc.doc, tc.msg, value)
+			continue
+		}
+		perr, ok := err.(*PyJSONError)
+		if !ok {
+			t.Errorf("DecodeOrderedString(%q): want *PyJSONError, got %T", tc.doc, err)
+			continue
+		}
+		if perr.Msg != tc.msg || perr.Pos != tc.pos {
+			t.Errorf("DecodeOrderedString(%q) = %q @%d, want %q @%d",
+				tc.doc, perr.Msg, perr.Pos, tc.msg, tc.pos)
+		}
+	}
+}

@@ -1,14 +1,18 @@
 package main
 
-// Machine-readable reporting (`--json`) — the port of `_JsonReport` and
-// `run_source_json` (bin/validate-intent:504-579, 785-810).
+// Machine-readable reporting (`--json`) — the port of `_JsonReport`,
+// `run_adopter_json` and `run_source_json` (bin/validate-intent:504-579,
+// 731-753, 785-810).
 //
-// SCOPE, and a correction to the originating proposal: slice 1 does NOT provide
-// a reporter this could be "wired into". SPGD-98 lists --json as out of scope
-// and refuses it with exit 2, so the whole rendering path is built here. Only
-// the `--source` half is in scope for SPGD-102; adopter-mode and stdin --json
-// remain refused, and tests/parity/run_parity.sh asserts that refusal so
-// "out of scope" cannot quietly become "falls through to the wrong renderer".
+// ONE reporter, three modes. The renderers differ only in what they count and
+// what a finding is FOR — stdin has exactly one and no files, adopter one per
+// file, --source one per annotation — and they share this document, this key
+// order and this escaping. Forking a second encoder for a later mode is the
+// failure `_JsonReport`'s own docstring exists to prevent: the two drift, and
+// the drift is invisible to any consumer that parses before comparing.
+//
+// Slice 3 (SPGD-107) added the adopter half below and the stdin half in
+// stdin_mode.go, completing the matrix. Nothing here is refused any more.
 
 import (
 	"fmt"
@@ -106,7 +110,7 @@ func (r *JSONReport) Emit(exitCode int) int {
 	b.WriteString("  \"findings\": " + renderFindings(r.Findings) + "\n")
 	b.WriteString("}")
 
-	fmt.Println(b.String())
+	pyPrintln(b.String())
 	return exitCode
 }
 
@@ -163,6 +167,56 @@ func jsonBool(b bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+// RunAdopterJSON is the port of `run_adopter_json` (bin/validate-intent:731-753):
+// the --json renderer for adopter mode — one finding per file checked.
+//
+// THREE DIFFERENT COUNTING RULES share these few lines, and a port that reaches
+// for one counter and reuses it collapses them. Measured on a mixed batch
+// (valid + malformed + schema-failing + unreadable + a non-matching glob), the
+// reference answers `files: 4, annotations: 3, failed: 4` — three different
+// numbers over five arguments:
+//
+//	files       every file the globs matched, readable or not (4).
+//	            The no-match PATTERN is not a file and is not counted.
+//	annotations annotation SITES EXAMINED (3), the same rule --source uses. In
+//	            adopter mode each file is one site, so the MALFORMED file counts
+//	            — the site existed, its payload was unparseable — while the
+//	            UNREADABLE one does not, because there was nothing to examine.
+//	            This is the only place `kind` is consulted for arithmetic rather
+//	            than for reporting.
+//	failed      every failing finding (4), INCLUDING the no-match, which
+//	            contributed to neither of the other two.
+//
+// Summing `annotations` across modes is meaningful precisely because the
+// malformed/unreadable distinction is drawn the same way everywhere.
+func RunAdopterJSON(patterns []string, schema *Schema) int {
+	report := &JSONReport{Mode: "adopter"}
+
+	checkOne := func(path string) bool {
+		report.Files++
+		valid, errs, parseError, kind := CheckFile(path, schema)
+		if parseError != "" {
+			if kind != KindRead {
+				report.Annotations++
+			}
+			return report.Add(JSONFinding{
+				File: path, OK: false, Kind: kind, Errors: []string{parseError},
+			})
+		}
+		report.Annotations++
+		findingKind := KindSchema
+		if valid {
+			// A passing finding carries `kind: null`, not "schema": `kind`
+			// names why a finding FAILED, and a non-null kind on a passing row
+			// would read as a failure a consumer then has to second-guess.
+			findingKind = ""
+		}
+		return report.Add(JSONFinding{File: path, OK: valid, Kind: findingKind, Errors: errs})
+	}
+
+	return report.Emit(runOverPatterns(patterns, checkOne, report.NoMatch))
 }
 
 // RunSourceJSON is the port of `run_source_json` (bin/validate-intent:785-810):

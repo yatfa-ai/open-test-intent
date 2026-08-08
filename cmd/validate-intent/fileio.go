@@ -23,7 +23,7 @@ import (
 // consumer of the later --json slice needs to tell them apart, and once the
 // result has been flattened to text the distinction is gone for good.
 func CheckFile(path string, schema *Schema) (valid bool, errs []string, parseError string, kind string) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(pyFSEncode(path))
 	if err != nil {
 		return false, nil, "could not read/parse JSON: " + pyOSError(err), KindRead
 	}
@@ -58,7 +58,7 @@ func CheckFile(path string, schema *Schema) (valid bool, errs []string, parseErr
 // for no change in behaviour; leaving it out silently would be a divergence
 // nobody had checked. It is checked, and it is out.
 func readSourceText(path string) (text string, readError string) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(pyFSEncode(path))
 	if err != nil {
 		return "", "could not read file: " + pyOSError(err)
 	}
@@ -79,12 +79,36 @@ func readSourceText(path string) (text string, readError string) {
 //
 // This path is where the schema is LOOKED FOR, which is no longer the same
 // claim as where it is FOUND. See LoadSchema.
+//
+// The executable's own path is bytes like any other, so it is decoded here —
+// os.Executable() returns whatever the kernel holds, which on an install
+// directory whose name is not valid UTF-8 is not a UTF-8 string. Decoding it
+// puts this path in the same space as every other path in the port (see
+// pyfspath.go), which is what the two consumers below need:
+//
+//   - loadSchemaFrom re-encodes it for the syscall, so the file is still
+//     opened. That is the round trip, not a formality.
+//   - pyOSError reprs it for the `[Errno ...]` clause of the "could not load
+//     schema" diagnostic, and PyReprString on a DECODED path produces the
+//     reference's own `\udce9` escapes.
+//
+// What decoding does NOT fix, and the comment here used to claim it did: the
+// other half of that same diagnostic interpolates this string with a bare `%s`
+// (schemaLoadError in main.go), and Go writes a surrogate as its three WTF-8
+// bytes where CPython's stderr — `backslashreplace` by default, and NOT the
+// handler this port models for stdout — writes six ASCII characters. That is a
+// real, measured divergence. It is declared as excluded group 7 in
+// tests/parity/run_parity.sh and pinned, both halves, in its section 16e.
+//
+// (There was never a U+FFFD on this path to fix, either: filepath.Dir does not
+// iterate runes, so an undecoded byte reached the diagnostic intact. It just
+// reached it as one raw byte instead of three.)
 func SchemaPath() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
-	root := filepath.Dir(filepath.Dir(exe))
+	root := filepath.Dir(filepath.Dir(pyFSDecodeString(exe)))
 	return filepath.Join(root, "schemas", "open-test-intent.v1.json"), nil
 }
 
@@ -206,8 +230,13 @@ func LoadSchema() (*Schema, SchemaSource, error) {
 // The digest is taken from `data` at the moment the bytes are in hand and before
 // anything is done with them, so it is provably the digest of what was decoded
 // and compiled rather than of a second read that could see a different file.
+//
+// `path` arrives DECODED (SchemaPath ran the executable's own path through
+// os.fsdecode), so it is re-encoded here like every other syscall argument —
+// see pyfspath.go. Without that, an install directory whose name is not valid
+// UTF-8 would be named correctly in the diagnostic and then not opened.
 func loadSchemaFrom(path string) (*Schema, SchemaSource, error) {
-	data, readErr := os.ReadFile(path)
+	data, readErr := os.ReadFile(pyFSEncode(path))
 	if readErr != nil {
 		if !errors.Is(readErr, fs.ErrNotExist) {
 			// Present, but we could not have it. Not our call to substitute.
@@ -245,12 +274,18 @@ func loadSchemaFrom(path string) (*Schema, SchemaSource, error) {
 // filename is repr'd rather than bare — both are reproduced here so the
 // "could not load schema" and unreadable-file diagnostics match the reference
 // byte for byte rather than being a documented divergence.
+//
+// The path is DECODED before it is repr'd. os.PathError carries back exactly
+// the bytes the syscall was given, which pyFSEncode had turned back into raw
+// bytes — repr'ing those directly would render `x\udce9.json` as `x\ufffd.json`
+// in the one message whose whole job is to name the file that failed.
 func pyOSError(err error) string {
 	var pathErr *os.PathError
 	var errno syscall.Errno
 	if errors.As(err, &pathErr) && errors.As(err, &errno) {
 		return fmt.Sprintf("[Errno %d] %s: %s",
-			int(errno), capitalizeFirst(errno.Error()), PyReprString(pathErr.Path))
+			int(errno), capitalizeFirst(errno.Error()),
+			PyReprString(pyFSDecodeString(pathErr.Path)))
 	}
 	return err.Error()
 }
@@ -260,39 +295,4 @@ func capitalizeFirst(s string) string {
 		return s
 	}
 	return strings.ToUpper(s[:1]) + s[1:]
-}
-
-// pyUnicodeDecodeError approximates str(UnicodeDecodeError) for a byte string
-// that is not valid UTF-8.
-//
-// Best-effort: Python distinguishes more failure reasons than this and widens
-// the reported span past a single byte for some of them. The classification and
-// exit code are exact; only the tail of the prose can differ, which is why
-// tests/parity/run_parity.sh lists non-UTF-8 input as an excluded case.
-func pyUnicodeDecodeError(data []byte) string {
-	for i := 0; i < len(data); {
-		r, size := utf8.DecodeRune(data[i:])
-		if r != utf8.RuneError || size > 1 {
-			i += size
-			continue
-		}
-		reason := "invalid start byte"
-		if b := data[i]; b >= 0xC2 && b <= 0xF4 {
-			want := 2
-			switch {
-			case b >= 0xF0:
-				want = 4
-			case b >= 0xE0:
-				want = 3
-			}
-			if len(data)-i < want {
-				reason = "unexpected end of data"
-			} else {
-				reason = "invalid continuation byte"
-			}
-		}
-		return fmt.Sprintf("'utf-8' codec can't decode byte 0x%02x in position %d: %s",
-			data[i], i, reason)
-	}
-	return "'utf-8' codec can't decode the input"
 }

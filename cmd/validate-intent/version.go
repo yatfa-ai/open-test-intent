@@ -32,9 +32,9 @@ package main
 // still exits 1. That is not a port bug to be mirrored into oblivion, and it is
 // not a reference bug to be "fixed" here: it is a Go-only surface, added on
 // purpose, and the divergence is written down rather than hidden — see
-// tests/parity/run_parity.sh, excluded group 5 in the file header and the
-// assertions in section 16 ("Go-side refusals — the excluded surfaces, still
-// asserted"). Nothing in the parity corpus invokes `--version`, so no
+// tests/parity/run_parity.sh, excluded group 4 in the file header and the
+// assertions in section 16b ("--version — the excluded surface that
+// SUCCEEDS"). Nothing in the parity corpus invokes `--version`, so no
 // comparison changes.
 //
 // Note also what is NOT here: `--version` is absent from the `usage` block in

@@ -26,7 +26,7 @@ package main
 // the artifact contingent on a schema being loadable — a binary that could not say
 // what it is on exactly the trees where you most need to ask. So this is a SECOND
 // flag rather than a widened first one, and `--version`'s bytes are unchanged:
-// they are pinned by version_test.go, run_parity.sh section 16,
+// they are pinned by version_test.go, run_parity.sh section 16b,
 // scripts/build-release.sh check 3, and scripts/install.sh's post-install run.
 //
 // WHY IT RUNS THE REAL LOADER

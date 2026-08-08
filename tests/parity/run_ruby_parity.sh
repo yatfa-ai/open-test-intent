@@ -158,11 +158,15 @@
 #       emitting site is `Scanner.scan_file`, one method up, so a line number
 #       here silently sends a reader to the OTHER ratified difference the first
 #       time that file grows a comment block; it did). This harness's PYTHON
-#       leg already declines to compare that same tail — run_parity.sh's
-#       excluded group 1, "Non-UTF-8 input — the PROSE only", excludes it
-#       between Python and Go on the grounds that only the tail can differ —
-#       so holding the gem to a stricter rule than the port's own oracle would
-#       be incoherent. Reproducing the tail would mean porting CPython's
+#       leg USED to decline to compare that same tail — run_parity.sh listed
+#       "Non-UTF-8 input — the PROSE only" as an excluded group, on the grounds
+#       that only the tail can differ. Slice 3 (SPGD-107) RETIRED that group:
+#       the port now reproduces CPython's decoder-error classification exactly,
+#       and Python and Go are compared byte-for-byte on it. So this is no
+#       longer "the same allowance the oracle takes" — it is an allowance made
+#       for the GEM alone, and it is stated as such rather than borrowed from a
+#       group that no longer exists. Reproducing the tail would mean porting
+#       CPython's
 #       decoder-error classification a third time, into a gem whose entire
 #       reason for vendoring the schema is to owe open-test-intent nothing at
 #       runtime.
