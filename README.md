@@ -308,6 +308,6 @@ choice, never silent forward-compatibility.
 
 <p align="center">
   <a href="https://yatfa.com">
-    <img src="assets/built-with-yatfa.png" alt="Built with yatfa — a team of AI agents that plans, builds &amp; ships software." width="620">
+    <img src="assets/built-with-yatfa.png" alt="Built with yatfa — a team of AI agents that plans, builds &amp; ships software." width="100%">
   </a>
 </p>
