@@ -10,9 +10,30 @@ package main
 // `validate-intent` with no arguments does.
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+
+	opentestintent "github.com/yatfa-ai/open-test-intent"
+)
+
+// The four fixture sets, as the reference names them (bin/validate-intent:
+// 621-710) and as the "no fixtures match ..." diagnostic prints them.
+//
+// Held slash-separated and relative to the repo root, because that is the one
+// spelling both consumers can use: the on-disk expansion joins the root onto
+// them, the embedded expansion matches them against a corpus whose separator is
+// always "/", and the diagnostic quotes them verbatim. They used to be built
+// absolute and then relativised back for the message; the string it printed was
+// this one, so nothing about that output changed.
+const (
+	validExamplesGlob   = "examples/*.json"
+	invalidExamplesGlob = "examples/invalid/*.json"
+	validSourcesGlob    = "examples/sources/*"
+	invalidSourcesGlob  = "examples/sources/invalid/*"
 )
 
 // RepoRoot is the reference's REPO_ROOT (bin/validate-intent:76): the parent of
@@ -31,6 +52,201 @@ func RepoRoot() (string, error) {
 	return filepath.Dir(filepath.Dir(pyFSDecodeString(exe))), nil
 }
 
+// --------------------------------------------------------------------------- //
+// where a self-test's fixtures come from
+// --------------------------------------------------------------------------- //
+
+// fixtureSource is the corpus one self-test run reads: either the examples/
+// tree beside the executable, or the copy compiled into the binary.
+//
+// # Why there is a fallback at all
+//
+// RepoRoot is executable-relative, which is right for a Python script that
+// always lives at <repo>/bin/ and wrong for a distributable binary. Installed
+// at /usr/local/bin/validate-intent it resolved /usr/local/examples/*.json,
+// found nothing, and exited 1 with four errors — while the schema, since
+// SPGD-131, loaded perfectly well. This is the other half of that same defect:
+// --help's first line advertises the bare invocation as the thing to run, and
+// on the host an adopter actually installs to, --help is the entire
+// documentation set.
+//
+// # Why disk still wins
+//
+// The same reason LoadSchema lets it (fileio.go): tests/parity/run_parity.sh
+// plants synthetic trees and expects the binary to read what is in them. A pure
+// embed would ignore every one of those while the harness reported green.
+// In a checkout the self-test therefore reads the bytes on disk and its stdout
+// is unchanged, which is what keeps it byte-for-byte comparable against the
+// reference.
+//
+// # ⭐ Why the decision is per TREE and never per GLOB
+//
+// This is the load-bearing design point, and the tempting alternative is the
+// wrong one. A per-glob fallback — "use the embedded copy for whichever of the
+// four sets is empty" — would take a checkout whose examples/invalid/ someone
+// deleted and quietly heal it from the binary. The run would go green having
+// tested the deleted coverage against a copy of itself, which turns SPGD-56's
+// empty-fixture guard into a no-op: coverage deleted without a single case
+// going red, this project's house defect wearing a new hat.
+//
+// So ONE decision is taken, once, before anything is expanded: is there an
+// examples/ tree here? If there is, every glob resolves against it and an
+// incomplete one still fails loudly. If there is not, all four come from the
+// binary. There is no mixed state.
+type fixtureSource struct {
+	// root is the repo root fixture paths are named relative to. It is joined
+	// onto a pattern for the on-disk expansion, and — either way — it is what
+	// the printed paths are relative TO, which is why an embedded run prints
+	// the same "examples/unit-order-total.json" a checkout does.
+	root string
+
+	// corpus is non-nil only when the embedded copy won, so it doubles as the
+	// record of which way the one decision went.
+	corpus embeddedCorpus
+}
+
+// embeddedCorpus is the compiled-in corpus, narrowed to the two operations the
+// self-test performs on it. opentestintent.ExamplesFS() satisfies it; so does a
+// stand-in, which is what lets selftest_embed_test.go stage the one case that
+// cannot be staged from outside the process — an embedded corpus that matches
+// nothing — without shipping a broken binary to do it.
+//
+// Two methods and not fs.FS: see ExamplesFS's own comment for the size argument,
+// and expandEmbedded below for why fs.Glob would have been the wrong matcher
+// here even if it were free.
+type embeddedCorpus interface {
+	ReadDir(name string) ([]fs.DirEntry, error)
+	ReadFile(name string) ([]byte, error)
+}
+
+// newFixtureSource takes the per-tree decision described above.
+//
+// The absent/present rule is LoadSchema's, deliberately: a tree that is THERE
+// is a deliberate statement about which fixtures this run should use, and
+// substituting past a broken one would answer the user's own mistake with a
+// confident green report. Only an absent tree is an absence of intent.
+//
+// So anything other than "not there" — a permissions failure, a plain file
+// sitting on the name — keeps the on-disk path, where it produces exactly the
+// loud "no fixtures match ..." failure it produces today. This is the branch
+// where falling back would be most convenient and least honest.
+func newFixtureSource(root string) fixtureSource {
+	if _, err := os.Stat(pyFSEncode(filepath.Join(root, "examples"))); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fixtureSource{root: root, corpus: opentestintent.ExamplesFS()}
+		}
+	}
+	return fixtureSource{root: root}
+}
+
+// expand returns the fixtures matching one of the four patterns, as paths
+// relative to root, in the order the reference produces them.
+//
+// It returns RELATIVE paths in both modes because those are what gets printed,
+// and because the embedded corpus has no absolute paths to offer. On disk the
+// sort still happens over absolute paths inside ExpandFiles; every entry shares
+// the `root + separator` prefix, so relativising afterwards cannot reorder them.
+func (s fixtureSource) expand(pattern string) []string {
+	if s.corpus != nil {
+		return s.expandEmbedded(pattern)
+	}
+	matches := ExpandFiles(filepath.Join(s.root, pattern))
+	files := make([]string, 0, len(matches))
+	for _, match := range matches {
+		files = append(files, relTo(s.root, match))
+	}
+	return files
+}
+
+// expandEmbedded is ExpandFiles over the compiled-in corpus.
+//
+// It is built out of THIS package's glob rather than the standard library's,
+// and that is the whole point rather than an optimisation. The self-test's
+// stdout is a function of the expansion, not of the file set: two corpora
+// holding identical bytes but expanded by matchers that disagree still print
+// different output, which is the one thing the fallback promises not to do.
+// fs.Glob would have been a second matcher to keep in agreement with pyglob.go
+// forever — Go's `*` matches dotfiles and Python's does not, to name only the
+// difference that bites first. Reusing fnmatch, pySplit and pyJoin means there
+// is nothing to keep in agreement.
+//
+// What it reproduces, and where each rule comes from:
+//
+//   - globInDir's dotfile rule — a pattern not itself starting with `.` never
+//     matches one. The embed carries dotfiles (`all:` is what makes it a mirror
+//     of the tree), so this is the layer that has to drop them, exactly as on
+//     disk.
+//   - ExpandFiles' isFile filter, so `examples/sources/*` yields the four
+//     source files and not the `invalid` directory entry.
+//   - ExpandFiles' sort, on the same decoded names. Embedded names are always
+//     valid UTF-8 (they came from a Go source directive), so the surrogate
+//     ordering subtlety that comment describes cannot arise here.
+//
+// Only the ONE-directory shapes the four patterns use are handled — no `**`,
+// no magic in the directory part. A pattern needing more would silently match
+// nothing here while working on disk, which is why the four are compile-time
+// constants at the top of this file and nothing builds one at run time.
+func (s fixtureSource) expandEmbedded(pattern string) []string {
+	dir, base := pySplit(pattern)
+	entries, err := s.corpus.ReadDir(dir)
+	if err != nil {
+		// A directory the corpus does not have. Nothing matched is the honest
+		// answer, and the empty-fixture guard below turns it into a loud
+		// failure rather than a quiet 8/8.
+		return nil
+	}
+	allowHidden := isHidden(base)
+	files := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() {
+			continue
+		}
+		if !allowHidden && isHidden(name) {
+			continue
+		}
+		if !fnmatch(name, base) {
+			continue
+		}
+		files = append(files, pyJoin(dir, name))
+	}
+	sort.Strings(files)
+	return files
+}
+
+// checkJSON is CheckFile addressed by a path relative to root.
+func (s fixtureSource) checkJSON(rel string, schema *Schema) (valid bool, errs []string, parseError string) {
+	if s.corpus == nil {
+		valid, errs, parseError, _ = CheckFile(filepath.Join(s.root, rel), schema)
+		return valid, errs, parseError
+	}
+	data, err := s.corpus.ReadFile(rel)
+	if err != nil {
+		// Unreachable while rel came from expand, which only names files the
+		// same corpus just listed. Reported rather than ignored: a corpus that
+		// cannot be read is a self-test that verified nothing.
+		return false, nil, "could not read/parse JSON: " + err.Error()
+	}
+	valid, errs, parseError, _ = CheckJSONBytes(data, schema)
+	return valid, errs, parseError
+}
+
+// checkSource is CheckSourceFile addressed by a path relative to root.
+func (s fixtureSource) checkSource(rel string, schema *Schema) (findings []SourceFinding, readError string) {
+	if s.corpus == nil {
+		return CheckSourceFile(filepath.Join(s.root, rel), schema)
+	}
+	data, err := s.corpus.ReadFile(rel)
+	if err != nil {
+		return nil, "could not read file: " + err.Error()
+	}
+	text, decodeError := decodeSourceText(data)
+	if decodeError != "" {
+		return nil, decodeError
+	}
+	return CheckSourceText(text, schema), ""
+}
+
 // selfTestSourceFixture is the port of `_self_test_source_fixture`
 // (bin/validate-intent:585-618): check one source fixture end-to-end
 // (extraction -> normalization -> validation).
@@ -38,9 +254,8 @@ func RepoRoot() (string, error) {
 // Returns true when the fixture matched its expectation. A fixture with ZERO
 // extractable annotations is a mismatch either way: that is what a
 // silently-broken extractor looks like, and it must not read as green.
-func selfTestSourceFixture(path, root string, schema *Schema, expectValid bool) bool {
-	rel := relTo(root, path)
-	findings, readError := CheckSourceFile(path, schema)
+func selfTestSourceFixture(src fixtureSource, rel string, schema *Schema, expectValid bool) bool {
+	findings, readError := src.checkSource(rel, schema)
 	if readError != "" {
 		pyPrintf("FAIL  %s — %s\n", rel, readError)
 		return false
@@ -100,20 +315,24 @@ func RunSelfTest(schema *Schema) int {
 		fmt.Fprintf(os.Stderr, "error: could not locate the repo root: %s\n", err)
 		return 2
 	}
+	return runSelfTest(schema, newFixtureSource(root))
+}
 
-	validExamplesGlob := filepath.Join(root, "examples", "*.json")
-	invalidExamplesGlob := filepath.Join(root, "examples", "invalid", "*.json")
-	validSourcesGlob := filepath.Join(root, "examples", "sources", "*")
-	invalidSourcesGlob := filepath.Join(root, "examples", "sources", "invalid", "*")
-
-	validFiles := ExpandFiles(validExamplesGlob)
-	invalidFiles := ExpandFiles(invalidExamplesGlob)
-	invalidSources := ExpandFiles(invalidSourcesGlob)
+// runSelfTest is RunSelfTest with the corpus injected, so both halves of the
+// fallback can be asserted directly rather than only through a harness that has
+// to build a tree to provoke each one — loadSchemaFrom's argument (fileio.go),
+// and it applies with more force here: the case that matters most is "the
+// embedded corpus somehow matched nothing", which cannot be staged from the
+// outside at all, because staging it means shipping a broken binary.
+func runSelfTest(schema *Schema, src fixtureSource) int {
+	validFiles := src.expand(validExamplesGlob)
+	invalidFiles := src.expand(invalidExamplesGlob)
+	invalidSources := src.expand(invalidSourcesGlob)
 	// `sources/*` yields the invalid/ directory entry, not its contents, and
-	// ExpandFiles drops directories — so the two sets are already disjoint. The
-	// subtraction keeps them disjoint if the glob is ever widened to `**`.
+	// the expansion drops directories — so the two sets are already disjoint.
+	// The subtraction keeps them disjoint if the glob is ever widened to `**`.
 	validSources := []string{}
-	for _, path := range ExpandFiles(validSourcesGlob) {
+	for _, path := range src.expand(validSourcesGlob) {
 		if !contains(invalidSources, path) {
 			validSources = append(validSources, path)
 		}
@@ -128,6 +347,13 @@ func RunSelfTest(schema *Schema) int {
 	// names everything missing, and the run fails BEFORE checking anything: an
 	// incomplete fixture inventory invalidates the whole run, so there is no
 	// conformance verdict left to report.
+	//
+	// This applies to the EMBEDDED corpus exactly as it applies to a checkout,
+	// and that is not a formality. A directive re-pointed or narrowed until it
+	// matched nothing would otherwise turn a released binary's self-test into
+	// the greenest possible lie — a check that verified nothing, on the one host
+	// where nobody can look at the corpus to find out. Nothing below is reached
+	// until all four sets exist.
 	type fixtureSet struct {
 		pattern  string
 		verifies string
@@ -148,7 +374,7 @@ func RunSelfTest(schema *Schema) int {
 		for _, set := range empty {
 			fmt.Fprintf(os.Stderr,
 				"error: no fixtures match %s — self-test cannot verify %s\n",
-				PyReprString(relTo(root, set.pattern)), set.verifies)
+				PyReprString(set.pattern), set.verifies)
 		}
 		return 1
 	}
@@ -157,10 +383,9 @@ func RunSelfTest(schema *Schema) int {
 	checked := 0
 
 	// expected-valid fixtures
-	for _, path := range validFiles {
+	for _, rel := range validFiles {
 		checked++
-		rel := relTo(root, path)
-		valid, errs, parseError, _ := CheckFile(path, schema)
+		valid, errs, parseError := src.checkJSON(rel, schema)
 		switch {
 		case parseError != "":
 			pyPrintf("FAIL  %s — unexpectedly invalid (%s)\n", rel, parseError)
@@ -177,10 +402,9 @@ func RunSelfTest(schema *Schema) int {
 	}
 
 	// expected-invalid fixtures
-	for _, path := range invalidFiles {
+	for _, rel := range invalidFiles {
 		checked++
-		rel := relTo(root, path)
-		valid, _, parseError, _ := CheckFile(path, schema)
+		valid, _, parseError := src.checkJSON(rel, schema)
 		switch {
 		case parseError != "":
 			// Malformed JSON is a rejection too — but flag it so it's visible.
@@ -194,15 +418,15 @@ func RunSelfTest(schema *Schema) int {
 	}
 
 	// in-source fixtures — extraction + normalization + validation end-to-end
-	for _, path := range validSources {
+	for _, rel := range validSources {
 		checked++
-		if !selfTestSourceFixture(path, root, schema, true) {
+		if !selfTestSourceFixture(src, rel, schema, true) {
 			mismatches++
 		}
 	}
-	for _, path := range invalidSources {
+	for _, rel := range invalidSources {
 		checked++
-		if !selfTestSourceFixture(path, root, schema, false) {
+		if !selfTestSourceFixture(src, rel, schema, false) {
 			mismatches++
 		}
 	}

@@ -95,30 +95,64 @@
 # asked on the target one, which is the only host whose answer an adopter cares
 # about.
 #
-# What it does NOT prove — spelled out because it is the natural thing to assume,
-# and this file was committed once already asserting it:
+# What --version does NOT prove — spelled out because it is the natural thing to
+# assume, and this file was committed once already asserting it:
 #
 #   it does NOT exercise the embedded-schema fallback.
 #
 # cmd/validate-intent/main.go answers `--version` and RETURNS, some thirty lines
 # and three branches above its LoadSchema() call, so a binary whose compiled-in
-# schema was broken prints its version here and installs cleanly. Every surface
-# that does reach LoadSchema needs something this script has not got: self-test
-# (a bare invocation) wants the repo's examples/ trees and exits 1 without them,
-# having loaded the schema perfectly well; adopter and --source modes want a
-# FILE. Carrying a fixture inside the installer to reach that code path is a
-# larger decision than this script, so the fallback stays covered where it is
-# already covered end to end — tests/cross/run_cross_build.sh:298-319, which
-# asserts the installed prefix has no schemas/ on disk and THEN runs a real
-# fixture through the installed binary. Do not restore the claim here without
-# restoring a check to go with it.
+# schema was broken prints its version here and installs cleanly.
+#
+#
+# The bare self-test, and why it can be run here now
+# --------------------------------------------------
+# So a second question is asked, and it is the one an adopter actually has:
+# DOES THIS BINARY VALIDATE ANYTHING?
+#
+# This script could not ask it before. Every surface reaching LoadSchema needed
+# something the installer has not got: adopter and --source modes want a FILE,
+# and self-test — a bare invocation — wanted the repo's examples/ trees and
+# exited 1 without them, having loaded the schema perfectly well. Carrying a
+# fixture inside the installer to reach that code path was a larger decision
+# than this script, so the fallback stayed covered only where a clone exists.
+#
+# SPGD-315 removed the blocker rather than working around it: the fixture corpus
+# is embedded on the same absent/present rule as the schema, so a bare
+# invocation on a host with no checkout runs all twelve fixtures out of the
+# binary. That is now run, from the prefix, and it is a real end-to-end pass —
+# schema loaded (embedded, since there is no schemas/ beside an installed
+# binary), fixtures expanded, JSON validated, source annotations extracted,
+# normalized and validated, and every verdict compared against its expectation.
+# It is the same command --help's first line tells an adopter to run.
+#
+# A non-zero result is exit 1, not 2: the artifact was verified, executed, and
+# EXAMINED — it ran the check and did not pass it. That is "found wrong" in the
+# strict sense of the house rule below, and it is the reason nothing is
+# installed on it.
+#
+# Only the exit code is required, deliberately. Requiring "12/12" would pin this
+# script to the corpus's current size, so adding a fixture would break every
+# install until someone edited a number here — and the count is already asserted
+# where it belongs, against the binary rather than against the installer
+# (tests/parity/run_parity.sh section 16d, and
+# cmd/validate-intent/selftest_embed_test.go, which compares an embedded run to
+# an in-checkout run byte for byte). What THIS check adds is the one thing
+# neither of those can: it asks the question on the adopter's host, of the
+# artifact that is about to be installed there.
+#
+# tests/cross/run_cross_build.sh:298-319 keeps its own version of this claim and
+# should stay: it asserts the installed prefix has no schemas/ on disk before
+# running a fixture through the installed binary, which is a stronger statement
+# about WHY the run passed than this script is in a position to make.
 #
 #
 # Exit codes — the house rule, unchanged
 # --------------------------------------
-#   0  installed, and the installed binary reported its version
-#   1  examined and found WRONG — the digest did not match, or the binary did
-#      not run
+#   0  installed, the installed binary reported its version, and it self-tested
+#      its own fixture corpus clean
+#   1  examined and found WRONG — the digest did not match, the binary did not
+#      run, or it ran and failed its own self-test
 #   2  COULD NOT CHECK — no such source, no manifest, no row for this host, no
 #      digest tool, an unsupported host, a bad invocation
 #
@@ -220,8 +254,9 @@ The install location comes from --prefix or that default and from nothing else;
 a PREFIX in the environment is deliberately ignored.
 
 Installs the artifact matching this host, after verifying it against the
-SHA256SUMS row that describes it, and then runs \`validate-intent --version\` from
-the prefix to prove the installed binary works.
+SHA256SUMS row that describes it, then runs \`validate-intent --version\` from
+the prefix to prove the installed binary works and a bare \`validate-intent\` to
+prove it validates its own embedded fixture corpus.
 
 Exit 0 installed and verified; 1 examined and found wrong; 2 could not check
 (no source, no manifest row, no digest tool, an unsupported host) or checked out
@@ -597,7 +632,8 @@ chmod 755 "$PENDING" \
 # would have hit on their first invocation. It proves the artifact executes on
 # this host, exits 0, and names itself — and nothing beyond that. In particular
 # it does NOT reach the schema load, so it cannot speak for the embedded-schema
-# fallback; see the header for why, and for where that fallback IS checked.
+# fallback; the bare self-test below is what does, and the header says why that
+# became possible.
 #
 # Only stdout is captured. Whatever the binary writes to stderr goes straight to
 # this script's stderr, unfiltered: folding it into the captured value would put
@@ -631,6 +667,33 @@ version_token="${version_token%% *}"
   || wrong "the verified $ARTIFACT reported an empty version:
          $reported
        Nothing has been installed."
+
+# --- prove it VALIDATES, from the prefix ------------------------------------- #
+#
+# See "The bare self-test" in the header. `--version` returns above LoadSchema,
+# so everything up to this point is compatible with a binary that cannot
+# validate a single document. This is the check that is not.
+#
+# Run with no arguments, which is the self-test, and from $PENDING for the same
+# reason --version is: fixtures and schema are both resolved relative to the
+# EXECUTABLE, so running the staged copy instead would resolve them against a
+# temporary directory and answer a question about the wrong layout.
+#
+# stdout is captured and thrown away on success — twenty-five lines of PASS in
+# the middle of an install is noise — and printed on failure, because those
+# lines ARE the diagnostic: they name the fixture that did not match. stderr is
+# left to flow through unfiltered, exactly as it is for --version, so a binary
+# that fails the empty-fixture guard says which set it could not find.
+selftest_output=""
+if ! selftest_output="$("$PENDING")"; then
+  printf '%s\n' "$selftest_output" >&2
+  wrong "the verified $ARTIFACT installed and reported its version, but failed its
+       own self-test (its output is above).
+       It ran, so this is not a corrupt download — the binary does not validate
+       correctly on this host. Nothing has been installed."
+fi
+
+green "  ok    $INSTALL_NAME self-tested its embedded fixture corpus"
 
 # --- the final move ---------------------------------------------------------- #
 #

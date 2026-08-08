@@ -142,19 +142,20 @@
 #      Asserted on the Go side in section 16d ("excluded group 2 — a tree with
 #      no schemas/ directory beside the binary"), which pins what it does for
 #      each of the five argument sets that used to be compared here — including
-#      the two that still FAIL. A bare self-test on such a tree exits 1 with
-#      four "no fixtures match" lines, because the fixture corpus is not
-#      embedded: that is SPGD-56's empty-fixture guard working correctly, and it
-#      is asserted rather than assumed so nobody later reads the exclusion as a
-#      claim that everything works out there.
+#      the two that still REFUSE. A bare self-test on such a tree now exits 0
+#      with "12/12 fixtures matched expectation.", because SPGD-315 embedded the
+#      fixture corpus on the same absent/present rule: that is the release-asset
+#      case, and it is asserted rather than assumed so nobody later reads the
+#      exclusion as a claim that everything works out there — or, since the
+#      inversion, as a claim that it always did.
 #
 #      One caveat worth stating plainly, in the same spirit as the decoder
-#      caveat below: this harness proves the embedded schema BEHAVES like the
-#      canonical one on the inputs it happens to reach. It does NOT prove they
-#      are the same bytes. That is pinned by SHA256 in schema_test.go at the
-#      module root, and THIS HARNESS DOES NOT RUN IT — run `go test ./...`
-#      separately (./... , not ./cmd/... , or the root package's guard is
-#      skipped and the pin verifies nothing).
+#      caveat below: this harness proves the embedded schema and corpus BEHAVE
+#      like the canonical ones on the inputs they happen to reach. It does NOT
+#      prove they are the same bytes. That is pinned by SHA256 in schema_test.go
+#      and corpus_test.go at the module root, and THIS HARNESS DOES NOT RUN
+#      THEM — run `go test ./...` separately (./... , not ./cmd/... , or the
+#      root package's guards are skipped and the pins verify nothing).
 #
 #   3. A PYTHONIOENCODING this port cannot reproduce — either field of it.
 #      The variable is `ENCODING:HANDLER` and it configures sys.stdin, sys.stdout
@@ -1725,9 +1726,22 @@ make_fixture_root() {
   printf '%s' "$root"
 }
 
-# Nothing at all: all four sets empty, all four diagnostics.
+# An examples/ tree that is THERE and holds nothing: all four sets empty, all
+# four diagnostics.
+#
+# The directory is created deliberately, and since SPGD-315 it is what makes
+# this a COMPARISON at all. The Go binary now carries the corpus, and falls back
+# to it when there is no examples/ tree beside the executable — so on a root
+# with no such directory the two implementations diverge by design (Python
+# reports four empty sets, the port runs its embedded twelve), and that state is
+# pinned on the Go side in section 16d instead. A tree that EXISTS and is empty
+# is not an absent tree: disk wins, nothing matches, and both implementations
+# say so identically. That is also the shape the guard is actually FOR — fixtures
+# deleted out of a checkout — so the case tests more here than it did as a bare
+# root, not less.
 bare_root="$(make_fixture_root selftest-bare)"
-compare_root "$bare_root" "self-test: every fixture set empty"
+mkdir -p "$bare_root/examples"
+compare_root "$bare_root" "self-test: an empty fixture tree, every set empty"
 
 # Only the valid JSON examples present: the other three are reported.
 partial_root="$(make_fixture_root selftest-partial)"
@@ -3314,7 +3328,8 @@ fi
 # binary embeds the schema and falls back to it when the file is absent, so it
 # no longer fails there and Python still does. That is a real divergence, and it
 # is the divergence the change exists to create: a released binary has no repo
-# around it.
+# around it. SPGD-315 widened it to the fixture corpus, on the same rule, which
+# is why the bare self-test below now succeeds as well.
 #
 # Deleting the five cases would have been the easy move and the wrong one. One
 # of them — the crossing of a failed schema load with a bare `--json` — is on
@@ -3326,7 +3341,10 @@ fi
 # a schema-less tree is pinned HERE, argument set for argument set.
 #
 # "Excluded" must not mean "unchecked", and it must not mean "assumed to work"
-# either: two of the five still fail, and they are asserted failing.
+# either: three of the five succeed and two still refuse, and each is asserted
+# as what it is. When one of them changes from a refusal to a success the
+# assertion is INVERTED here rather than deleted — that is what happened to the
+# bare self-test, and the case is the record of it.
 echo
 echo "== 16d. excluded group 2: no schemas/ beside the binary (Go only) =="
 
@@ -3344,6 +3362,16 @@ cp "$REPO_ROOT/examples/unit-order-total.json" "$noschema_root/thing.json"
 if [ -e "$noschema_root/schemas" ]; then
   failed=$((failed + 1))
   red "  FAIL  excluded group 2 — this tree must have NO schemas/ directory, and it has one"
+fi
+
+# And the same for the corpus, since SPGD-315. The bare self-test below passes
+# on this tree only because the binary carries examples/ itself; an examples/
+# directory appearing here would make it pass by reading one off disk, and the
+# case would go on reporting green having stopped testing the fallback. Same
+# argument as the line above, for the second embedded asset.
+if [ -e "$noschema_root/examples" ]; then
+  failed=$((failed + 1))
+  red "  FAIL  excluded group 2 — this tree must have NO examples/ directory, and it has one"
 fi
 
 # assert_no_schema_tree <label> <want-rc> <want-stdout> <want-stderr> [args...]
@@ -3410,8 +3438,8 @@ assert_no_schema_tree() {
   return 1
 }
 
-# The two that now WORK — the release-asset case, and the reason for the change.
-# Before SPGD-131 both of these exited 2 with "could not load schema".
+# The three that now WORK — the release-asset case, and the reason for the change.
+# Before SPGD-131 the first two exited 2 with "could not load schema".
 assert_no_schema_tree "adopter mode works with no schemas/ (was exit 2)" \
   0 "PASS  thing.json" EMPTY thing.json
 assert_no_schema_tree "--source --json works with no schemas/ (was exit 2)" \
@@ -3429,19 +3457,37 @@ assert_no_schema_tree "--source --json works with no schemas/ (was exit 2)" \
 assert_no_schema_tree "bare --json still refuses: self-test is not a --json surface" \
   2 EMPTY "--json is not supported in self-test mode" --json
 
-# The two that still FAIL, asserted failing.
+# The third, and the question this block used to leave open.
 #
-# Fixing the schema did not make the binary self-contained: RepoRoot() resolves
-# the fixture CORPUS the same executable-relative way, and examples/ is not
-# embedded. So a bare self-test on a schema-less tree finds no fixtures and says
-# so, four times, and exits 1. That is SPGD-56's empty-fixture guard working as
-# designed — a self-test that verified nothing must not report success — and
-# --help already calls this mode "self-test the in-repo fixtures". Whether a
-# released binary should carry the corpus is a real question and a separate
-# slice. Until then, this assertion is what keeps "the schema is embedded" from
-# being read as "the binary is self-contained".
-assert_no_schema_tree "bare self-test still fails loudly: the corpus is not embedded" \
-  1 EMPTY "no fixtures match 'examples/*.json'"
+# It used to assert the opposite, and said why: fixing the schema had not made
+# the binary self-contained, because RepoRoot() resolved the fixture CORPUS the
+# same executable-relative way and examples/ was not embedded. A bare self-test
+# here found no fixtures, said so four times, and exited 1. The comment ended
+# "whether a released binary should carry the corpus is a real question and a
+# separate slice."
+#
+# That slice landed (SPGD-315). The corpus is embedded now, on the same
+# ABSENT/PRESENT rule as the schema — a real examples/ tree beside the
+# executable still wins, and the fallback fires only when there is none — so
+# this tree, which has neither schemas/ nor examples/, runs the whole corpus out
+# of the binary and exits 0. That is what an adopter's `validate-intent` with no
+# arguments now does, and scripts/install.sh runs exactly it from the prefix
+# before it will complete an install.
+#
+# The stdout expectation is the load-bearing half. Exit 0 alone would be
+# satisfied by a self-test that had quietly stopped checking anything — the
+# empty-fixture guard is what stands between those two, and "12/12" is what says
+# the guard did not have to. It is the same summary line a run inside a checkout
+# prints, byte for byte, which is the claim the whole change rests on;
+# cmd/validate-intent/selftest_embed_test.go compares the two in full.
+#
+# Parity-safe by construction, as the whole of 16d is: assert_no_schema_tree
+# asserts FIRST that python3 still diverges here (exit 2, "could not load
+# schema"), then checks the Go binary against explicit expectations. Nothing in
+# this case is a byte-for-byte comparison against the reference, so inverting it
+# breaks no comparison.
+assert_no_schema_tree "bare self-test now WORKS: the corpus is embedded too (was exit 1)" \
+  0 "12/12 fixtures matched expectation." EMPTY
 assert_no_schema_tree "--source with no argument still refuses" \
   2 EMPTY "--source requires at least one FILE/glob argument" --source
 
@@ -3606,12 +3652,26 @@ compare_in "$REPO_ROOT" "$BADINSTALL_PY" "$BADINSTALL_GO" \
 compare_in "$REPO_ROOT" "$BADINSTALL_PY" "$BADINSTALL_GO" \
   "badly-named install prefix: a no-match diagnostic" 'nope*.json'
 # The two modes that resolve something ELSE from the executable's own path: the
-# self-test finds its corpus there (and does not, on this tree), and --help does
-# not touch the path at all. Both are here because the self-test's diagnostic
-# names a pattern relative to that root, and a port that leaked the undecoded
-# root into it would fail here and nowhere above.
+# self-test finds its corpus there, and --help does not touch the path at all.
+# Both are here because every self-test line names a path RELATIVE to that root,
+# and a port that leaked the undecoded root into one would fail here and nowhere
+# above.
+#
+# The corpus is staged into the badly-named prefix rather than left absent. It
+# used to be absent, and the case compared four "no fixtures match" diagnostics
+# — but since SPGD-315 an absent tree makes the port fall back to its embedded
+# copy while Python still reports nothing, so an absent tree here would compare
+# a divergence. Staging it keeps the comparison AND strengthens it: with twelve
+# fixtures present both implementations print twenty-five lines whose paths were
+# each derived by relativising against an undecodable root, which is far more of
+# that round trip than four pattern names ever exercised.
+mkdir -p "$BADINSTALL/examples/invalid" "$BADINSTALL/examples/sources/invalid"
+cp "$REPO_ROOT"/examples/*.json "$BADINSTALL/examples/"
+cp "$REPO_ROOT"/examples/invalid/*.json "$BADINSTALL/examples/invalid/"
+cp "$REPO_ROOT"/examples/sources/*.* "$BADINSTALL/examples/sources/" 2>/dev/null
+cp "$REPO_ROOT"/examples/sources/invalid/* "$BADINSTALL/examples/sources/invalid/"
 compare_in "$REPO_ROOT" "$BADINSTALL_PY" "$BADINSTALL_GO" \
-  "badly-named install prefix: self-test finds no corpus, identically" 
+  "badly-named install prefix: self-test names its corpus, identically" 
 compare_help_in "$BADINSTALL_PY" "$BADINSTALL_GO" \
   "badly-named install prefix: --help" --help
 compare_stdin_in "$REPO_ROOT" "$BADINSTALL_PY" "$BADINSTALL_GO" \

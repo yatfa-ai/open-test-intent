@@ -22,11 +22,28 @@ import (
 // — it renders a parse failure and a read failure as the same prose — but a
 // consumer of the later --json slice needs to tell them apart, and once the
 // result has been flattened to text the distinction is gone for good.
+//
+// The read is separated from the verdict (CheckJSONBytes below) for exactly one
+// caller: a self-test running on a host with no checkout, whose fixture bytes
+// come out of the compiled-in corpus and were never on this filesystem. Sharing
+// the verdict half rather than writing a second one is what makes an embedded
+// run and an in-checkout run produce the same answer by construction — see
+// fixtureSource in selftest.go.
 func CheckFile(path string, schema *Schema) (valid bool, errs []string, parseError string, kind string) {
 	data, err := os.ReadFile(pyFSEncode(path))
 	if err != nil {
 		return false, nil, "could not read/parse JSON: " + pyOSError(err), KindRead
 	}
+	return CheckJSONBytes(data, schema)
+}
+
+// CheckJSONBytes is CheckFile with the read already done: everything the
+// reference does to a document AFTER open() returned.
+//
+// It keeps the read-failure prefix even though it never opens anything, because
+// the undecodable-bytes case below IS a read failure in Python — see the
+// comment on it — and the prose is part of the output contract.
+func CheckJSONBytes(data []byte, schema *Schema) (valid bool, errs []string, parseError string, kind string) {
 	// Python opens with encoding="utf-8", so undecodable bytes raise
 	// UnicodeDecodeError during the read and never reach the parser. Go would
 	// silently substitute U+FFFD instead, turning a read failure into a
@@ -62,6 +79,13 @@ func readSourceText(path string) (text string, readError string) {
 	if err != nil {
 		return "", "could not read file: " + pyOSError(err)
 	}
+	return decodeSourceText(data)
+}
+
+// decodeSourceText is readSourceText with the read already done — the decode
+// half, shared with the self-test's embedded corpus for the reason CheckFile
+// and CheckJSONBytes are split.
+func decodeSourceText(data []byte) (text string, readError string) {
 	if !utf8.Valid(data) {
 		// Python decodes during the read, so undecodable bytes are a *read*
 		// failure and the file never reaches the extractor. Go would silently

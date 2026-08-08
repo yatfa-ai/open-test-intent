@@ -269,9 +269,19 @@ The embedded copy is pinned to `schemas/open-test-intent.v1.json` by SHA256 in
 copies of the contract to drift. That guard runs under `go test ./...` — note the `./...`,
 not `./cmd/...`.
 
-Note that the *fixture corpus* is not embedded, only the schema: a bare self-test outside
-the repo still reports `no fixtures match ...` and exits 1, which is the empty-fixture
-guard working as intended rather than a regression.
+The *fixture corpus* is embedded on the same terms, so a bare `validate-intent` outside
+the repo self-tests the compiled-in `examples/` and prints `12/12 fixtures matched
+expectation.` — byte for byte what the same command prints inside a checkout. An
+`examples/` tree beside the executable still wins when there is one.
+
+That fallback is decided once, for the whole tree, and deliberately not per glob: a
+checkout whose `examples/invalid/` has been deleted still reports `no fixtures match
+'examples/invalid/*.json'` and exits 1, rather than being quietly healed from the binary.
+Healing it would let someone delete the rejection fixtures without a single check going
+red, which is the empty-fixture guard working in reverse.
+
+`corpus_test.go` pins the embedded corpus against the files on disk, file for file and
+byte for byte, the way `schema_test.go` pins the schema.
 
 ```sh
 tests/parity/run_parity.sh   # the acceptance test for the port
