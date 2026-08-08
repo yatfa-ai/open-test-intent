@@ -86,13 +86,32 @@
 # that does not run, leaves the prefix untouched.
 #
 # The `--version` run is deliberately performed from inside the prefix rather
-# than from staging. cmd/validate-intent derives its schema path from
-# os.Executable(), so what that run exercises is the layout the binary will
-# actually be used in — a bare prefix with no `schemas/` directory beside it,
-# falling through to the schema compiled into the binary (schema.go, and
-# README.md's note on the installed layout). build-release.sh's check 3 runs
-# `--version` on the BUILD host; this is the first time it is asked on the target
-# one, which is the only host whose answer an adopter cares about.
+# than from staging, for the ordinary reason: that is the layout the binary will
+# actually be used in, so a failure there is a failure an adopter would have hit.
+# What it proves is exactly three things — the artifact is executable on THIS
+# host, it exits 0, and it reports itself as `validate-intent` with a non-empty
+# version. build-release.sh's check 3 asks that on the BUILD host, and can only
+# ask it for the one target matching that host; this is the first time it is
+# asked on the target one, which is the only host whose answer an adopter cares
+# about.
+#
+# What it does NOT prove — spelled out because it is the natural thing to assume,
+# and this file was committed once already asserting it:
+#
+#   it does NOT exercise the embedded-schema fallback.
+#
+# cmd/validate-intent/main.go answers `--version` and RETURNS, some thirty lines
+# and three branches above its LoadSchema() call, so a binary whose compiled-in
+# schema was broken prints its version here and installs cleanly. Every surface
+# that does reach LoadSchema needs something this script has not got: self-test
+# (a bare invocation) wants the repo's examples/ trees and exits 1 without them,
+# having loaded the schema perfectly well; adopter and --source modes want a
+# FILE. Carrying a fixture inside the installer to reach that code path is a
+# larger decision than this script, so the fallback stays covered where it is
+# already covered end to end — tests/cross/run_cross_build.sh:266-287, which
+# asserts the installed prefix has no schemas/ on disk and THEN runs a real
+# fixture through the installed binary. Do not restore the claim here without
+# restoring a check to go with it.
 #
 #
 # Exit codes — the house rule, unchanged
@@ -102,6 +121,16 @@
 #      not run
 #   2  COULD NOT CHECK — no such source, no manifest, no row for this host, no
 #      digest tool, an unsupported host, a bad invocation
+#
+# There is a third thing 2 has to carry, named here rather than left to be
+# discovered: everything checked out but the INSTALL ITSELF failed — an
+# unwritable prefix, a full disk, a final rename that did not take. That is not
+# "could not check" in the strict sense; by then the artifact has been fetched,
+# digest-verified AND proven to run. It lands on 2 because the alternative is 1,
+# and 1 means the release was examined and found wrong, which would point an
+# adopter at a corrupt download when what they have is a permissions problem. Of
+# the two wrong answers, 2 is the one whose diagnostics can carry the difference,
+# and every such branch below says in words what failed.
 #
 # 1 and 2 are kept apart for the reason tests/cross/inspect-artifact and
 # tests/cross/sha256sums keep theirs apart, and are asserted separately in
@@ -132,12 +161,32 @@ MANIFEST_NAME="SHA256SUMS"
 # different identity.
 INSTALL_NAME="validate-intent"
 
+# Where the binary lands when --prefix is not given. Written down ONCE, here,
+# and read from nowhere else — not from the environment. `PREFIX` used to be
+# picked up from the environment as a fallback, and `PREFIX` is one of the most
+# commonly exported variables in a build shell, so a script whose --help promised
+# /usr/local/bin would silently install somewhere else for anyone who happened to
+# have it set. A tool that puts a binary on a host has exactly two acceptable
+# ways to be told where it goes: this default, and --prefix.
+# tests/cross/install/install_test.go's
+# TestPrefixInTheEnvironmentDoesNotRedirectTheInstall pins that, and usage()
+# below prints this variable rather than repeating its value, so the help text
+# cannot drift away from the behaviour again.
+DEFAULT_PREFIX="/usr/local/bin"
+
 # The four targets scripts/build-release.sh builds, in its own vocabulary. This
-# list is duplicated from that script ON PURPOSE and the duplication is checked
-# rather than trusted: an installer that mapped a host to a fifth target would
-# ask the source for an artifact no release contains, and get a 404 it would have
-# to interpret. Adding a target means editing both files, and the host mapping
-# below refuses anything not named here.
+# list is duplicated from that script ON PURPOSE — the installer must run on a
+# host with no clone, so it cannot read TARGETS out of the producer at runtime —
+# and the duplication is CHECKED rather than trusted:
+# tests/cross/install/install_test.go's TestTheFourTargetListsAgree reads the
+# TARGETS block out of build-release.sh, out of this file and out of
+# tests/cross/run_cross_build.sh, and requires all three to be the same set as
+# the one the test file itself names. Without that, a target renamed in one place
+# leaves the installer asking a release for an artifact it does not contain, and
+# every test still green — which is the same "a target quietly dropped or
+# renamed" defect build-release.sh's own header exists to close on the producing
+# side. Adding a target means editing all three files; the check tells you which
+# one you missed.
 TARGETS=(
   "linux/amd64"
   "linux/arm64"
@@ -155,22 +204,29 @@ wrong()     { red "error: $*" >&2; exit 1; }
 unchecked() { red "error: $*" >&2; exit 2; }
 
 usage() {
-  cat <<'USAGE'
+  # UNQUOTED heredoc, so --prefix's default is the one the code actually uses
+  # rather than a second copy of it. The backticks below are escaped for the same
+  # reason the delimiter is unquoted: nothing in here may run.
+  cat <<USAGE
 usage: scripts/install.sh --from <dir|url> [--prefix <dir>]
 
   --from <dir>     a directory holding the release artifacts and SHA256SUMS,
                    e.g. dist/release after scripts/build-release.sh
   --from <url>     a base URL the artifact and SHA256SUMS sit under, e.g.
                    https://host/owner/repo/releases/download/v1.4.0
-  --prefix <dir>   where to install validate-intent (default: /usr/local/bin)
+  --prefix <dir>   where to install validate-intent (default: $DEFAULT_PREFIX)
+
+The install location comes from --prefix or that default and from nothing else;
+a PREFIX in the environment is deliberately ignored.
 
 Installs the artifact matching this host, after verifying it against the
-SHA256SUMS row that describes it, and then runs `validate-intent --version` from
+SHA256SUMS row that describes it, and then runs \`validate-intent --version\` from
 the prefix to prove the installed binary works.
 
 Exit 0 installed and verified; 1 examined and found wrong; 2 could not check
-(no source, no manifest row, no digest tool, an unsupported host). Nothing is
-installed on 1 or 2.
+(no source, no manifest row, no digest tool, an unsupported host) or checked out
+but could not be installed (an unwritable prefix). Nothing is installed on 1
+or 2.
 USAGE
 }
 
@@ -180,7 +236,7 @@ USAGE
 # wrong. Same reason tests/cross/sha256sums' usage() exits 2.
 
 SOURCE=""
-PREFIX="${PREFIX:-/usr/local/bin}"
+PREFIX="$DEFAULT_PREFIX"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -511,12 +567,21 @@ fi
 
 # Same directory as the destination, so the promotion below is a rename within
 # one filesystem rather than a copy that could fail halfway over a working
-# binary. `cp` here can fail (permissions, no space) while $TARGET_PATH is still
-# whatever it was, which is the point.
-PENDING="$PREFIX/.$INSTALL_NAME.install.$$"
-cp "$STAGE/$ARTIFACT" "$PENDING" \
+# binary. `mktemp` rather than a name built from $$: a predictable name in a
+# directory this script does not own is one an existing symlink can sit on, and
+# `cp` would follow it and write the artifact wherever it pointed. Creating the
+# file is mktemp's job precisely so that it cannot already be something else.
+# build-release.sh reaches for mktemp beside its own destination for the same
+# reason.
+#
+# This is also the branch an unwritable prefix comes out of, and it fails while
+# $TARGET_PATH is still whatever it was, which is the point.
+PENDING="$(mktemp "$PREFIX/.$INSTALL_NAME.install.XXXXXX")" \
   || unchecked "could not write into $PREFIX (permissions? try a --prefix you own,
-       or re-run under sudo). Nothing has been installed."
+       or re-run under sudo). The artifact was verified and nothing has been
+       installed."
+cp "$STAGE/$ARTIFACT" "$PENDING" \
+  || unchecked "could not write $PENDING (no space?). Nothing has been installed."
 chmod 755 "$PENDING" \
   || unchecked "could not make $PENDING executable"
 
@@ -527,11 +592,12 @@ chmod 755 "$PENDING" \
 # only do it for the one target matching it; for every adopter on any other
 # platform, this is it.
 #
-# It is run from inside $PREFIX rather than from staging on purpose: the binary
-# derives its schema path from os.Executable(), so this exercises the installed
-# layout — a prefix with no schemas/ beside it — falling through to the schema
-# compiled into the binary. A build with that fallback broken would exit 2 here
-# instead of printing a version, and would be refused rather than installed.
+# It is run from inside $PREFIX rather than from staging on purpose: that is the
+# layout the binary will be used in, so a failure here is a failure the adopter
+# would have hit on their first invocation. It proves the artifact executes on
+# this host, exits 0, and names itself — and nothing beyond that. In particular
+# it does NOT reach the schema load, so it cannot speak for the embedded-schema
+# fallback; see the header for why, and for where that fallback IS checked.
 #
 # Only stdout is captured. Whatever the binary writes to stderr goes straight to
 # this script's stderr, unfiltered: folding it into the captured value would put

@@ -73,8 +73,11 @@ const manifestName = "SHA256SUMS"
 const installedName = "validate-intent"
 
 // releaseArtifacts is the set scripts/build-release.sh produces, in its own
-// naming. Spelled out here rather than derived so that a target quietly dropped
-// from either script shows up as a test that no longer describes the release.
+// naming. Spelled out here rather than derived, so that this file states what it
+// believes a release contains instead of restating whatever the scripts happen
+// to say — and TestTheFourTargetListsAgree then requires that belief to match
+// the two scripts and tests/cross/run_cross_build.sh. A target renamed in one
+// place is a failure there, by name.
 var releaseArtifacts = []string{
 	"validate-intent-linux-amd64",
 	"validate-intent-linux-arm64",
@@ -1007,6 +1010,234 @@ func TestADirectoryOnTheInstallNameIsRefused(t *testing.T) {
 	}
 }
 
+// --- the lists and defaults that have to agree ------------------------------
+
+// shellTargets reads the `TARGETS=( ... )` block out of a shell script.
+//
+// Every failure here is a t.Fatal rather than a skip or an empty result, because
+// the whole value of TestTheFourTargetListsAgree is that it FAILS when the lists
+// diverge — and a parser that quietly returned nothing would make four empty
+// lists agree perfectly while the scripts disagreed.
+func shellTargets(t *testing.T, rel string) []string {
+	t.Helper()
+	path := filepath.Join(repoRoot(t), rel)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", rel, err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) != "TARGETS=(" {
+			continue
+		}
+		if start != -1 {
+			t.Fatalf("%s holds more than one `TARGETS=(` block, so which one describes the release is a guess", rel)
+		}
+		start = i
+	}
+	if start == -1 {
+		t.Fatalf("%s holds no `TARGETS=(` block. This test can no longer see the list it compares, which is not the same as the lists agreeing — re-point it rather than deleting it", rel)
+	}
+
+	var targets []string
+	for _, line := range lines[start+1:] {
+		entry := strings.TrimSpace(line)
+		if entry == ")" {
+			if len(targets) == 0 {
+				t.Fatalf("%s: the TARGETS block is empty", rel)
+			}
+			return targets
+		}
+		if entry == "" || strings.HasPrefix(entry, "#") {
+			continue
+		}
+		if len(entry) < 3 || !strings.HasPrefix(entry, `"`) || !strings.HasSuffix(entry, `"`) {
+			t.Fatalf("%s: cannot read %q as a target entry; this test parses one quoted \"goos/goarch\" per line", rel, entry)
+		}
+		targets = append(targets, strings.Trim(entry, `"`))
+	}
+	t.Fatalf("%s: the `TARGETS=(` block is never closed", rel)
+	return nil
+}
+
+// TestTheFourTargetListsAgree is the check that makes the duplication of TARGETS
+// safe to have.
+//
+// The list of release targets is written out FOUR times in this repository:
+// scripts/build-release.sh builds them, scripts/install.sh maps a host onto one
+// of them, tests/cross/run_cross_build.sh walks them, and this file names the
+// artifacts they produce. install.sh cannot read the producer's copy at runtime
+// — it runs on a host with no clone, which is the entire premise of the script —
+// so the copy is unavoidable, and only an agreement check makes it honest.
+//
+// Nothing else in the suite can catch a divergence. Every other test here runs
+// on ONE machine and therefore only ever exercises the single target that
+// machine is, and both scripts derive that one from the same `uname`/`runtime`
+// answer — so it is the one entry that can never disagree. Rename darwin/amd64
+// in build-release.sh and, without this test, a linux/amd64 runner stays fully
+// green while install.sh asks releases for an artifact that no longer exists.
+// That is the same "a target quietly dropped or renamed" defect
+// build-release.sh's staging discipline and tests/cross/sha256sums' stray-file
+// check exist to close on the producing side.
+//
+// Compared as SETS, not as ordered lists: build-release.sh's order fixes the
+// manifest's row order and run_cross_build.sh's fixes its report order, and both
+// are theirs to choose. What must not differ is WHICH targets are named.
+func TestTheFourTargetListsAgree(t *testing.T) {
+	// This file's own belief, converted into the producer's vocabulary so all
+	// four are compared as the same kind of thing.
+	var fromThisFile []string
+	for _, name := range releaseArtifacts {
+		rest := strings.TrimPrefix(name, installedName+"-")
+		goos, goarch, ok := strings.Cut(rest, "-")
+		if rest == name || !ok || goos == "" || goarch == "" {
+			t.Fatalf("releaseArtifacts holds %q, which is not a %s-<goos>-<goarch> name", name, installedName)
+		}
+		fromThisFile = append(fromThisFile, goos+"/"+goarch)
+	}
+
+	// build-release.sh is the authority: it is the script that decides what a
+	// release contains. Everything else is a consumer of that decision.
+	const authorityName = "scripts/build-release.sh"
+	authority := shellTargets(t, authorityName)
+
+	for _, other := range []struct {
+		name    string
+		targets []string
+	}{
+		{"scripts/install.sh", shellTargets(t, "scripts/install.sh")},
+		{"tests/cross/run_cross_build.sh", shellTargets(t, "tests/cross/run_cross_build.sh")},
+		{"tests/cross/install/install_test.go's releaseArtifacts", fromThisFile},
+	} {
+		if missing, extra := setDiff(authority, other.targets); len(missing) > 0 || len(extra) > 0 {
+			t.Errorf("%s does not name the same release targets as %s:\n  missing from %s: %v\n  named only by %s: %v\n"+
+				"A release built from %s would not contain what %s asks for.",
+				other.name, authorityName,
+				other.name, missing,
+				other.name, extra,
+				authorityName, other.name)
+		}
+	}
+}
+
+// setDiff reports what is in want but not got, and what is in got but not want.
+func setDiff(want, got []string) (missing, extra []string) {
+	index := func(items []string) map[string]bool {
+		m := make(map[string]bool, len(items))
+		for _, item := range items {
+			m[item] = true
+		}
+		return m
+	}
+	wantSet, gotSet := index(want), index(got)
+	for _, item := range want {
+		if !gotSet[item] {
+			missing = append(missing, item)
+		}
+	}
+	for _, item := range got {
+		if !wantSet[item] {
+			extra = append(extra, item)
+		}
+	}
+	return missing, extra
+}
+
+// TestPrefixInTheEnvironmentDoesNotRedirectTheInstall pins where the binary is
+// allowed to come from being decided.
+//
+// `PREFIX` is one of the most commonly exported variables in a build shell, and
+// this script puts an executable on a host. install.sh used to read it as a
+// fallback default, so a machine with PREFIX set anywhere in its environment
+// would silently install somewhere other than the location `--help` promises,
+// with no flag passed and nothing in the output to suggest a choice had been
+// made. Two sources of truth — the flag and the built-in default — and no third.
+func TestPrefixInTheEnvironmentDoesNotRedirectTheInstall(t *testing.T) {
+	requireSupportedHost(t)
+
+	t.Run("with no --prefix it is ignored", func(t *testing.T) {
+		// The artifact verifies cleanly and then fails `--version`, so the run is
+		// refused at the LAST step: after the prefix has been resolved and
+		// created — the moment this test is about — and before anything is
+		// installed anywhere. A fixture that installed successfully would, on a
+		// correct script, write into the real /usr/local/bin of whatever machine
+		// ran the suite, which is not a thing a test may do.
+		source := stageSource(t, sourceOptions{artifacts: map[string]string{
+			hostArtifact(): "#!/bin/sh\nexit 3\n",
+		}})
+		envPrefix := filepath.Join(t.TempDir(), "chosen-by-the-environment")
+
+		got := runWithEnv(t, []string{"PREFIX=" + envPrefix}, "--from", source)
+
+		// Non-vacuousness. The assertion below only means anything if the run got
+		// far enough to choose and create a prefix; this line is printed
+		// immediately before it does. Without this guard, a script that refused
+		// early for an unrelated reason would pass by never having tried.
+		if !strings.Contains(got.output, "matches "+manifestName) {
+			t.Fatalf("the run never reached the install step, so it never chose a prefix and this test observed nothing (exit %d):\n%s", got.code, got.output)
+		}
+		if got.code == 0 {
+			t.Fatalf("an artifact that fails --version was installed anyway:\n%s", got.output)
+		}
+		if _, err := os.Stat(envPrefix); !os.IsNotExist(err) {
+			t.Errorf("PREFIX in the environment redirected the install: %s was created. Only --prefix and the default install.sh documents may decide where a binary lands.", envPrefix)
+		}
+	})
+
+	t.Run("--prefix wins over it", func(t *testing.T) {
+		source := stageSource(t, sourceOptions{})
+		prefix := t.TempDir()
+		envPrefix := filepath.Join(t.TempDir(), "chosen-by-the-environment")
+
+		got := runWithEnv(t, []string{"PREFIX=" + envPrefix}, "--from", source, "--prefix", prefix)
+		if got.code != 0 {
+			t.Fatalf("installing with PREFIX set in the environment exited %d, want 0:\n%s", got.code, got.output)
+		}
+		if _, err := os.Stat(filepath.Join(prefix, installedName)); err != nil {
+			t.Errorf("--prefix was not honoured: %v\n%s", err, got.output)
+		}
+		if _, err := os.Stat(envPrefix); !os.IsNotExist(err) {
+			t.Errorf("PREFIX in the environment was used despite an explicit --prefix: %s was created", envPrefix)
+		}
+	})
+}
+
+// TestUsageReportsTheDefaultPrefixItActuallyUses closes the loop the other way.
+//
+// The complaint that produced these two tests was not that the default was
+// wrong, it was that `--help` and the code disagreed about it and nothing
+// noticed. So the help text is required to name the same path the script
+// installs to when it is given no --prefix.
+func TestUsageReportsTheDefaultPrefixItActuallyUses(t *testing.T) {
+	script, err := os.ReadFile(installScript(t))
+	if err != nil {
+		t.Fatalf("reading install.sh: %v", err)
+	}
+
+	// The single literal the script is allowed to hold, read back out of it so
+	// this test asserts agreement rather than restating a third copy of the path.
+	const marker = `DEFAULT_PREFIX="`
+	i := strings.Index(string(script), marker)
+	if i < 0 {
+		t.Fatalf("install.sh no longer holds a DEFAULT_PREFIX assignment; the default it uses is now unfindable from here")
+	}
+	rest := string(script)[i+len(marker):]
+	def, _, ok := strings.Cut(rest, `"`)
+	if !ok || def == "" {
+		t.Fatalf("could not read the DEFAULT_PREFIX value out of install.sh")
+	}
+
+	help := run(t, "--help")
+	if help.code != 0 {
+		t.Fatalf("--help exited %d, want 0:\n%s", help.code, help.output)
+	}
+	if !strings.Contains(help.output, "default: "+def) {
+		t.Errorf("install.sh installs to %s by default, but --help does not say so:\n%s", def, help.output)
+	}
+}
+
 // --- the genuine article ----------------------------------------------------
 
 // TestAgainstARealReleaseBuild is the acceptance criterion, end to end:
@@ -1017,10 +1248,16 @@ func TestADirectoryOnTheInstallNameIsRefused(t *testing.T) {
 // Everything above installs a shell script standing in for a release binary,
 // which is the right trade for the twenty-odd cases that are about install.sh's
 // own logic — but it means none of them has ever seen the two halves of the
-// release seam meet. In particular the `--version` run from the prefix is, for a
-// real artifact, the first exercise of the embedded-schema fallback on a bare
-// prefix with no schemas/ beside it (schema.go, README.md's note on the installed
-// layout), and a stand-in cannot exercise that at all.
+// release seam meet: a manifest this repository's producer actually wrote, over
+// artifacts it actually cross-compiled, with the version stamp linked in.
+//
+// What this does NOT add, since a stand-in binary is the obvious thing to think
+// it adds it: it does not exercise the embedded-schema fallback either.
+// `--version` is answered and returned above cmd/validate-intent's LoadSchema()
+// call, so a real artifact answers it without ever loading a schema. The
+// fallback on a bare prefix is checked end to end by
+// tests/cross/run_cross_build.sh:266-287, which asserts the installed prefix has
+// no schemas/ and then runs a real fixture through the installed binary.
 //
 // Skipped under -short because it cross-compiles four targets. It is not skipped
 // when the toolchain is merely absent from PATH: `go test` is running, so a Go
