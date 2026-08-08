@@ -33,7 +33,9 @@
 package opentestintent
 
 import (
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 )
 
 // schemaJSON is the canonical schema, verbatim. Held as a string rather than a
@@ -54,4 +56,48 @@ var schemaJSON string
 // somebody embedded once".
 func SchemaJSON() []byte {
 	return []byte(schemaJSON)
+}
+
+// SchemaSHA256 returns the hex-encoded SHA-256 of the bytes SchemaJSON returns:
+// the identity of the contract THIS BINARY CARRIES, computed from the compiled-in
+// copy with no filesystem access at all.
+//
+// WHY A BINARY NEEDS TO BE ABLE TO SAY THIS
+// =========================================
+//
+// An embedded asset is invisible. Every drift guard in this ecosystem compares a
+// MATCHED PAIR inside ONE checkout — schema_test.go digests the embed against
+// schemas/open-test-intent.v1.json in the Go tree, specguard-rspec's
+// schema_packaging_spec.rb digests the gem's vendored copy against the gem's own
+// pin, tests/parity/run_ruby_parity.sh compares two files in two checkouts. None
+// of them is looking at an INSTALLED artifact, and none of them can: an installed
+// binary has no schemas/ beside it (tests/cross/run_cross_build.sh asserts the
+// absence). So a gem that vendors schema A can be pointed at a binary built when
+// canonical was B, and all three guards stay green while the two halves enforce
+// different contracts.
+//
+// Answering that needs no new pin and no new file — the bytes are already here.
+// It only needs the binary to be ASKED, which is what `--version` now does
+// (cmd/validate-intent/version.go's VersionLine).
+//
+// WHAT IT DOES NOT CLAIM
+// ======================
+//
+// This is the contract the artifact CARRIES, not necessarily the one a given run
+// ENFORCED. LoadSchema (cmd/validate-intent/fileio.go) gives a schema file found
+// beside the executable priority over the embedded copy, and this function never
+// consults that decision — it cannot, it does not touch the disk. Anything
+// reporting this digest owes its reader that distinction; see helpTrailer.
+//
+// The digest is recomputed per call rather than cached in a package-level var:
+// over 638 bytes it is far below the cost of the process start that precedes it,
+// and a function that is a pure fold of a compile-time constant has no
+// initialisation order to reason about.
+//
+// schema_test.go pins this against CanonicalV1SHA256, the same constant
+// specguard-rspec pins, so the value this reports is guarded by the check that
+// already existed rather than by a second, independently-drifting claim.
+func SchemaSHA256() string {
+	sum := sha256.Sum256([]byte(schemaJSON))
+	return hex.EncodeToString(sum[:])
 }

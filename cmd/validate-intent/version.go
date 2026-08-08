@@ -47,6 +47,8 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strings"
+
+	opentestintent "github.com/yatfa-ai/open-test-intent"
 )
 
 // helpTrailer is the Go-only addendum to the usage block. `--help` prints
@@ -98,11 +100,28 @@ import (
 // The leading blank line and the trailing newline are part of the constant so
 // that `usage + helpTrailer` reads as one block and the harness's split is a
 // plain byte offset rather than a search.
+//
+// WHAT THE SCHEMA SENTENCE IS CAREFUL NOT TO SAY
+// ==============================================
+//
+// It says the digest names the contract this artifact CARRIES, and then says
+// what beats it. That hedge is not padding. LoadSchema (fileio.go) gives a
+// schemas/open-test-intent.v1.json found beside the executable priority over the
+// embedded copy, and `--version` returns above LoadSchema and therefore never
+// reaches that decision — it cannot know which copy a later invocation on this
+// host will actually enforce. A trailer promising "the schema this binary
+// enforces" would be false on precisely the trees where the difference matters,
+// which is the same shape of on-host documentation SPGD-279 removed from the
+// last line of `usage`.
 const helpTrailer = `
 Go port only — the Python reference has no such flag:
 
        --version   print this binary's identity (name, version, Go toolchain
-                   and target) on stdout and exit 0.
+                   and target) followed by the SHA-256 of the schema compiled
+                   into it, on stdout, and exit 0. The digest names the
+                   contract this artifact CARRIES; a schema file found beside
+                   the binary wins over the compiled-in copy at validation
+                   time, so it is not a claim about what a given run enforced.
 `
 
 // programName is what the version line calls this binary. It is a constant
@@ -201,11 +220,41 @@ func VersionString() string {
 // cross-compiled release artifact and "which build of it is this" is half the
 // question anyone asking for --version is actually asking:
 //
-//	validate-intent 1.4.0 (go1.22.12 linux/arm64)
+//	validate-intent 1.4.0 (go1.22.12 linux/arm64) schema sha256:6535d9ba…
 //
 // The identity token is the part that must be identical across the four release
 // targets; the parenthesised half is the part that must differ.
+//
+// WHY THE SCHEMA DIGEST IS HERE, AND WHY IT IS OUTSIDE THE PARENTHESES
+// ====================================================================
+//
+// It is the other half of "which build of it is this": a linter's answer is
+// worth exactly what its contract is, and until now a released artifact could
+// not be asked which contract it enforces. Every drift guard in this ecosystem
+// compares a matched pair inside ONE checkout, and an installed binary has no
+// checkout around it — tests/cross/run_cross_build.sh asserts there is no
+// schemas/ beside it. See opentestintent.SchemaSHA256 for the full account of
+// the gap this closes.
+//
+// Outside the parentheses because the group is documented above as the part
+// that must DIFFER across the four release targets, and the schema digest is the
+// part that must be IDENTICAL across all four: one contract, cross-compiled four
+// ways. Putting it inside would file it under the wrong claim.
+//
+// Appended rather than inserted, because the version token's position is load
+// bearing. scripts/install.sh strips the `validate-intent ` prefix and takes
+// everything up to the first space, and scripts/build-release.sh matches
+// `validate-intent <version> ` as a prefix — both survive a token added at the
+// end, neither survives one added in the middle. install.sh is verified against
+// this line rather than edited for it.
+//
+// One line, no control characters, and short enough to render: specguard-rspec's
+// identity probe (validator_backend.rb) drops any `--version` output that is not
+// a single renderable line under IDENTITY_MAX_BYTES = 200. The longest this can
+// produce is an unstamped dirty build — a 40-hex revision plus `-dirty` — which
+// lands near 165 bytes.
 func VersionLine() string {
-	return fmt.Sprintf("%s %s (%s %s/%s)",
-		programName, VersionString(), runtime.Version(), runtime.GOOS, runtime.GOARCH)
+	return fmt.Sprintf("%s %s (%s %s/%s) schema sha256:%s",
+		programName, VersionString(), runtime.Version(), runtime.GOOS, runtime.GOARCH,
+		opentestintent.SchemaSHA256())
 }
