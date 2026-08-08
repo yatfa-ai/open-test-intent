@@ -153,8 +153,9 @@
 #      its own fixture corpus clean
 #   1  examined and found WRONG — the digest did not match, the binary did not
 #      run, or it ran and failed its own self-test
-#   2  COULD NOT CHECK — no such source, no manifest, no row for this host, no
-#      digest tool, an unsupported host, a bad invocation
+#   2  COULD NOT CHECK — no bash to run this script under, no such source, no
+#      manifest, no row for this host, no digest tool, an unsupported host, a bad
+#      invocation
 #
 # There is a third thing 2 has to carry, named here rather than left to be
 # discovered: everything checked out but the INSTALL ITSELF failed — an
@@ -183,6 +184,105 @@
 # and provenance are a different mechanism and are not claimed here — see the
 # package comment of tests/cross/sha256sums, which says the same thing about the
 # producing half.
+
+
+# --- the interpreter, probed rather than assumed ----------------------------- #
+#
+# This is the FIRST command list in the file, and it is here because the
+# discipline stated in the header — probe a dependency, never assume it; a host
+# that lacks one is told exactly that and exits 2 — was applied to every external
+# tool this script reaches for and to none of the one holding it up.
+# `sha256sum`/`shasum` are probed below, `curl`/`wget` are probed below, and bash
+# was assumed.
+#
+# What the assumption cost: the shebang is `#!/usr/bin/env bash`, so it is
+# honoured by `./install.sh` and bypassed entirely by `sh install.sh` and by
+# `curl … | sh`. On the common CI base image /bin/sh is dash, and this script
+# holds three constructs dash cannot run — the `TARGETS=(…)` array below, the
+# `${line:0:64}` substring expansions the manifest parser reads rows with, and
+# the `shopt -s nocasematch` around the digest compare. Run that way it died on a
+# raw shell syntax error: no exit code from this script's own vocabulary, no
+# diagnostic naming what was missing, and a failure that reads to an adopter as
+# "this installer is broken" rather than as "this host is missing bash".
+#
+# So the interpreter is now probed like everything else: if the running shell is
+# not bash, re-exec under a bash that is on PATH, or exit 2 naming the miss.
+# Nothing is installed on that path, because nothing was checked — the release is
+# not even fetched before this runs.
+#
+# Two properties this preamble has to keep, both of them checked by
+# tests/cross/install/install_test.go rather than left to care:
+#
+#   * It is POSIX, and it is ABOVE `set -euo pipefail`. `set -o pipefail` is not
+#     POSIX — dash 0.5.12+ accepts it, older dash and busybox ash reject it at
+#     runtime — so a guard sitting below that line would be pre-empted by exactly
+#     the wrong-reason failure it exists to remove. Nothing above this block is a
+#     command.
+#   * The whole FILE parses under a POSIX shell, which is a stronger requirement
+#     than this guard merely running. dash parses and executes incrementally, so
+#     this block would run before the array below is reached — but a shell that
+#     parsed the file up front would die at the array without ever reaching the
+#     explanation. That is what the `eval` around TARGETS is for.
+#     `dash -n scripts/install.sh` is the check; the file is PARSEABLE by POSIX
+#     sh, and is still bash to RUN. Porting the three construct sites is a larger
+#     change and is deliberately not made here.
+#
+# The diagnostics are printed inline rather than through red()/unchecked(),
+# because those are defined below this block — a guard that called them would be
+# reaching for functions the interpreter it is refusing has not defined yet.
+
+if [ -z "${BASH_VERSION:-}" ]; then
+  bash_missing=""
+
+  # Can this script hand ITSELF to bash? Only if $0 names this file. Under
+  # `curl … | sh` the script arrives on stdin and $0 names the shell's own
+  # binary — which is a real, readable file, so `[ -f "$0" ]` answers yes and
+  # re-execing on it hands bash an ELF. The shebang line is what tells the two
+  # apart, and reading one line with the shell's own `read` needs no external
+  # tool (`head` would not survive the restricted-PATH cases below).
+  self=""
+  if [ -f "$0" ] && [ -r "$0" ]; then
+    first_line=""
+    IFS= read -r first_line < "$0" 2>/dev/null || :
+    case "$first_line" in
+      "#!"*bash*) self="$0" ;;
+    esac
+  fi
+
+  if [ -n "${SPECGUARD_INSTALL_REEXEC:-}" ]; then
+    # Second time through: something named `bash` was found and exec'd, and the
+    # shell that came back still has no BASH_VERSION. Refuse rather than exec
+    # again — an installer that loops forever is a worse answer than one that
+    # stops. (Exporting this variable by hand therefore turns the re-exec off and
+    # produces this refusal. That direction is fail-closed: it can cost an
+    # install, never cause an unchecked one.)
+    bash_missing="the 'bash' on PATH is not bash — this script re-ran itself
+       under it and came back in a shell that has no BASH_VERSION. Point PATH at
+       a real bash and re-run. Nothing has been installed."
+  elif ! command -v bash >/dev/null 2>&1; then
+    bash_missing="this script is bash and there is no 'bash' on PATH to run it
+       under. It was started by a shell that is not bash, so the
+       '#!/usr/bin/env bash' shebang was bypassed. Install bash and re-run.
+       Nothing has been installed: the release was never fetched, so nothing
+       about it could be checked."
+  elif [ -z "$self" ]; then
+    bash_missing="this script is bash and is being read by a shell that is not
+       bash, from somewhere it cannot re-read — a pipe, most likely
+       'curl … | sh'. bash is on this host, but there is no file here to hand to
+       it. Pipe it into bash instead — 'curl -fsSL <url> | bash -s -- --from
+       <src>' — or save it and run 'bash install.sh …'. Nothing has been
+       installed."
+  fi
+
+  if [ -z "$bash_missing" ]; then
+    SPECGUARD_INSTALL_REEXEC=1
+    export SPECGUARD_INSTALL_REEXEC
+    exec bash "$self" "$@"
+  fi
+
+  printf '\033[31m%s\033[0m\n' "error: $bash_missing" >&2
+  exit 2
+fi
 
 set -euo pipefail
 
@@ -221,12 +321,28 @@ DEFAULT_PREFIX="/usr/local/bin"
 # renamed" defect build-release.sh's own header exists to close on the producing
 # side. Adding a target means editing all three files; the check tells you which
 # one you missed.
+#
+# The block is wrapped in `eval` for one reason, and it is not a bash reason: a
+# bash array is not POSIX SYNTAX, so a bare `TARGETS=(` is a PARSE error for
+# /bin/sh rather than a runtime one. A shell that parsed this whole file before
+# running any of it would therefore die right here — beneath the interpreter
+# guard at the top that exists to explain exactly that, and so never reaching it.
+# Quoted, the literal is one ordinary word to a POSIX parser and the same array
+# to bash, which is the only shell that ever executes it. `dash -n
+# scripts/install.sh` is the check.
+#
+# The block's SHAPE is load-bearing beyond this script — TestTheFourTargetListsAgree
+# reads `TARGETS=(`, one quoted "goos/goarch" per line, `)` out of all three shell
+# files — so the literal inside the quotes is left exactly as the other two write
+# it.
+eval '
 TARGETS=(
   "linux/amd64"
   "linux/arm64"
   "darwin/amd64"
   "darwin/arm64"
 )
+'
 
 red()   { printf '\033[31m%s\033[0m\n' "$*"; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
