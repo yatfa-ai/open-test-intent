@@ -431,6 +431,88 @@ func TestInstallsTheArtifactForThisHostAndProvesItRuns(t *testing.T) {
 	}
 }
 
+// TestASuccessfulInstallPrintsTheWiringLineNamingWhatItInstalled is the other
+// half of "installed $TARGET_PATH".
+//
+// specguard-rspec's README tells the reader to point SPECGUARD_VALIDATE_INTENT
+// at a `validate-intent` binary, and this script installs exactly that binary.
+// Until this test, the two facts never met in the output: the variable's name
+// appeared once in the script, inside its own header comment, and the reader who
+// had just run the installer still had to go to the other repository's README
+// and hand-assemble a path this script already held in a variable.
+//
+// Both arms of the PATH case are covered, because they fail differently. The
+// off-PATH arm prints a note today and could plausibly grow the wiring line by
+// accident; the on-PATH arm prints NOTHING after the version line, so it is the
+// one where a conditional implementation would leave the reader with no wiring
+// at all and no signal that anything was withheld.
+//
+// The wanted path is derived here the same way the script derives it —
+// EvalSymlinks over the prefix, then joined with the installed name — rather
+// than restated as a literal. t.TempDir() is under a symlinked /var on some
+// hosts, and the script resolves its prefix with `pwd -P` before building
+// $TARGET_PATH, so an unresolved join would assert against a path the script has
+// no reason to ever print. A hardcoded /usr/local/bin would be worse still: it
+// would pass only when the test stopped using --prefix.
+func TestASuccessfulInstallPrintsTheWiringLineNamingWhatItInstalled(t *testing.T) {
+	requireSupportedHost(t)
+
+	// The gem refuses a bare command name outright, so the assertion is on an
+	// absolute path or it is not an assertion about the shape the gem accepts.
+	assertWired := func(t *testing.T, got result, prefix string) {
+		t.Helper()
+		if got.code != 0 {
+			t.Fatalf("installing from a clean release exited %d, want 0:\n%s", got.code, got.output)
+		}
+		resolved, err := filepath.EvalSymlinks(prefix)
+		if err != nil {
+			t.Fatalf("resolving the prefix the way install.sh does: %v", err)
+		}
+		want := filepath.Join(resolved, installedName)
+		if !filepath.IsAbs(want) {
+			t.Fatalf("the derived install path %q is not absolute, so this test cannot check the shape the gem requires", want)
+		}
+		if !strings.Contains(got.output, "SPECGUARD_VALIDATE_INTENT="+want) {
+			t.Errorf("a successful install did not print the SPECGUARD_VALIDATE_INTENT wiring for %s:\n%s", want, got.output)
+		}
+	}
+
+	t.Run("when the prefix is not on PATH", func(t *testing.T) {
+		source := stageSource(t, sourceOptions{})
+		prefix := t.TempDir()
+
+		got := run(t, "--from", source, "--prefix", prefix)
+		assertWired(t, got, prefix)
+
+		// The pre-existing note is a separate, shell-scoped thing and keeps
+		// firing on exactly the condition it fired on before.
+		if !strings.Contains(got.output, "is not on your PATH") {
+			t.Errorf("the off-PATH note stopped firing on a prefix that is not on PATH:\n%s", got.output)
+		}
+	})
+
+	t.Run("when the prefix is already on PATH", func(t *testing.T) {
+		source := stageSource(t, sourceOptions{})
+		prefix := t.TempDir()
+
+		// The script compares against $PREFIX AFTER `pwd -P`, so PATH has to
+		// carry the resolved spelling or this subtest would silently exercise
+		// the off-PATH arm again and prove nothing about the on-PATH one.
+		resolved, err := filepath.EvalSymlinks(prefix)
+		if err != nil {
+			t.Fatalf("resolving the prefix the way install.sh does: %v", err)
+		}
+		got := runWithEnv(t, []string{"PATH=" + os.Getenv("PATH") + string(os.PathListSeparator) + resolved},
+			"--from", source, "--prefix", prefix)
+		assertWired(t, got, prefix)
+
+		// The arm that says nothing today must still say nothing about PATH.
+		if strings.Contains(got.output, "is not on your PATH") {
+			t.Errorf("the off-PATH note fired for a prefix that IS on PATH:\n%s", got.output)
+		}
+	})
+}
+
 // TestAPartialSourceStillInstalls is the constraint that rules out the obvious
 // implementation.
 //
