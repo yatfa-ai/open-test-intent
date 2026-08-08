@@ -588,6 +588,27 @@ if [ -e "$SMOKE_PREFIX/schemas" ]; then
        rather than assumed."
 fi
 
+# The same reasoning, applied to the other assumption this section rests on.
+# The artifact exits 1 for a path it cannot find ("no file(s) match ..."), which
+# is the very code every BAD_FIXTURES assertion — and the rejected --source
+# entry — wants. So a fixture renamed out from under these lists would print
+# `ok ... exits 1` while no document was ever read, and the release would be
+# promoted on the strength of an error message about a missing path.
+#
+# The lists above are restated from tests/cross/run_cross_build.sh rather than
+# sourced, for reasons given there; the cost of that copy is drift, and drift
+# here is silent in BOTH directions. Asserting the corpus is present before
+# asserting anything about its verdicts keeps "could not check" distinguishable
+# from "checked and clean". The ${...#*:} strips the "<want>:" prefix so one
+# loop covers all three lists. Deliberately before the cd, so $REPO_ROOT-
+# relative names still read as written.
+for fixture in "$GOOD_FIXTURE" "${BAD_FIXTURES[@]}" "${SOURCE_FIXTURES[@]#*:}"; do
+  [ -f "$REPO_ROOT/$fixture" ] || die "$fixture is named in this script's corpus and is not
+       in the checkout. The artifact exits 1 for a path it cannot find, which an
+       'expect 1' assertion below would read as a legitimate verdict — so the
+       corpus is asserted to exist before it is asserted to be rejected."
+done
+
 # cwd moves outside the checkout ONCE, here, and is checked; fixtures are then
 # passed as absolute paths. Doing it per call as `(cd "$SMOKE_DIR" && binary)`
 # would let a failed cd short-circuit to exit status 1 — which the invalid-corpus
@@ -610,7 +631,9 @@ smoke_expect() {
   local rc=0
   "$SMOKE_PREFIX/bin/validate-intent" "$@" >"$SMOKE_DIR/out" 2>"$SMOKE_DIR/err" || rc=$?
   if [ "$rc" != "$want" ]; then
-    sed 's/^/        /' "$SMOKE_DIR/err" >&2
+    # `|| true` so that a failure of sed itself cannot exit the script under
+    # set -e and take the diagnostic below with it: the die is the point.
+    sed 's/^/        /' "$SMOKE_DIR/err" >&2 || true
     die "installed layout: $label exited $rc, want $want.
        The artifact for $HOST_OS/$HOST_ARCH is the right shape and reports the
        right version, and it does not do its job. Nothing has been promoted."
