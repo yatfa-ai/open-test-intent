@@ -17,6 +17,14 @@ package main
 //     the guard exists to catch rather than a way to test it.
 //   - the two corpora expanding differently. The harness compares stdout on ONE
 //     tree at a time; nothing out there runs both against each other.
+//
+// And one that could be staged from outside but must not be: a corpus name that
+// the self-test's own globs would pick up differently on the two sides. Adding
+// a real `_scratch.json` to examples/ would test the dotfile rule beautifully
+// and would also make the corpus thirteen fixtures, so that case is staged
+// against a temporary tree and an fstest.MapFS instead — see
+// TestBothExpansionsApplyThePythonDotfileRule, and examples/.dotfile-canary.json
+// for the half the corpus CAN carry.
 
 import (
 	"io/fs"
@@ -74,6 +82,13 @@ var allPatterns = []string{
 //
 // Both sides go through this package's own fnmatch by construction (see
 // expandEmbedded), so this asserts that construction rather than hoping for it.
+//
+// What it CANNOT assert is a rule the corpus's own names never trip. It compares
+// twelve fixtures and one canary, so it sees the rules those names happen to
+// exercise and no others — it is a check that the shipped corpus expands the
+// same way twice, not a statement of the rule.
+// TestBothExpansionsApplyThePythonDotfileRule states the rule, on names staged
+// to trip it.
 func TestEmbeddedAndOnDiskExpansionsAgree(t *testing.T) {
 	disk := onDiskSource(t)
 	embedded := embeddedSource(disk.root)
@@ -87,6 +102,87 @@ func TestEmbeddedAndOnDiskExpansionsAgree(t *testing.T) {
 		}
 		if strings.Join(got, "\n") != strings.Join(want, "\n") {
 			t.Errorf("%s expands differently\n  on disk:  %v\n  embedded: %v", pattern, want, got)
+		}
+	}
+}
+
+// TestBothExpansionsApplyThePythonDotfileRule states that rule directly, on
+// names chosen to make it fail if either side gets it wrong.
+//
+// TestEmbeddedAndOnDiskExpansionsAgree above compares the two over the REAL
+// corpus, which is the right thing to compare and the wrong thing to rely on
+// for this: it can only exercise the rules the corpus's own names happen to
+// trip. examples/.dotfile-canary.json is carried so that at least one of them
+// is a dotfile — but the corpus cannot hold the other half of the rule. A real
+// `_scratch.json` would be MATCHED by `examples/*.json`, on both sides, and
+// would therefore be a thirteenth fixture; the corpus would stop being twelve
+// files and 12/12 would stop being 12/12. So the underscore case is staged
+// here instead, against a tree and an FS that exist for the length of one test.
+//
+// The rule has two halves and both are asserted, because "drop dotfiles" and
+// "drop dotfiles unless the pattern asked for one" are different rules that
+// agree on every pattern the self-test actually uses:
+//
+//   - `*` never matches a leading dot (Python's rule, which is why the corpus's
+//     canary is invisible to `examples/*.json`), and DOES match a leading
+//     underscore, which is not special to any glob — only to go:embed.
+//   - a pattern that itself begins with a dot gets the dotfiles, so the filter
+//     is allowHidden and not a blanket exclusion.
+//
+// Without the second case, `allowHidden := false` would pass here. Without the
+// first, `allowHidden := true` would.
+func TestBothExpansionsApplyThePythonDotfileRule(t *testing.T) {
+	const (
+		dotted   = "examples/.hidden.json"
+		scored   = "examples/_scratch.json"
+		ordinary = "examples/plain.json"
+	)
+	body := []byte("{}\n")
+
+	// One set of names, staged twice: as a real tree for ExpandFiles to walk,
+	// and as an in-memory FS for expandEmbedded. Anything the two disagree
+	// about is the disagreement itself, not a difference in what they were
+	// given.
+	root := t.TempDir()
+	staged := fstest.MapFS{}
+	for _, rel := range []string{dotted, scored, ordinary} {
+		dest := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			t.Fatalf("staging %s: %v", rel, err)
+		}
+		if err := os.WriteFile(dest, body, 0o644); err != nil {
+			t.Fatalf("staging %s: %v", rel, err)
+		}
+		staged[rel] = &fstest.MapFile{Data: body}
+	}
+
+	disk := newFixtureSource(root)
+	if disk.corpus != nil {
+		t.Fatal("the staged tree HAS examples/, so disk must win; this compares the wrong pair")
+	}
+	embedded := fixtureSource{root: root, corpus: staged}
+
+	for _, testCase := range []struct {
+		pattern string
+		want    []string
+	}{
+		{"examples/*.json", []string{scored, ordinary}},
+		{"examples/.*.json", []string{dotted}},
+	} {
+		want := strings.Join(testCase.want, "\n")
+		fromDisk := strings.Join(disk.expand(testCase.pattern), "\n")
+		fromEmbed := strings.Join(embedded.expand(testCase.pattern), "\n")
+
+		if fromDisk != want {
+			t.Errorf("%s expands wrongly ON DISK\n  want: %v\n  got:  %v",
+				testCase.pattern, testCase.want, disk.expand(testCase.pattern))
+		}
+		if fromEmbed != want {
+			t.Errorf("%s expands wrongly IN THE EMBEDDED CORPUS\n  want: %v\n  got:  %v\n"+
+				"expandEmbedded's dotfile filter no longer matches globInDir's, so a released "+
+				"binary self-tests a different set of files than a checkout does — the one "+
+				"difference the fallback promises not to make.",
+				testCase.pattern, testCase.want, embedded.expand(testCase.pattern))
 		}
 	}
 }

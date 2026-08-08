@@ -27,14 +27,29 @@ package opentestintent
 //     identical output is void. TestEmbeddedCorpusIsTheOnDiskCorpus compares
 //     them file for file and byte for byte, and names the file that differs.
 //
+//     That comparison can only see the NARROWING half if the tree contains a
+//     name the narrower directive drops. Twelve ordinary names contain none, so
+//     for as long as that was the whole corpus this test passed identically
+//     with and without `all:` — green about a rule it was not being asked. It
+//     is asked now: examples/.dotfile-canary.json is carried for exactly this
+//     purpose, the assertion below refuses to run without it, and that file
+//     explains itself at length.
+//
 //  2. The embedded corpus and the on-disk corpus EXPAND DIFFERENTLY. The
 //     self-test's output is a function of the four globs, not of the file set,
-//     and the two are expanded by different code: PyGlob on disk, fs.Glob over
-//     the embed. Equal files with unequal expansions still produce different
-//     stdout, which is the one thing the fallback promises not to do. That
-//     belongs to the consumer, so it is asserted there —
+//     so equal files with unequal expansions still produce different stdout,
+//     which is the one thing the fallback promises not to do. The two are
+//     expanded by two CALLERS of one matcher — ExpandFiles walks the disk and
+//     expandEmbedded walks the embed, and both go through this project's own
+//     fnmatch/pySplit/pyJoin. (fs.Glob was rejected precisely so there would
+//     not be a second matcher to keep in agreement with the reference; it
+//     appears nowhere in the sources but the comments saying so.) One matcher
+//     makes agreement likely, not certain — the two callers still apply the
+//     dotfile rule and the isFile filter themselves. That belongs to the
+//     consumer, so it is asserted there —
 //     cmd/validate-intent/selftest_embed_test.go's
-//     TestEmbeddedAndOnDiskExpansionsAgree.
+//     TestEmbeddedAndOnDiskExpansionsAgree and
+//     TestBothExpansionsApplyThePythonDotfileRule.
 //
 // Digests here go through SHA256Hex, the module's one fold, rather than a
 // second local one: see that function's comment for why a difference must mean
@@ -45,6 +60,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -119,6 +135,29 @@ func sortedKeys(m map[string][]byte) []string {
 	return keys
 }
 
+// anyKeySatisfies reports whether at least one path in the set matches pred.
+func anyKeySatisfies(m map[string][]byte, pred func(string) bool) bool {
+	for key := range m {
+		if pred(key) {
+			return true
+		}
+	}
+	return false
+}
+
+// droppedByABareEmbed reports whether `//go:embed examples` (without `all:`)
+// would leave this path out: go:embed's default excludes any entry whose own
+// name begins with "." or "_", at any depth, so the test is per SEGMENT and not
+// on the path as a whole.
+func droppedByABareEmbed(name string) bool {
+	for _, segment := range strings.Split(name, "/") {
+		if strings.HasPrefix(segment, ".") || strings.HasPrefix(segment, "_") {
+			return true
+		}
+	}
+	return false
+}
+
 func TestEmbeddedCorpusIsTheOnDiskCorpus(t *testing.T) {
 	onDisk := walkOnDisk(t)
 	embedded := walkEmbedded(t)
@@ -131,6 +170,23 @@ func TestEmbeddedCorpusIsTheOnDiskCorpus(t *testing.T) {
 		// edited whenever a fixture is added is a number people edit without
 		// reading.
 		t.Fatalf("found no files under %s/; this test cannot verify anything", corpusDir)
+	}
+
+	// The second way this test can verify less than it appears to, and the
+	// subtler one: a corpus of ordinary names is a corpus on which `all:` and a
+	// bare directive produce the SAME bytes. Both halves below would then agree
+	// under either directive, this test would pass either way, and the error
+	// message it prints about dropped names could never print at all — a guard
+	// green about a rule nothing was asking it. Fatal rather than skipped: the
+	// binary's corpus would stop mirroring the tree only on the release asset,
+	// the one host where nobody can open examples/ to find out.
+	if !anyKeySatisfies(onDisk, droppedByABareEmbed) {
+		t.Fatalf("no file under %s/ has a path segment beginning with '.' or '_', so a bare\n"+
+			"`//go:embed examples` would carry exactly what `all:examples` carries and this test\n"+
+			"cannot tell the two apart. %s/.dotfile-canary.json existed to prevent that and has\n"+
+			"been deleted or renamed; restore it, or replace it with another name go:embed's\n"+
+			"default drops. See that file, and corpus.go's directive, for why it is load-bearing.",
+			corpusDir, corpusDir)
 	}
 
 	// (1) Nothing the tree has is missing from the binary, and every byte

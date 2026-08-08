@@ -58,10 +58,18 @@ import "embed"
 // compares the two file-for-file, would have to carry an exception list to stay
 // green. It would then be green about a corpus it had stopped checking.
 //
+// That guard can only bite if the tree HOLDS such a name. Twelve ordinary
+// fixtures held none, so `all:` was for a while a spelling with no observable
+// consequence: the guard passed identically with and without it, green about a
+// rule nothing was asking it — the same failure this comment claims to prevent,
+// one level up. examples/.dotfile-canary.json is carried to make the
+// consequence observable, and corpus_test.go now refuses to run without it.
+//
 // Skipping dotfiles is Python's GLOB rule (`*` never matches one), not a
 // property of the corpus, so it is applied where the reference applies it: in
 // the expansion, by cmd/validate-intent's fixtureSource. Embedding faithfully
-// and filtering at the glob keeps each rule in the one place it is true.
+// and filtering at the glob keeps each rule in the one place it is true — and
+// keeps the canary out of the self-test, which still reports 12/12.
 //
 //go:embed all:examples
 var examplesCorpus embed.FS
