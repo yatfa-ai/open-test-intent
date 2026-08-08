@@ -103,19 +103,17 @@
 #
 # A NOTE ON CROSS-REPO CITATIONS, in BOTH directions: by NAME, never by number.
 #
-# gem -> here: tests/parity/check_section_refs.py enforces the number↔name
-# agreement for run_parity.sh only — it owns one numbering — so a numeric
-# citation of a section in THIS file, and especially one from the other repo
-# (lib/specguard/rspec/{scanner,linter}.rb both point back here), is unchecked
-# and rots the first time a section is inserted. The names are stable and
-# searchable; the numbers are for reading the output, not for citing.
+# gem -> here: nothing enforces the number↔name agreement for any file, so a
+# numeric citation of a section in THIS file, and especially one from the other
+# repo (lib/specguard/rspec/{scanner,linter}.rb both point back here), is
+# unchecked and rots the first time a section is inserted. The names are stable
+# and searchable; the numbers are for reading the output, not for citing.
 #
 # here -> gem: the same rule, and it is not hypothetical. This file first
 # shipped citing the gem by line number while the companion commit added 35
 # lines above the cited site in the very same changeset — so the citation for
 # ratified difference (a) landed pointing at the code for ratified difference
-# (b). Nothing catches that: check_section_refs.py reads run_parity.sh section
-# numbers, not gem line numbers, and no checker in either repo can, because
+# (b). Nothing catches that, and no checker in either repo could, because
 # neither repo has the other at test time by construction (that is the whole
 # premise above). So cite the gem by SYMBOL — `CLI#report_results`,
 # `Scanner.scan_text`, `SCHEMA_PATH` — which survives exactly the edit that
