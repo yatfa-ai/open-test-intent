@@ -1,0 +1,7 @@
+{
+  "_not_a_fixture": "A name that two rules are supposed to drop. Until it existed the corpus had twelve ordinary names, neither rule dropped anything, and both guards passed whether or not the rule they check was in force.",
+  "_embed_rule": "corpus.go carries this tree with `//go:embed all:examples`. A bare `//go:embed examples` drops every name starting with '.' or '_'. Drop `all:` now and this file is on disk and not in the binary, which is what corpus_test.go compares. Deleting this file re-opens that blind spot, so corpus_test.go refuses to run without it.",
+  "_glob_rule": "Python's glob never matches a leading dot, so `examples/*.json` misses this name on disk AND in the embedded expansion that mirrors it (cmd/validate-intent/selftest.go). The corpus is still twelve fixtures reporting 12/12. Break that filter and this name appears on one side only. The '_'-prefixed half of the embed rule cannot be staged here — a glob WOULD match it, making it a thirteenth fixture — so it is staged synthetically in selftest_embed_test.go.",
+  "_why_json_and_invalid": "The extension puts it in range of the pattern that would pick it up if the dotfile rule broke; the shape is not a valid intent so a leak reads as a loud FAIL, not a quiet thirteenth pass.",
+  "_why_terse": "Unlike the comments that explain the rest of this, these bytes are compiled into every released binary."
+}

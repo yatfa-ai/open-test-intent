@@ -382,8 +382,16 @@ func CheckSourceFile(path string, schema *Schema) (findings []SourceFinding, rea
 	if readErr != "" {
 		return nil, readErr
 	}
+	return CheckSourceText(text, schema), ""
+}
 
-	findings = []SourceFinding{}
+// CheckSourceText is CheckSourceFile with the read already done: extraction,
+// normalization and validation over source text from wherever it came. Split
+// out for the self-test's embedded corpus — see fixtureSource in selftest.go —
+// so an installed binary and a checkout run the SAME extractor over the same
+// bytes rather than two that have to be kept in agreement.
+func CheckSourceText(text string, schema *Schema) []SourceFinding {
+	findings := []SourceFinding{}
 	for _, site := range ExtractIntents(text) {
 		if site.Problem != "" {
 			findings = append(findings, SourceFinding{
@@ -411,7 +419,7 @@ func CheckSourceFile(path string, schema *Schema) (findings []SourceFinding, rea
 		}
 		findings = append(findings, finding)
 	}
-	return findings, ""
+	return findings
 }
 
 func normalizeAndParse(raw string) (Value, error) {

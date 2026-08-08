@@ -605,6 +605,52 @@ func TestAnArtifactThatRunsButIsNotValidateIntentIsRefused(t *testing.T) {
 	}
 }
 
+// TestAnArtifactThatPassesVersionAndFailsItsSelfTestIsRefused is the
+// non-vacuousness proof for the check SPGD-315 added.
+//
+// `--version` returns above LoadSchema, so every assertion in this file before
+// this one is satisfied by a binary that cannot validate a single document.
+// install.sh now also runs the artifact bare — the self-test, over the corpus
+// compiled into it — and that check is the only one here that reaches the
+// validator at all. Without a fixture that passes the first and fails the
+// second, it would be a line of shell nothing ever exercised: on a healthy
+// release both succeed, so a deleted or inverted self-test check would look
+// exactly like a working one, which is the failure mode this whole file exists
+// to close.
+//
+// It is exit 1 and not 2 for the reason the header gives: the artifact was
+// fetched, digest-verified, executed and EXAMINED. It ran the check and did not
+// pass it. "Could not check" is the one thing this is not.
+func TestAnArtifactThatPassesVersionAndFailsItsSelfTestIsRefused(t *testing.T) {
+	requireSupportedHost(t)
+
+	// Answers --version exactly as a healthy release does, and fails when asked
+	// to prove it validates anything. A binary whose embedded schema or corpus
+	// was broken behaves precisely like this.
+	body := fmt.Sprintf(`#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "%s 1.4.0 (fake %s/%s)"
+  exit 0
+fi
+echo "error: no fixtures match 'examples/*.json' — self-test cannot verify acceptance" >&2
+exit 1
+`, installedName, runtime.GOOS, runtime.GOARCH)
+
+	source := stageSource(t, sourceOptions{artifacts: map[string]string{hostArtifact(): body}})
+	prefix := t.TempDir()
+
+	got := run(t, "--from", source, "--prefix", prefix)
+	if got.code != 1 {
+		t.Fatalf("exited %d, want 1 (examined and found wrong):\n%s", got.code, got.output)
+	}
+	// The diagnostic must say which check failed. "the artifact does not run"
+	// would send someone hunting a corrupt download for a binary that ran fine.
+	if !strings.Contains(got.output, "self-test") {
+		t.Errorf("the refusal never mentions the self-test, so it reads as a different failure:\n%s", got.output)
+	}
+	requireNothingInstalled(t, prefix, map[string]string{})
+}
+
 // --- could not check: exit 2 ------------------------------------------------
 
 // TestCouldNotCheckIsAlwaysTwoAndNeverAnInstall pins the half of the contract
