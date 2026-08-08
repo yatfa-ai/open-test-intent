@@ -253,8 +253,12 @@ func TestVersionFlagFromAnyPosition(t *testing.T) {
 // --help wins over --version in either order, exactly as it wins over
 // everything else. The reference agrees on this crossing (it has no --version,
 // so it reads it as a filename its own --help loop pre-empts), which is why
-// tests/parity/run_parity.sh compares it byte-for-byte rather than asserting it
-// Go-side.
+// tests/parity/run_parity.sh compares it against the oracle rather than
+// asserting it Go-side.
+//
+// What --help prints is the shared usage block plus helpTrailer — the trailer
+// documents the flag, it does not answer it — so the expectation here is the
+// concatenation, and a port that let --version win fails on it.
 func TestHelpWinsOverVersion(t *testing.T) {
 	for _, argv := range [][]string{
 		{"--help", "--version"},
@@ -266,11 +270,61 @@ func TestHelpWinsOverVersion(t *testing.T) {
 			if code != 0 {
 				t.Errorf("run(%q) = %d, want 0", argv, code)
 			}
-			if stdout != usage {
+			if stdout != usage+helpTrailer {
 				t.Errorf("run(%q) printed the version line, not the usage block: %q", argv, stdout)
 			}
 			if stderr != "" {
 				t.Errorf("run(%q) wrote to stderr: %q", argv, stderr)
+			}
+		})
+	}
+}
+
+// helpTrailer must never leave the --help path, and `usage` must never absorb
+// it.
+//
+// This is the assertion that keeps the Go-only row from costing parity
+// coverage. `usage` is printed on refusals as well as on --help, and three of
+// those refusals are compared byte-for-byte against the reference in
+// tests/parity/run_parity.sh — `--source` with no FILE, `--json` in self-test
+// mode, and the two crossed. A --version row inside the shared constant would
+// break all of them, and no matched edit to bin/validate-intent could restore
+// them: the reference has no such flag, and documenting one that answers "no
+// file(s) match" would be a worse falsehood than the misleading line SPGD-279
+// removed.
+//
+// The harness would catch that too, but only when a Go toolchain, python3 and
+// the whole corpus are present. This catches it in `go test`, one package wide,
+// which is where the mistake would actually be made.
+func TestTheHelpTrailerNeverLeavesTheHelpPath(t *testing.T) {
+	if strings.Contains(usage, "--version") {
+		t.Error("the shared usage block names --version; it is compared byte-for-byte " +
+			"against a reference that has no such flag")
+	}
+	if !strings.Contains(helpTrailer, "--version") {
+		t.Error("helpTrailer does not name --version — it exists to document exactly that")
+	}
+
+	for _, argv := range [][]string{
+		{"--source"},           // --source with no FILE argument
+		{"-s"},                 // the alias
+		{"--json"},             // --json in self-test mode
+		{"--source", "--json"}, // both, still the usage error
+	} {
+		t.Run(strings.Join(argv, " "), func(t *testing.T) {
+			code, stdout, stderr := captureRun(t, argv...)
+			if code != 2 {
+				t.Fatalf("run(%q) = %d, want 2 (a usage error)", argv, code)
+			}
+			if stdout != "" {
+				t.Errorf("run(%q) wrote to stdout: %q — a refusal must not", argv, stdout)
+			}
+			if !strings.Contains(stderr, usage) {
+				t.Errorf("run(%q) did not print the shared usage block on stderr: %q", argv, stderr)
+			}
+			if strings.Contains(stderr, helpTrailer) {
+				t.Errorf("run(%q) printed the Go-only trailer on a refusal path; "+
+					"it breaks the byte-for-byte comparison of this refusal", argv)
 			}
 		})
 	}

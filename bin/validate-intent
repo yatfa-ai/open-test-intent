@@ -878,7 +878,7 @@ usage: validate-intent                    # self-test the in-repo fixtures
                 human report — for the stdin, FILE... and --source modes only.
                 Position-independent. Exit codes are identical either way.
 
-Validates JSON against schemas/open-test-intent.v1.json (zero dependencies).
+Validates JSON against the OpenTestIntent v1 schema (zero dependencies).
 """
 
 

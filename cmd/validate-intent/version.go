@@ -38,10 +38,9 @@ package main
 // comparison changes.
 //
 // Note also what is NOT here: `--version` is absent from the `usage` block in
-// main.go. That text is compared byte-for-byte against the reference's USAGE,
-// so documenting a Go-only flag in it would fail section 7 ("--help") and every
-// refusal that prints the usage block. The matched edit belongs in
-// bin/validate-intent, which this slice does not touch.
+// main.go, and that is a placement decision rather than an omission — see
+// helpTrailer below for where it IS documented, and why it is documented from
+// there.
 
 import (
 	"fmt"
@@ -49,6 +48,62 @@ import (
 	"runtime/debug"
 	"strings"
 )
+
+// helpTrailer is the Go-only addendum to the usage block. `--help` prints
+// `usage + helpTrailer`; every other path that prints usage — all of them
+// refusals — prints `usage` alone.
+//
+// WHY --version IS DOCUMENTED AT ALL
+// ==================================
+//
+// On the host this binary actually ships to there is no repo, no README and no
+// schemas/ directory: a release artifact is a single file at a prefix, and
+// `--help` is the entire documentation set. Three consumers already depend on
+// this flag — scripts/install.sh runs it as the final proof the artifact
+// executes on the target host, README.md documents it, and specguard-rspec's
+// identity probe shells out to it to name which implementation produced a run's
+// verdicts. A flag that load-bearing being undiscoverable on the only surface
+// an adopter has is the same defect SPGD-279 fixed in the last line of `usage`:
+// on-host documentation that describes a different program.
+//
+// WHY IT IS NOT A ROW IN `usage`
+// ==============================
+//
+// `usage` is compared byte-for-byte against the reference's USAGE, and not only
+// on the --help path: it is printed on refusals too, three of which are
+// themselves compared (`--source` with no FILE, `--json` in self-test mode,
+// `--source --json` with no FILE). A Go-only row inside that constant would
+// break all four comparisons, not just section 7.
+//
+// The matched edit that would normally restore them — changing
+// bin/validate-intent to say the same thing — is not available here, and this
+// is the part that makes the answer permanent rather than another deferral. The
+// reference has NO --version. It reads the flag as a filename, reports "no
+// file(s) match '--version'" and exits 1. A usage block advertising a flag that
+// answers like that would be a worse falsehood than the one SPGD-279 removed,
+// so the Python text must not gain this row, now or later.
+//
+// HOW IT STAYS HONEST
+// ===================
+//
+// The divergence is carried in the same shape as the flag itself: declared,
+// separated, and asserted. tests/parity/run_parity.sh's compare_help (section 7)
+// splits the port's --help stdout at the exact byte length of the reference's
+// and holds both halves to an exact expectation — the PREFIX must equal the
+// reference's output byte-for-byte, so the shared texts still can only move
+// together and either one moving alone is still red; the REMAINDER must equal
+// this trailer exactly. It is neither stripped nor pattern-matched, because a
+// stripped trailer is an unchecked one.
+//
+// The leading blank line and the trailing newline are part of the constant so
+// that `usage + helpTrailer` reads as one block and the harness's split is a
+// plain byte offset rather than a search.
+const helpTrailer = `
+Go port only — the Python reference has no such flag:
+
+       --version   print this binary's identity (name, version, Go toolchain
+                   and target) on stdout and exit 0.
+`
 
 // programName is what the version line calls this binary. It is a constant
 // rather than filepath.Base(os.Args[0]) on purpose: the version line is an
