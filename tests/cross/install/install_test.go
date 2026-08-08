@@ -60,6 +60,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -454,6 +455,17 @@ func TestInstallsTheArtifactForThisHostAndProvesItRuns(t *testing.T) {
 // $TARGET_PATH, so an unresolved join would assert against a path the script has
 // no reason to ever print. A hardcoded /usr/local/bin would be worse still: it
 // would pass only when the test stopped using --prefix.
+//
+// The assertion is a ROUND TRIP rather than a substring match, because the claim
+// the line makes is not "these bytes appeared" — it is "paste this into a shell
+// and the variable will name the binary just installed". Those come apart the
+// moment the path holds a character the shell acts on: an unquoted
+// `export SPECGUARD_VALIDATE_INTENT=/tmp/pre fix/validate-intent` contains the
+// full path as a substring, and still leaves the variable holding `/tmp/pre`.
+// So the emitted line is handed to a real bash, and what that bash ended up with
+// is what gets compared. The third subtest supplies a prefix that requires
+// quoting; without it the first two would pass just as happily on a line that
+// cannot survive being pasted.
 func TestASuccessfulInstallPrintsTheWiringLineNamingWhatItInstalled(t *testing.T) {
 	requireSupportedHost(t)
 
@@ -472,8 +484,29 @@ func TestASuccessfulInstallPrintsTheWiringLineNamingWhatItInstalled(t *testing.T
 		if !filepath.IsAbs(want) {
 			t.Fatalf("the derived install path %q is not absolute, so this test cannot check the shape the gem requires", want)
 		}
-		if !strings.Contains(got.output, "SPECGUARD_VALIDATE_INTENT="+want) {
-			t.Errorf("a successful install did not print the SPECGUARD_VALIDATE_INTENT wiring for %s:\n%s", want, got.output)
+
+		// Anchored on the whole command, not just on the variable name: a
+		// substring match would be satisfied by any prose that happened to
+		// mention SPECGUARD_VALIDATE_INTENT=<path>, which is not the thing the
+		// reader is being told to run.
+		line := wiringLine(t, got.output)
+
+		value := valueAfterPasting(t, line)
+		if value != want {
+			t.Errorf("pasting the emitted wiring line into a shell left SPECGUARD_VALIDATE_INTENT=%q, want %q\nline: %s\n%s",
+				value, want, line, got.output)
+			return
+		}
+		// What the variable names has to be the binary this run installed, not
+		// merely a string that matches: the whole failure mode being pinned is a
+		// value that reads plausibly and names nothing.
+		info, err := os.Stat(value)
+		if err != nil {
+			t.Errorf("SPECGUARD_VALIDATE_INTENT would be set to %q, which does not exist: %v", value, err)
+			return
+		}
+		if info.Mode()&0o111 == 0 {
+			t.Errorf("SPECGUARD_VALIDATE_INTENT would be set to %q, which is not executable (mode %v)", value, info.Mode())
 		}
 	}
 
@@ -511,6 +544,86 @@ func TestASuccessfulInstallPrintsTheWiringLineNamingWhatItInstalled(t *testing.T
 			t.Errorf("the off-PATH note fired for a prefix that IS on PATH:\n%s", got.output)
 		}
 	})
+
+	// --prefix accepts a path with a space in it — the install succeeds, exit 0,
+	// binary in place. So the line printed for such a prefix is a line real
+	// readers get, and it is the one where "printed the path" and "printed
+	// something that pastes" stop being the same assertion.
+	t.Run("when the prefix needs quoting to survive a paste", func(t *testing.T) {
+		source := stageSource(t, sourceOptions{})
+		prefix := filepath.Join(t.TempDir(), "pre fix dir")
+
+		got := run(t, "--from", source, "--prefix", prefix)
+		assertWired(t, got, prefix)
+
+		// Non-vacuousness: if the path ever stops holding a character the shell
+		// would act on, this subtest is a duplicate of the first one and is
+		// proving nothing about quoting.
+		if !strings.ContainsAny(prefix, " \t\"'$`\\*?") {
+			t.Fatalf("the prefix %q needs no quoting, so this subtest no longer exercises the case it was written for", prefix)
+		}
+	})
+}
+
+// ansiSequence matches the colour codes red()/green()/dim() wrap their output
+// in. The assertions below are about the TEXT install.sh emits, and the reader
+// pasting a line out of their terminal does not paste the escapes.
+var ansiSequence = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+// wiringLine picks the `export SPECGUARD_VALIDATE_INTENT=…` command out of an
+// install's output, as the reader would select that line and copy it.
+//
+// Exactly one is required. Two would mean a reader choosing between them with
+// nothing to choose on; zero is the failure this whole test exists to catch, and
+// naming it here keeps the round trip below from reporting it as some confusing
+// downstream shell error.
+func wiringLine(t *testing.T, output string) string {
+	t.Helper()
+	const command = "export SPECGUARD_VALIDATE_INTENT="
+	var found []string
+	for _, raw := range strings.Split(output, "\n") {
+		line := strings.TrimSpace(ansiSequence.ReplaceAllString(raw, ""))
+		if strings.HasPrefix(line, command) {
+			found = append(found, line)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("want exactly one %q line in a successful install's output, found %d:\n%s", command, len(found), output)
+	}
+	return found[0]
+}
+
+// valueAfterPasting runs the emitted line in a real bash and reports what
+// SPECGUARD_VALIDATE_INTENT ends up holding — the property the line claims,
+// checked the way the reader exercises it.
+//
+// The line is handed to bash verbatim rather than re-quoted here, because
+// re-quoting it would be this test asserting against its own idea of the value
+// instead of against the bytes install.sh printed. A malformed line is NOT an
+// error to bail on: `export VAR=/tmp/pre fix/x` fails on the `fix/x` word and
+// bash carries on, leaving the variable set to a truncated path — which is
+// precisely the outcome to catch and compare, not to skip past.
+func valueAfterPasting(t *testing.T, line string) string {
+	t.Helper()
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skipf("this host has no bash, so what the emitted line does when pasted cannot be exercised here: %v", err)
+	}
+	cmd := exec.Command(bash, "-c", line+`; printf %s "${SPECGUARD_VALIDATE_INTENT:-}"`)
+	// A value inherited from the surrounding environment would make an
+	// export that never ran look like one that worked.
+	cmd.Env = append(os.Environ(), "SPECGUARD_VALIDATE_INTENT=")
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) {
+			t.Fatalf("could not run the emitted wiring line under bash: %v", err)
+		}
+		t.Logf("pasting %q into bash exited %d: %s", line, exit.ExitCode(), stderr.String())
+	}
+	return stdout.String()
 }
 
 // TestAPartialSourceStillInstalls is the constraint that rules out the obvious

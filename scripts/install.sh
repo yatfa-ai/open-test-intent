@@ -856,9 +856,20 @@ esac
 # itself. It has never seen any gem's vendored digest and cannot speak for it.
 # Claiming acceptance here would be a fresh instance of the vacuous green the
 # header at the top of this file was written against.
+#
+# On the quoting: unlike `installed $TARGET_PATH` above, which is only ever
+# read, this line is shaped as a command and is printed to be pasted into a
+# shell. --prefix accepts a path containing a space (or a `$`, or a backtick),
+# and unquoted `export VAR=/tmp/pre fix/validate-intent` does not fail loudly on
+# paste — it sets the variable to the truncated `/tmp/pre`, so the next run
+# blames a path the reader never typed. `printf %q` is the fix for the class
+# rather than for the space: it emits ordinary paths byte-for-byte unchanged and
+# adds escaping only where a shell would otherwise re-split or expand the value.
+# The redundant-looking escapes on an exotic path are the point; do not remove
+# them because the common case renders without any.
 echo
 dim "to point specguard-lint at it:"
-dim "  export SPECGUARD_VALIDATE_INTENT=$TARGET_PATH"
+dim "  export SPECGUARD_VALIDATE_INTENT=$(printf '%q' "$TARGET_PATH")"
 dim "  that names this binary; whether the gem accepts it is the gem's own check,
   made on its next run against the schema contract it vendors. This script
   checked the artifact against the manifest and against the corpus embedded in
