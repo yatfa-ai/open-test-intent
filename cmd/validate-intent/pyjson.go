@@ -406,8 +406,31 @@ func scanStringLiteral(doc []rune, idx int) (Value, int, error) {
 // decodeUXXXX reads the four hex digits of a \uXXXX escape. uIdx is the index of
 // the 'u'; CPython reports a malformed escape at that offset, not at the
 // backslash — the one place where the two differ.
+//
+// DECISION — the bound needs a character AFTER the four hex digits, not merely
+// the digits themselves. CPython's C scanner will not decode the escape unless
+// one more character follows it, so an escape whose last hex digit is the final
+// character of the document raises `Invalid \uXXXX escape` at the 'u' and never
+// reaches the "unterminated" path. Both the message and the reported offset
+// differ, so this changes errors[0] in the --json document consumers read:
+//
+//	`"\u0041`   (len 7, escape ends the document)
+//	                 -> Invalid \uXXXX escape         @2  (the 'u')
+//	`"\u0041x`  (one more character present)
+//	                 -> Unterminated string starting at @0  (the opening quote)
+//
+// The same bound governs the low half of a surrogate pair: `"\ud800\udc00`
+// raises at the *second* 'u' (@8), not at the first. That comes for free here
+// because both halves are decoded through this function.
+//
+// Note the pure-Python fallback scanner in json/decoder.py *accepts* this input
+// — it slices (`s[pos+1:pos+5]`), which is happy to stop at the end of the
+// string. The C scanner is what CPython actually runs, and it is what we
+// reproduce. Swept over every prefix of the \u-bearing corpus by
+// tests/parity/run_parity.sh, section 17b ("truncation sweep — every prefix of
+// a \uXXXX-bearing document").
 func decodeUXXXX(doc []rune, uIdx int) (rune, error) {
-	if uIdx+4 >= len(doc) {
+	if uIdx+5 >= len(doc) {
 		return 0, jsonErr(doc, msgInvalidUEscape, uIdx)
 	}
 	var code rune

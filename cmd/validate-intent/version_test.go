@@ -17,8 +17,8 @@ package main
 //     ignored by the linker, so that check is load-bearing, not ceremony.
 //   * The END-TO-END surface (exit 0, one line on stdout, nothing on stderr,
 //     any argv position) is proven here through run(), and again from a real
-//     installed binary in tests/parity/run_parity.sh section 16 ("Go-side
-//     refusals — the excluded surfaces, still asserted").
+//     installed binary in tests/parity/run_parity.sh section 16b
+//     ("--version — the excluded surface that SUCCEEDS").
 
 import (
 	"bytes"
@@ -405,29 +405,56 @@ func TestOnlyTheExactFlagIsVersion(t *testing.T) {
 // over the whole corpus; this catches the gross form early, in the package
 // where the regression would be introduced.
 func TestExistingSurfacesAreUndisturbed(t *testing.T) {
+	// THREE of these rows are retired refusals, and each is KEPT rather than
+	// deleted for the reason the `**` row already states: the assertion still
+	// has teeth in the direction this file cares about. A `--version` loop that
+	// matched too eagerly returns 0; a regression to a whole-argv precheck
+	// returns 2. Only the implemented path returns 1.
+	//
+	// The expectation moves to the stream that now carries the message. Slices 3
+	// and 4 turned these refusals — which wrote to stderr — into working modes
+	// that report on STDOUT, so a row still asserting on stderr would be
+	// comparing against the empty string and passing vacuously.
 	cases := []struct {
 		argv     []string
 		wantCode int
-		wantErr  string
+		wantOut  string // in stdout when non-empty...
+		wantErr  string // ...in stderr when non-empty
 	}{
-		{[]string{"-"}, 2, "stdin mode"},
-		{[]string{"--json", "examples/unit-order-total.json"}, 2, "--json output for adopter"},
+		// Slice 3 (SPGD-107) implemented stdin. `go test` gives this process an
+		// empty stdin, so the document is unparseable and the mode reports that
+		// on stdout rather than refusing on stderr.
+		{[]string{"-"}, 1, "could not read/parse JSON", ""},
+		// Slice 3 also implemented adopter `--json`. From this package's working
+		// directory the path matches nothing, which the JSON renderer reports as
+		// a `no-match` FINDING on stdout — the whole point of that renderer, and
+		// the reason it writes nothing to stderr.
+		{[]string{"--json", "examples/unit-order-total.json"}, 1, `"kind": "no-match"`, ""},
 		// Slice 4 (SPGD-123) retired the `**` refusal — this argument is now
 		// EXPANDED, and from this package's working directory it expands to
-		// nothing. Kept, rather than deleted, because the assertion still has
-		// teeth in the direction that matters here: a `--version` loop that
-		// matched too eagerly would return 0, and a regression back to the old
-		// whole-argv precheck would return 2. Only the expansion path gives 1.
-		{[]string{"examples/**/*.json"}, 1, "no file(s) match 'examples/**/*.json'"},
-		{[]string{"nope-does-not-exist.json"}, 1, "no file(s) match"},
+		// nothing.
+		{[]string{"examples/**/*.json"}, 1, "", "no file(s) match 'examples/**/*.json'"},
+		{[]string{"nope-does-not-exist.json"}, 1, "", "no file(s) match"},
 	}
 	for _, testCase := range cases {
 		t.Run(strings.Join(testCase.argv, " "), func(t *testing.T) {
-			code, _, stderr := captureRun(t, testCase.argv...)
+			code, stdout, stderr := captureRun(t, testCase.argv...)
 			if code != testCase.wantCode {
 				t.Errorf("run(%q) = %d, want %d", testCase.argv, code, testCase.wantCode)
 			}
-			if !strings.Contains(stderr, testCase.wantErr) {
+			// Exactly one stream is asserted per row, and the table is checked
+			// for that rather than trusted: a row with neither expectation set
+			// would assert only the exit code while looking like it asserted
+			// prose.
+			if (testCase.wantOut == "") == (testCase.wantErr == "") {
+				t.Fatalf("run(%q): the table must name exactly one stream to assert",
+					testCase.argv)
+			}
+			if testCase.wantOut != "" && !strings.Contains(stdout, testCase.wantOut) {
+				t.Errorf("run(%q) stdout = %q, want it to contain %q",
+					testCase.argv, stdout, testCase.wantOut)
+			}
+			if testCase.wantErr != "" && !strings.Contains(stderr, testCase.wantErr) {
 				t.Errorf("run(%q) stderr = %q, want it to contain %q",
 					testCase.argv, stderr, testCase.wantErr)
 			}

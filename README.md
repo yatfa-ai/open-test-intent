@@ -171,16 +171,18 @@ binary adopters can drop in without a Python 3 runtime. Python remains the refer
 implementation; the Go build is held to it byte for byte.
 
 **Implemented so far:** adopter (`FILE...`) mode, `-h`/`--help`, self-test mode,
-`--source`, `--source --json`, and recursive `**` globs.
+`--source`, `--source --json`, recursive `**` globs, stdin (`-`), and `--json` for
+adopter (`FILE...`) mode.
 
-**Not yet:** stdin (`-`), and `--json` for adopter (`FILE...`) mode.
+**Not yet:** nothing.
 
-Both of those *refuse* with exit `2` and a diagnostic naming themselves, rather than
-falling through to the nearest surface that would accept the arguments — `-` read as a
-filename glob that matches nothing, or a `--json` request answered with the human
-report — and delivering a confident, correctly formatted, wrong result.
+The mode matrix is complete — every surface the reference exposes is implemented
+rather than refused. What is left is packaging: cross-compiled release binaries and
+the wrapper gem, neither of which is a behaviour of this binary.
 
-That same refuse-rather-than-guess rule covers the schema's `pattern` keyword. Python's
+What still *refuses* with exit `2` and a diagnostic naming itself, rather than answering,
+is the schema's `pattern` keyword, and two environment settings this port cannot
+reproduce (both below). Python's
 `re` and Go's RE2 are not the same regex language even where both accept the same source
 text — Python's `$` also matches before a trailing newline, `\d`/`\w`/`\s`/`\b` are
 Unicode-aware in Python and ASCII-only in RE2, `[[:alpha:]]` and `\p{L}` are RE2-only,
@@ -193,6 +195,57 @@ agree (rewriting a trailing `$` to `(?:\n?\z)`, its exact equivalent) and refuse
 whole schema with exit `2` otherwise, naming the construct. The shipped schema declares
 no patterns, so this affects schema growth rather than current behaviour — see
 `cmd/validate-intent/pypattern.go`.
+
+One environment note, because it changes the answer rather than the wording.
+`PYTHONIOENCODING` is `ENCODING:HANDLER`, and it configures **both** `sys.stdin` and
+`sys.stdout`. Both fields matter, and both change verdicts rather than phrasing.
+
+The **handler** is `surrogateescape` under the C/POSIX locale and `strict` when the
+variable names an encoding. The two give *different verdicts* for the same input, in both
+directions: on the way in, undecodable bytes are a `read` finding with no annotation site
+under `strict` and a parsed-then-rejected one under `surrogateescape`; on the way out, a
+lone surrogate (from those bytes, or from a literal `"\udc82"` escape in a file) is written
+back as its original byte under `surrogateescape` and raises `UnicodeEncodeError` mid-report
+under `strict`.
+
+The **encoding** decides which bytes decode at all. Under `latin-1` every byte decodes, so
+input that UTF-8 rejects never reaches the read failure: the document parses and is rejected
+on *schema* instead — a different `kind`, a different `summary.annotations`, and the same
+exit code. Under `ascii` the reference cannot even encode the em dash in its own report and
+dies mid-write with a truncated stdout.
+
+The port reproduces UTF-8 and both handlers in both directions
+(`cmd/validate-intent/pyioerrors.go`), and **refuses anything else in every mode** — not
+only for stdin, and not only the handler half. `replace` and `ignore` succeed in both
+directions and produce different bytes; `latin-1`, `cp1252`, `ascii` and `utf-16` carry the
+reproducible `strict` handler but a codec the port does not implement. In each case
+answering would be a confident verdict about a string the reference never saw. The six
+CPython aliases of UTF-8 (`utf8`, `utf_8`, `U8`, `utf`, `cp65001`, …) are *not* refused —
+they resolve to the same codec, and the port compares byte-for-byte under each.
+
+`--help` is still answered under an unreproducible **handler** — the usage block is
+UTF-8-representable, so no handler can change a byte of it — and is **refused** under an
+unreproducible **encoding**, because that block is not ASCII: the em dash in it kills the
+reference outright under `latin-1` and comes back as different bytes under `utf-16`.
+
+The same question is asked once more, one level down, by the **locale**. When
+`PYTHONIOENCODING` names no codec, CPython takes one from the locale — and uses that same
+codec for `sys.getfilesystemencoding()`, which is what decodes `sys.argv` and every
+directory listing. `PYTHONUTF8=0 LC_ALL=C` makes all of them `ascii`, with nothing in
+`PYTHONIOENCODING` set at all, and the reference then dies on its own `--help`. The port
+refuses any environment it cannot *prove* resolves to UTF-8
+(`cmd/validate-intent/pylocale.go`). That whitelist is knowingly wider than CPython's
+rule, which is libc's `nl_langinfo(CODESET)` for a locale that may or may not be
+installed — unanswerable from a static Go binary — so `PYTHONUTF8=0` is refused even
+alongside a genuinely UTF-8 locale. An over-refusal is a visible exit `2`; the other
+direction is a clean report in a codec the reference never used.
+
+Filenames go through that codec too, which is why the port carries CPython's
+`surrogateescape` on the argv and filesystem channel as well as on stdin
+(`cmd/validate-intent/pyfspath.go`): a byte that is not valid UTF-8 in a *filename* has to
+reach the report as `U+DC00+byte`, the way Python spells it, and not as `U+FFFD` — which
+is lossy, and would collapse several distinct files onto one `file` key in `--json` while
+`summary.files` still counted them all.
 
 ```sh
 go build -o bin/validate-intent-go ./cmd/validate-intent
@@ -226,10 +279,10 @@ tests/parity/run_parity.sh   # the acceptance test for the port
 
 The parity harness runs both implementations over the same arguments and requires
 identical **stdout, stderr and exit code** — any single byte of difference fails the run.
-It also asserts that the unimplemented surfaces refuse, and that the Python reference has
-no local modifications (a port "made to pass" by editing its own oracle would otherwise
-look green). Cases excluded from the comparison are listed at the top of the script with
-the reason for each.
+It also asserts that the three refused surfaces still refuse, that every implemented mode
+has *stopped* refusing, and that the Python reference has no local modifications (a port
+"made to pass" by editing its own oracle would otherwise look green). Cases excluded from
+the comparison are listed at the top of the script with the reason for each.
 
 ```sh
 tests/parity/run_ruby_parity.sh   # the second oracle: the specguard-rspec gem

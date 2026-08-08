@@ -23,6 +23,13 @@ package main
 // Ordering is not this file's problem: the reference sorts the whole result
 // (`sorted(glob.glob(...))` at bin/validate-intent:464), so only the *set* of
 // matches has to agree. ExpandFiles does the sort.
+//
+// One thing IS this file's problem, and it was missed until round 7 of
+// SPGD-107's review: every name that comes out of a directory listing is BYTES,
+// and CPython decodes it with surrogateescape before the caller ever sees it. A
+// name that is not valid UTF-8 must therefore reach the renderers as
+// U+DC00+byte, not as U+FFFD. listDir below decodes, and every syscall here
+// re-encodes — see pyfspath.go for both directions and for why they round-trip.
 
 import (
 	"os"
@@ -38,7 +45,14 @@ import (
 // file rather than skipping it.
 func ExpandFiles(pattern string) []string {
 	matches := PyGlob(pattern)
-	sort.Strings(matches) // byte order == code point order for UTF-8, as in Python
+	// Sorted on the DECODED names, which is what the reference sorts: it holds
+	// `str`, and `sorted` compares code points. Sorting the raw bytes instead
+	// is not the same order — an escaped byte becomes U+DC80-U+DCFF, whose
+	// WTF-8 lead byte is 0xED, so a raw 0xF0 sorts AFTER a raw 0xEE and the
+	// decoded forms sort the other way round. Byte order over WTF-8 IS code
+	// point order, which is why sort.Strings is still the right call here — but
+	// only because listDir has already decoded.
+	sort.Strings(matches)
 	files := make([]string, 0, len(matches))
 	for _, match := range matches {
 		if isFile(match) {
@@ -209,19 +223,25 @@ func rListDir(dir string, dirOnly bool) []string {
 // directories when dirOnly. Anything unreadable — a missing path, a file, a
 // symlink loop that has run out of the kernel's link budget — contributes no
 // names rather than failing the run, as in Python.
+//
+// The names are DECODED here, at the boundary, exactly as os.listdir decodes
+// them: this is the one place in the port where a filesystem name is created,
+// so decoding anywhere else would mean remembering to do it at every call site.
+// dir arrives already decoded (it was built from these names, or from argv), so
+// it is re-encoded for the syscall.
 func listDir(dir string, dirOnly bool) []string {
 	listing := dir
 	if listing == "" {
 		listing = "."
 	}
-	entries, err := os.ReadDir(listing)
+	entries, err := os.ReadDir(pyFSEncode(listing))
 	if err != nil {
 		return nil
 	}
 
 	names := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		name := entry.Name()
+		name := pyFSDecodeString(entry.Name())
 		// isDir follows symlinks, as os.DirEntry.is_dir() does in Python: a
 		// symlink to a directory IS a directory to the glob.
 		if dirOnly && !isDir(pyJoin(dir, name)) {
@@ -301,8 +321,13 @@ func pyJoin(a, b string) string {
 // lexists is os.path.lexists — true even for a broken symlink, which is why it
 // does not follow links. (Such an entry is then dropped by ExpandFiles' isFile
 // check, exactly as in Python.)
+//
+// The three stat helpers here all take a DECODED path and re-encode it for the
+// syscall. Skipping that would make the port name a badly-named file correctly
+// and then be unable to open it — the failure mode that makes decoding at the
+// boundary worth doing properly rather than only where output is produced.
 func lexists(path string) bool {
-	_, err := os.Lstat(path)
+	_, err := os.Lstat(pyFSEncode(path))
 	return err == nil
 }
 
@@ -310,14 +335,14 @@ func isDir(path string) bool {
 	if path == "" {
 		path = "."
 	}
-	info, err := os.Stat(path)
+	info, err := os.Stat(pyFSEncode(path))
 	return err == nil && info.IsDir()
 }
 
 // isFile is os.path.isfile: follows symlinks, and is true only for a regular
 // file.
 func isFile(path string) bool {
-	info, err := os.Stat(path)
+	info, err := os.Stat(pyFSEncode(path))
 	return err == nil && info.Mode().IsRegular()
 }
 
@@ -329,8 +354,15 @@ func isFile(path string) bool {
 // `*` matches any run of characters, `?` matches exactly one, `[seq]` and
 // `[!seq]` are character classes, and every other character — backslash
 // included — is a literal.
+//
+// pyRunes, not []rune: both operands can carry surrogateescaped bytes now (the
+// name from a directory listing, the pattern from argv), and Go's []rune
+// conversion collapses each WTF-8 surrogate to U+FFFD. That would make
+// `x\udce9.json` and `x\udcff.json` compare EQUAL to a `?` and to each other —
+// the same collapse that produced one `file` key for three files, moved into
+// the matcher.
 func fnmatch(name, pattern string) bool {
-	return matchHere([]rune(name), []rune(pattern))
+	return matchHere(pyRunes(name), pyRunes(pattern))
 }
 
 func matchHere(name, pattern []rune) bool {

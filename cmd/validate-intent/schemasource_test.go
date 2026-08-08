@@ -18,7 +18,7 @@ package main
 //   - That the digest matches what an independent SHA-256 implementation says
 //     is NOT proven here: the expectation below is computed with the same
 //     algorithm and encoding the code uses, so it pins the choice rather than
-//     re-deriving it. tests/parity/run_parity.sh section 16 does the independent
+//     re-deriving it. tests/parity/run_parity.sh section 16c does the independent
 //     half, comparing against sha256sum/shasum over a real file.
 
 import (

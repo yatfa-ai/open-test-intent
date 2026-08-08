@@ -19,28 +19,28 @@ func RunSource(patterns []string, schema *Schema) int {
 	checkOne := func(path string) bool {
 		findings, readError := CheckSourceFile(path, schema)
 		if readError != "" {
-			fmt.Printf("FAIL  %s — %s\n", path, readError)
+			pyPrintf("FAIL  %s — %s\n", path, readError)
 			return true
 		}
 		if len(findings) == 0 {
-			fmt.Printf("----  %s — no @intent annotations\n", path)
+			pyPrintf("----  %s — no @intent annotations\n", path)
 			return false
 		}
 		failed := false
 		for _, finding := range findings {
 			where := fmt.Sprintf("%s:%d", path, finding.Line)
 			if finding.Valid {
-				fmt.Printf("PASS  %s\n", where)
+				pyPrintf("PASS  %s\n", where)
 				continue
 			}
 			if finding.Problem != "" {
 				// The em dash (U+2014) is load-bearing output, not decoration.
-				fmt.Printf("FAIL  %s — %s\n", where, finding.Problem)
+				pyPrintf("FAIL  %s — %s\n", where, finding.Problem)
 			} else {
-				fmt.Printf("FAIL  %s\n", where)
+				pyPrintf("FAIL  %s\n", where)
 			}
 			for _, err := range finding.Errors {
-				fmt.Printf("        -> %s\n", err)
+				pyPrintf("        -> %s\n", err)
 			}
 			failed = true
 		}

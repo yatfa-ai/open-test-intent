@@ -16,7 +16,7 @@
 #
 # One surface is a documented superset rather than an equality, and it is the
 # only one: `--help` prints the shared usage block plus a Go-only trailer
-# documenting `--version` and `--schema-source` (excluded groups 5 and 6
+# documenting `--version` and `--schema-source` (excluded groups 4 and 5
 # below). That is not a "close enough" tier either — section 7 ("--help")
 # splits the port's stdout at the reference's exact byte length and requires
 # the shared half to be identical and the trailer to equal a stated
@@ -45,6 +45,19 @@
 # how it avoids comparing nothing to nothing and calling it parity.
 #
 #
+# Point cases vs. sweeps
+# ----------------------
+# Most sections below are hand-picked argument sets. That is enough for surfaces
+# with a small number of distinct states, and it is NOT enough for the JSON
+# scanner: a real divergence in the \uXXXX escape bound survived 228 hand-picked
+# cases because reaching it needs a document truncated at one exact offset.
+# Section 17b ("truncation sweep — every prefix of a \uXXXX-bearing document")
+# therefore sweeps EVERY prefix of a set of documents rather than choosing
+# prefixes a human thought were interesting. Where a bug class is
+# defined by an offset or a boundary, prefer a sweep — the point case that
+# reproduces today's bug is also the point case that misses tomorrow's.
+#
+#
 # Why the Go binary must live in bin/
 # -----------------------------------
 # The reference derives its schema path from its own location
@@ -57,36 +70,31 @@
 #
 # Excluded cases, and why
 # -----------------------
-# SIX groups of inputs are deliberately NOT compared against Python. Each is
+# SEVEN groups of inputs are deliberately NOT compared against Python. Each is
 # excluded for a stated reason, and each is still asserted against on the Go
 # side (see "Go-side refusals" at the bottom) so the exclusion cannot quietly
 # become "untested".
 #
-# (Six, and the arithmetic has never gone in one direction, so it is worth
-# spelling out: slice 1 listed five, slice 2 retired two of them — see RETIRED
+# (Seven, and the arithmetic has never gone in one direction, so it is worth
+# spelling out: slice 1 listed five; slice 2 retired two of them — see RETIRED
 # EXCLUSIONS below — and slice 1's separate "unsupported schema construct"
-# group folded into group 3 when the `pattern` port landed, which left four.
+# group folded into the `pattern` group when that port landed, which left four.
 # Slice 5 (SPGD-131) then ADDED a group, when the Go binary gained an embedded
 # schema and stopped failing on trees the Python script still cannot run in,
-# which made five; slice 4 (SPGD-123) then retired the recursive-glob group
-# when `**` was implemented, which brought it back to four. Slice 6 (SPGD-141)
-# then ADDED group 5, the `--version` flag, which made five again, and slice 19
-# (SPGD-301) ADDED group 6, `--schema-source`. The count is right; it just does
-# not arithmetic down from five in one step.)
+# which made five; slice 4 (SPGD-123) retired the recursive-glob group when `**`
+# was implemented, back to four; slice 6 (SPGD-141) ADDED `--version` and slice
+# 19 (SPGD-301) ADDED `--schema-source`, which made six. Slice 3 (SPGD-107) —
+# this one, which lands late because it is the largest — then retired two more,
+# the unported modes and the non-UTF-8 PROSE, leaving four, and added three of
+# its own across three review rounds: PYTHONIOENCODING (round 5), which had been
+# a refusal asserted in section 16 ("Go-side refusals — the excluded surfaces,
+# still asserted") without ever being written down here; the LOCALE group
+# (round 6), a variable nothing here had ever set; and stderr's error handler
+# (round 8), which is the one group below that is a KNOWN DIVERGENCE rather than
+# a refusal. The count is right; it just does not arithmetic down from five in
+# one step.)
 #
-#   1. Non-UTF-8 input — the PROSE only.
-#      A file whose bytes do not decode raises UnicodeDecodeError in Python, and
-#      the message names a reason ("invalid start byte", "invalid continuation
-#      byte", ...) that CPython classifies more finely than the port does. The
-#      CLASSIFICATION and the exit code are exact — such a file is a read
-#      failure in both — so only the tail of the message can differ.
-#
-#   2. Modes outside slices 1-2: stdin (`-`), and `--json` for *adopter*
-#      (FILE...) mode. Not implemented yet. They are refused with exit 2 rather
-#      than falling through, where `-` would be read as a filename and produce a
-#      confident, correctly-formatted, wrong answer.
-#
-#   3. Schemas carrying a `pattern` Go's RE2 engine cannot reproduce exactly.
+#   1. Schemas carrying a `pattern` Go's RE2 engine cannot reproduce exactly.
 #      validate() evaluates `pattern` with re.search (bin/validate-intent:205).
 #      Python's engine and RE2 are different languages even where both compile
 #      the same source: Python's `$` also matches before a trailing newline,
@@ -109,7 +117,7 @@
 #      is a real divergence being declined rather than a failure both
 #      implementations share.
 #
-#   4. A tree with no schemas/ directory beside the binary.
+#   2. A tree with no schemas/ directory beside the binary.
 #      The Go port embeds schemas/open-test-intent.v1.json (see schema.go at the
 #      module root) and falls back to that copy when — and only when — the file
 #      at <exe>/../schemas/ is ABSENT. That is the entire point of SPGD-131: a
@@ -131,8 +139,8 @@
 #      is NOT lost to this exclusion. It moved from a schema-less tree to a
 #      malformed-schema one and stayed a byte-for-byte comparison.
 #
-#      Asserted on the Go side in section 16 ("Go-side refusals — the excluded
-#      surfaces, still asserted"), which pins what the binary does instead for
+#      Asserted on the Go side in section 16d ("excluded group 2 — a tree with
+#      no schemas/ directory beside the binary"), which pins what it does for
 #      each of the five argument sets that used to be compared here — including
 #      the two that still FAIL. A bare self-test on such a tree exits 1 with
 #      four "no fixtures match" lines, because the fixture corpus is not
@@ -148,7 +156,53 @@
 #      separately (./... , not ./cmd/... , or the root package's guard is
 #      skipped and the pin verifies nothing).
 #
-#   5. `--version`.
+#   3. A PYTHONIOENCODING this port cannot reproduce — either field of it.
+#      The variable is `ENCODING:HANDLER` and it configures sys.stdin, sys.stdout
+#      and sys.stderr together. The port implements exactly UTF-8 with the
+#      `strict` and `surrogateescape` handlers; anything else it refuses with
+#      exit 2 in EVERY mode rather than answering, so these environments cannot
+#      be compared.
+#
+#      Both fields earn their place, and the second one is here because it was
+#      MISSING rather than declined. `replace` and `ignore` succeed in both
+#      directions and each writes different bytes. `latin-1`, `cp1252`, `ascii`
+#      and `utf-16` carry the `strict` handler — which the port DOES reproduce,
+#      so the handler gate passes them — but a codec it does not implement:
+#      iso8859-1 decodes bytes UTF-8 rejects, so the reference reports `schema`
+#      where the port reported `read`, with the same exit code. Until slice 3's
+#      round-5 review this harness varied the handler across four spellings and
+#      never varied the encoding at all, which is the difference between an
+#      excluded axis and an untested one — and an untested axis reads exactly
+#      like a passing one.
+#
+#      NARROW in the direction that matters: the six CPython aliases of utf-8
+#      (`utf8`, `utf_8`, `U8`, `utf`, `cp65001`, `utf8_ucs2`/`ucs4`, and any
+#      punctuation spelling normalising to them) resolve to the codec the port
+#      implements, so they are NOT excluded — they stay byte-for-byte
+#      comparisons, in section 15f ("the ENCODING half of PYTHONIOENCODING").
+#      An exclusion drawn on the spelling rather than the codec would have
+#      quietly dropped eleven live cases.
+#
+#      `--help` splits the two fields, and the split is measured: it is still
+#      COMPARED under an unreproducible handler (the usage block is entirely
+#      UTF-8-representable, so no handler can alter it) and REFUSED under an
+#      unreproducible encoding (that block carries an em dash, which kills the
+#      reference under `latin-1` and re-encodes under `utf-16`).
+#
+#      That same section 15f ("the ENCODING half of PYTHONIOENCODING") also pins
+#      the PREMISE, python3 against python3: the codecs this group excludes must
+#      genuinely change the reference's own answer. A refusal whose reason has
+#      expired is over-refusal, and nothing else here would notice.
+#
+#      One acknowledged NON-parity inside this group: an encoding CPython does
+#      not know at all (`PYTHONIOENCODING=bogus`) makes the interpreter die in
+#      init_stdio_encoding with exit 1 before bin/validate-intent's first line
+#      runs, where the port exits 2 naming the encoding. Neither produces a
+#      report, so no consumer is handed a wrong answer, and reproducing a
+#      CPython startup failure is not a behaviour of this binary.
+#
+#
+#   4. `--version`.
 #      A Go-only flag (slice 6, SPGD-141, cmd/validate-intent/version.go). The
 #      reference has no such flag: it reads `--version` as a filename, reports
 #      "no file(s) match '--version'" and exits 1 — the code the contract
@@ -162,7 +216,7 @@
 #      — exit 2, a diagnostic on stderr, nothing on stdout. `--version` exits 0
 #      and writes to stdout, so assert_refusal fails it on all three counts and
 #      could not be reused. It is asserted by assert_version_line instead, in
-#      section 16 ("Go-side refusals — the excluded surfaces, still asserted"),
+#      section 16b ("--version — the excluded surface that SUCCEEDS"),
 #      whose header prose had to stop saying every member of it exits 2. That
 #      helper pins the exit code, the empty stderr, the single line, and — the
 #      point of the flag — that the identity token is neither empty nor a
@@ -188,16 +242,16 @@
 #      byte-for-byte. Section 16 pins what the flag DOES; section 7 pins what
 #      --help SAYS about it. Neither is described without being checked.
 #
-#      That trailer now carries TWO rows — group 6 below is documented in the
+#      That trailer now carries TWO rows — group 5 below is documented in the
 #      same constant, for the same reason and under the same comparison.
 #
-#   6. `--schema-source`.
+#   5. `--schema-source`.
 #      The second Go-only flag (slice 19, SPGD-301,
 #      cmd/validate-intent/schemasource.go), excluded for exactly the reason
-#      group 5 is: the reference has no such flag and reads it as a filename,
+#      group 4 is: the reference has no such flag and reads it as a filename,
 #      reporting "no file(s) match '--schema-source'" with exit 1.
 #
-#      What it adds is the answer to the hedge group 5's trailer makes. That
+#      What it adds is the answer to the hedge group 4's trailer makes. That
 #      trailer has to say the reported digest names the contract the artifact
 #      CARRIES and not the one a run ENFORCED, because `--version` returns above
 #      LoadSchema and cannot know which copy wins. This flag runs the real
@@ -209,9 +263,10 @@
 #      beside the binary, so most of the schema coverage in this file runs
 #      against a contract the embedded digest has never seen.
 #
-#      Like group 5 it SUCCEEDS rather than refuses — exit 0, one line on
+#      Like group 4 it SUCCEEDS rather than refuses — exit 0, one line on
 #      stdout, nothing on stderr — so assert_refusal cannot cover it either. It
-#      is asserted by assert_schema_source_in in section 16, which pins the
+#      is asserted by assert_schema_source_in in section 16c ("--schema-source
+#      — the second Go-only surface that SUCCEEDS"), which pins the
 #      origin AND the digest against a sha256sum/shasum computed here, on three
 #      trees chosen so that the answer must differ between them: the repo (a
 #      real schema beside the binary), an install prefix (no schemas/, so the
@@ -227,16 +282,126 @@
 #      same tree and requiring the two stderr streams to be byte-identical,
 #      rather than by restating the message here where it could drift.
 #
-#      The crossing with `--help` is not excluded, for the same reason group 5's
+#      The crossing with `--help` is not excluded, for the same reason group 4's
 #      is not: the reference's --help loop pre-empts the argument, so both print
 #      usage and it is a real comparison in section 7. The crossing with
 #      `--version` IS Go-side (Python has neither flag) and is asserted in
-#      section 16: `--version` wins, because three external consumers already
+#      section 16c: `--version` wins, because three external consumers already
 #      parse its output and a new flag must not change what any crossing of the
 #      two prints.
 #
-# RETIRED EXCLUSIONS — slice 2 (SPGD-102) closed two of slice 1's five, and
-# slice 4 (SPGD-123) closed a third:
+#
+#   6. An environment whose LOCALE gives CPython a default codec that is not
+#      UTF-8. The same question as group 3, one level down and one variable
+#      earlier: when PYTHONIOENCODING names no codec, CPython takes one from the
+#      locale — and uses that SAME codec for sys.getfilesystemencoding(), which
+#      decodes sys.argv and every directory listing. `PYTHONUTF8=0 LC_ALL=C`
+#      makes all of them `ascii`, with nothing in PYTHONIOENCODING set at all, so
+#      group 3's gate cannot see it; measured, the reference then dies on its own
+#      `--help` (UnicodeEncodeError on the usage block's em dash, rc 1, 0 bytes)
+#      where the port printed 824 clean bytes and exited 0.
+#
+#      The port refuses any environment it cannot PROVE resolves to UTF-8. That
+#      whitelist is knowingly WIDER than CPython's rule, and the reason is worth
+#      stating because it bounds what this exclusion covers: CPython's rule is
+#      libc's `nl_langinfo(CODESET)` for the locale `setlocale(LC_CTYPE, "")`
+#      resolved to, and whether that locale is INSTALLED changes the answer —
+#      `PYTHONUTF8=0 LC_ALL=en_US.UTF-8` is `ascii` here precisely because
+#      en_US.UTF-8 is not installed. A cgo-free Go binary can ask neither
+#      question. So some environments CPython would have answered are refused
+#      too: `PYTHONUTF8=0` alongside a genuinely UTF-8 locale, and a locale name
+#      carrying no codeset. Those are visible exit 2s naming the variable, which
+#      is the direction this gate is allowed to be wrong in.
+#
+#      Section 17c ("the locale's default codec") pins both halves — the PREMISE
+#      python3-against-python3 (the refused environments must genuinely change
+#      the reference's answer) and the OVER-REFUSAL direction (the accepted ones
+#      are still compared byte-for-byte, `--help` included).
+#      cmd/validate-intent/pylocale_test.go runs the same matrix against python3
+#      and fails on an UNDER-refusal only.
+#
+#      One measured subtlety, because it looks like an inconsistency until you
+#      know it: PEP 538's C-locale coercion rewrites LC_CTYPE to C.UTF-8 and is
+#      SKIPPED when LC_ALL is set. So `LC_ALL=C` resolves to ascii while the same
+#      locale named through LC_CTYPE or LANG resolves to utf-8, and the port
+#      over-refuses the latter.
+#
+#   7. The "could not load schema" diagnostic, on a host whose INSTALL
+#      directory has a name that is not valid UTF-8. This one is the odd one
+#      out twice over: it is neither a refusal nor a Go-only surface. It is a
+#      measured DIVERGENCE, declared here rather than fixed, and the honest
+#      one-line statement of it is that STDERR'S ERROR HANDLER IS UNMODELED.
+#
+#      CPython gives sys.stderr the `backslashreplace` handler by default —
+#      independently of PYTHONIOENCODING, and DIFFERENTLY from sys.stdout, which
+#      is the part that makes it easy to miss:
+#
+#        $ python3 -c "import sys; print(sys.stdout.errors, sys.stderr.errors)"
+#        surrogateescape backslashreplace
+#        $ PYTHONIOENCODING=utf-8 python3 -c "...same..."
+#        strict backslashreplace
+#
+#      The port models the STDOUT encoder carefully — pyioerrors.go decides the
+#      handler and pystdout.go applies it — and has no stderr counterpart at
+#      all. That is harmless for every stderr write but one, because the rest
+#      are ASCII by the time they are written: they are compile-time constants
+#      that UTF-8 encodes identically on both sides (`usage`), or they go
+#      through PyReprString, which escapes every non-ASCII character to
+#      `\uXXXX`. The exception is schemaLoadError (cmd/validate-intent/main.go),
+#      which interpolates the schema's ORIGIN with a bare `%s`. Measured, with a
+#      malformed schema under an install directory named `d\xe9`:
+#
+#        PY   ... could not load schema /tmp/bt/d\udce9/schemas/...   6 ASCII chars
+#        GO   ... could not load schema /tmp/bt/d<ED><B3><A9>/schemas/...   3 raw bytes
+#
+#      The `[Errno ...]` half of that same line is NOT affected and is not
+#      excluded: it goes through pyOSError -> PyReprString and is byte-identical
+#      to the reference, which is why the unreadable variant prints both
+#      renderings side by side on one line. Section 16e ("stderr's error handler
+#      — unmodeled, and pinned where it shows") asserts BOTH halves, so the
+#      correct one cannot be lost while the group is open.
+#
+#      The blast radius is that diagnostic alone: a badly-named install tree
+#      carrying a VALID schema is byte-identical in every mode, and 16e pins
+#      that too — otherwise "excluded" would be doing more work than it earns.
+#
+#      Not a regression, and that is worth recording. Before this slice decoded
+#      argv and the filesystem (pyfspath.go) the same line diverged differently
+#      — one raw 0xE9 byte rather than three WTF-8 ones, because filepath.Dir
+#      does not iterate runes. Neither answer matched the reference. What this
+#      slice changed is that the divergence is now WRITTEN DOWN, which is the
+#      whole difference between an exclusion and a hole: the next person who
+#      adds a non-ASCII `%s` to a stderr write is adding to this group, not
+#      using a channel someone modeled for them.
+#
+# NOT AN EXCLUSION, and it is written down here because for two review rounds it
+# looked like one: non-UTF-8 bytes in a FILENAME or an ARGUMENT. Every `\x`-byte
+# case in this file built a payload; none built a filename, so the axis was
+# UNTESTED rather than excluded — and an untested axis reads exactly like a
+# passing one. CPython decodes sys.argv and os.listdir with surrogateescape, the
+# port now does the same (cmd/validate-intent/pyfspath.go), and the two are
+# compared byte-for-byte in section 15g ("non-UTF-8 filenames and argv — the
+# other end of the same channel").
+#
+# It does reach one ALREADY-RATIFIED non-parity by a new route, and that is
+# asserted rather than newly excluded: under the `strict` handler CPython cannot
+# encode a lone surrogate for stdout, so a badly-named file kills the TEXT
+# renderers on both sides — identical exit code, identical (truncated) stdout,
+# and a CPython traceback this port does not reproduce. Same pair as section 15e
+# ("lone surrogates on the way OUT, under BOTH handlers"), reached through a
+# filename instead of through stdin. `--json` is unaffected and stays a
+# byte-for-byte comparison, because ensure_ascii escapes the surrogate into
+# ASCII before it ever reaches the encoder.
+#
+# One remaining KNOWN LIMIT, not an exclusion because nothing here can reach it:
+# CPython decodes a file through TextIOWrapper in 8 KiB chunks, so a decode
+# failure past the first chunk reports a chunk-relative byte offset while the
+# port reports a whole-input one. Every fixture in this repo is orders of
+# magnitude below that, and stdin is read in one go by both. Stated so a future
+# large-input case is recognised rather than debugged from scratch.
+#
+# RETIRED EXCLUSIONS — slice 2 (SPGD-102) closed two of slice 1's five, slice 4
+# (SPGD-123) closed a third, and slice 3 (SPGD-107) closed two more:
 #
 #   * Recursive `**` glob patterns. Slice 1 refused them with exit 2 rather than
 #     downgrading `**` to a single `*`, because a downgrade would quietly check
@@ -275,6 +440,24 @@
 #     differently (schema violation vs parse failure). The new decoder accepts
 #     them exactly as Python does. Compared here in section 12 ("malformed
 #     payloads and documents — the retired exclusions").
+#
+#   * Non-UTF-8 input — the PROSE. Slice 1 could name the failing byte but not
+#     CPython's error SPAN, which uses a different message template entirely
+#     once it blames more than one byte ("bytes in position 10-11" vs "byte
+#     0xff in position 0"). cmd/validate-intent/pyutf8.go now reproduces the
+#     decoder's span algorithm, so the message is compared rather than waved
+#     through. Compared for streams in section 15b ("stdin mode (`-`) — text
+#     and --json") and for files in section 15d ("adopter mode --json — three
+#     counting rules over one batch"), which carries the file-side twin of the
+#     same bytes.
+#
+#   * stdin (`-`) and adopter-mode `--json`. Implemented in slice 3; the mode
+#     matrix is complete and nothing is refused for being unported any more.
+#     Compared in section 15b ("stdin mode (`-`) — text and --json") and
+#     section 15d ("adopter mode --json — three counting rules over one batch"),
+#     and section 16 ("Go-side refusals — the excluded surfaces, still
+#     asserted") asserts that each of them has STOPPED refusing, so deleting a
+#     dispatch cannot leave the suite green.
 #
 set -uo pipefail
 
@@ -325,10 +508,17 @@ compare_in() {
   local cwd="$1" reference="$2" gobin="$3" label="$4"
   shift 4
 
+  # PARITY_ENV (documented on compare_stdin below) applies here too. It has to:
+  # PYTHONIOENCODING governs sys.stdout as well as sys.stdin, so the handler
+  # changes the answer in adopter and --source mode with no stdin involved, and
+  # a primitive that could not carry the variable is a primitive that cannot
+  # reach that half of the matrix.
   local py_rc go_rc
-  (cd "$cwd" && "$PYTHON" "$reference" "$@" >"$WORK/py.out" 2>"$WORK/py.err")
+  (cd "$cwd" && env ${PARITY_ENV:+"$PARITY_ENV"} \
+     "$PYTHON" "$reference" "$@" >"$WORK/py.out" 2>"$WORK/py.err")
   py_rc=$?
-  (cd "$cwd" && "$gobin" "$@" >"$WORK/go.out" 2>"$WORK/go.err")
+  (cd "$cwd" && env ${PARITY_ENV:+"$PARITY_ENV"} \
+     "$gobin" "$@" >"$WORK/go.out" 2>"$WORK/go.err")
   go_rc=$?
 
   local problems=()
@@ -367,6 +557,98 @@ compare() {
   compare_in "$REPO_ROOT" "$REFERENCE" "$GO_BIN" "$label" "$@"
 }
 
+# compare_stdin <label> <input-file> [args...] — the same comparison with a
+# byte-identical stream on stdin.
+#
+# The input is a FILE rather than a here-string on purpose: stdin mode's whole
+# point is arbitrary bytes, and `<<<` appends a newline and cannot carry a NUL.
+# Redirecting a file feeds both implementations exactly the bytes on disk.
+#
+# PARITY_ENV, if set, is applied to BOTH runs — it is how the two CPython error
+# handlers get exercised without a second primitive, in this helper and in
+# compare_in alike. Set it, call, unset it; a stale value would silently
+# re-scope every case after it, so every use below unsets it on the next line.
+# compare_stdin_in <cwd> <reference> <go-binary> <label> <input-file> [args...]
+# is the same comparison with the pair under test named explicitly, so a section
+# can point it at a COPY of both implementations rather than the repo's. Section
+# 16e ("stderr's error handler") is the caller: its subject is what each
+# implementation does when its own install prefix cannot be named in ASCII,
+# which is a property of where the binaries live and cannot be reached from
+# here.
+compare_stdin_in() {
+  local cwd="$1" reference="$2" gobin="$3" label="$4" input="$5"
+  shift 5
+
+  local py_rc go_rc
+  (cd "$cwd" && env ${PARITY_ENV:+"$PARITY_ENV"} \
+     "$PYTHON" "$reference" "$@" <"$input" >"$WORK/py.out" 2>"$WORK/py.err")
+  py_rc=$?
+  (cd "$cwd" && env ${PARITY_ENV:+"$PARITY_ENV"} \
+     "$gobin" "$@" <"$input" >"$WORK/go.out" 2>"$WORK/go.err")
+  go_rc=$?
+
+  local problems=()
+  [ "$py_rc" = "$go_rc" ] || problems+=("exit code: python=$py_rc go=$go_rc")
+  cmp -s "$WORK/py.out" "$WORK/go.out" || problems+=("stdout differs")
+  cmp -s "$WORK/py.err" "$WORK/go.err" || problems+=("stderr differs")
+
+  if [ ${#problems[@]} -eq 0 ]; then
+    passed=$((passed + 1))
+    printf '  ok    %s\n' "$label"
+    return 0
+  fi
+
+  failed=$((failed + 1))
+  red "  FAIL  $label"
+  printf '        args: %s   stdin: %s\n' "$*" "$input"
+  local problem
+  for problem in "${problems[@]}"; do
+    printf '        %s\n' "$problem"
+  done
+  if ! cmp -s "$WORK/py.out" "$WORK/go.out"; then
+    printf '        --- stdout (-python +go), od -c ---\n'
+    diff -u <(od -c "$WORK/py.out") <(od -c "$WORK/go.out") | tail -n +3 | sed 's/^/        /'
+  fi
+  if ! cmp -s "$WORK/py.err" "$WORK/go.err"; then
+    printf '        --- stderr (-python +go) ---\n'
+    diff -u "$WORK/py.err" "$WORK/go.err" | tail -n +3 | sed 's/^/        /'
+  fi
+  return 1
+}
+
+# compare_stdin <label> <input-file> [args...] — the common case: the repo's own
+# reference and the binary this run just built, from the repo root.
+compare_stdin() {
+  local label="$1" input="$2"
+  shift 2
+  compare_stdin_in "$REPO_ROOT" "$REFERENCE" "$GO_BIN" "$label" "$input" "$@"
+}
+PARITY_ENV=""
+
+# assert_trailing_newline <label> <input-file> [args...]
+#
+# Criteria that a JSON-parsing assertion cannot see. `json.dumps` emits no
+# trailing newline and `print` adds exactly one, while Go's MarshalIndent adds
+# none and Encoder.Encode adds one — so "ends in exactly one \n" is a real
+# choice with three plausible answers, and every one of them parses to the same
+# document. Asserted on BYTES, against the Go binary alone, so it stays pinned
+# even where a case is otherwise compared as a whole.
+assert_trailing_newline() {
+  local label="$1" input="$2"
+  shift 2
+  (cd "$REPO_ROOT" && "$GO_BIN" "$@" <"$input" >"$WORK/nl.out" 2>/dev/null)
+  local tail_bytes
+  tail_bytes="$(tail -c 2 "$WORK/nl.out" | od -An -c | tr -s ' ')"
+  if [ "$tail_bytes" = " } \\n" ]; then
+    passed=$((passed + 1))
+    printf '  ok    %s (ends "}\\n")\n' "$label"
+    return 0
+  fi
+  failed=$((failed + 1))
+  red "  FAIL  $label — expected the last two bytes to be '}' '\\n', got:$tail_bytes"
+  return 1
+}
+
 # --------------------------------------------------------------------------- #
 # self-contained trees with their own schema
 # --------------------------------------------------------------------------- #
@@ -401,7 +683,7 @@ compare_root() {
 # 1. every shipped fixture, individually
 # --------------------------------------------------------------------------- #
 echo
-echo "== shipped fixtures, one argument at a time =="
+echo "== 1. shipped fixtures, one argument at a time =="
 for fixture in "$REPO_ROOT"/examples/*.json "$REPO_ROOT"/examples/invalid/*.json; do
   rel="${fixture#"$REPO_ROOT"/}"
   compare "$rel" "$rel"
@@ -411,7 +693,7 @@ done
 # 2. the parity fixtures — the hazards the shipped corpus does not reach
 # --------------------------------------------------------------------------- #
 echo
-echo "== parity fixtures =="
+echo "== 2. parity fixtures =="
 # key-order-forward/reversed hold the SAME six violations with their keys in
 # opposite, non-alphabetical order. validate() walks `instance.items()`, so the
 # reference emits them in *document* order. A port backed by a Go map would
@@ -443,7 +725,7 @@ compare "minLength counts code points" tests/parity/fixtures/multibyte-length.js
 # 3. multiple arguments — output order and exit-code aggregation
 # --------------------------------------------------------------------------- #
 echo
-echo "== multiple arguments =="
+echo "== 3. multiple arguments =="
 compare "all valid examples" \
   examples/request-orders-checkout.json \
   examples/system-checkout-flow.json \
@@ -466,7 +748,7 @@ compare "the schema itself is not a valid intent" schemas/open-test-intent.v1.js
 # 4. glob expansion — done by the program, so every pattern is quoted
 # --------------------------------------------------------------------------- #
 echo
-echo "== glob expansion =="
+echo "== 4. glob expansion =="
 compare "examples/*.json"          'examples/*.json'
 compare "examples/invalid/*.json"  'examples/invalid/*.json'
 # `examples/*` also matches the invalid/ and sources/ directories; _expand_files
@@ -526,7 +808,7 @@ compare "absolute path"            "$REPO_ROOT/examples/unit-order-total.json"
 # schema from their own location in bin/, which the working directory does not
 # affect.
 echo
-echo "== recursive ** globbing =="
+echo "== 5. recursive ** globbing =="
 GLOB_TREE="$REPO_ROOT/tests/parity/globtree"
 
 # compare_tree <label> [args...] — compare from inside the glob fixture tree.
@@ -598,7 +880,7 @@ compare "recursive glob, source files"     --source 'examples/**/*.rb'
 # 6. no-match diagnostics — never a silent pass
 # --------------------------------------------------------------------------- #
 echo
-echo "== no-match =="
+echo "== 6. no-match =="
 # The diagnostic reprs the pattern (bin/validate-intent:493), so the quoting is
 # part of the contract too.
 compare "glob matching nothing"    'nope/*.json'
@@ -630,7 +912,7 @@ compare "near-miss of --source"    --sources 'examples/*.json'
 # The block both implementations share is `usage` (cmd/validate-intent/main.go)
 # and `USAGE` (bin/validate-intent). Appended to it on the --help path — and on
 # no other path — is a Go-only trailer documenting `--version` (excluded group
-# 5, cmd/validate-intent/version.go) and `--schema-source` (excluded group 6,
+# 4, cmd/validate-intent/version.go) and `--schema-source` (excluded group 5,
 # cmd/validate-intent/schemasource.go). The first is what scripts/install.sh
 # runs to prove the artifact executes on the target host; the second is the only
 # way to ask which schema a run on this host actually enforces. On a host
@@ -686,14 +968,30 @@ TRAILER
 # compare_help <label> [args...] — for invocations where --help wins and the
 # usage block goes to STDOUT. stderr and the exit code are compared exactly as
 # `compare` does; stdout is split as described above.
-compare_help() {
-  local label="$1"
-  shift
+#
+# It honours PARITY_ENV for the same reason `compare` does, and the reason is
+# not hypothetical here: sections 15f ("the ENCODING half of PYTHONIOENCODING")
+# and 17c ("the locale's default codec") both compare `--help` under a chosen
+# environment, and both are asserting the ACCEPTED half of a gate — that an
+# environment the port does not refuse still produces the reference's own bytes.
+# A helper that dropped the variable would have run those cases in the harness's
+# own environment, where they pass by construction and prove nothing about the
+# environment named in their label.
+# compare_help_in <reference> <go-binary> <label> [args...] — the same split
+# with the pair under test named explicitly, for the same reason
+# compare_stdin_in exists. Always run from the repo root: --help reads nothing
+# from the working directory, and section 16e's subject is where the BINARIES
+# live.
+compare_help_in() {
+  local reference="$1" gobin="$2" label="$3"
+  shift 3
 
   local py_rc go_rc
-  (cd "$REPO_ROOT" && "$PYTHON" "$REFERENCE" "$@" >"$WORK/py.out" 2>"$WORK/py.err")
+  (cd "$REPO_ROOT" && env ${PARITY_ENV:+"$PARITY_ENV"} \
+     "$PYTHON" "$reference" "$@" >"$WORK/py.out" 2>"$WORK/py.err")
   py_rc=$?
-  (cd "$REPO_ROOT" && "$GO_BIN" "$@" >"$WORK/go.out" 2>"$WORK/go.err")
+  (cd "$REPO_ROOT" && env ${PARITY_ENV:+"$PARITY_ENV"} \
+     "$gobin" "$@" >"$WORK/go.out" 2>"$WORK/go.err")
   go_rc=$?
 
   local shared
@@ -737,15 +1035,22 @@ compare_help() {
   return 1
 }
 
+# compare_help <label> [args...] — the common case.
+compare_help() {
+  local label="$1"
+  shift
+  compare_help_in "$REFERENCE" "$GO_BIN" "$label" "$@"
+}
+
 echo
-echo "== help =="
+echo "== 7. help =="
 compare_help "--help"                   --help
 compare_help "-h"                       -h
 compare_help "--help wins over a file"  'examples/*.json' --help
 compare_help "--help wins over a missing file" nope.json -h
 # --help wins over --version too, in either order. This is a real COMPARISON and
 # not a Go-side assertion, which is the whole reason it is worth having:
-# `--version` is a Go-only flag (excluded group 5), so the tempting move is to
+# `--version` is a Go-only flag (excluded group 4), so the tempting move is to
 # check it only against the port. But the reference has an answer here — its own
 # --help loop pre-empts the argument before anything reads it as a filename — so
 # the two agree on the shared block byte-for-byte, and a port that let --version
@@ -756,7 +1061,7 @@ compare_help "--help wins over a missing file" nope.json -h
 compare_help "--help wins over --version"        --help --version
 compare_help "--help wins over --version (reversed)" --version --help
 compare_help "-h wins over --version"            --version -h
-# The same crossing for the second Go-only surface (excluded group 6). It is
+# The same crossing for the second Go-only surface (excluded group 5). It is
 # worth its own three cases rather than being assumed to follow from the three
 # above: `--schema-source` is answered by a SEPARATE loop in run(), below
 # --version's, so "help wins" is a property of where that loop sits and not of a
@@ -772,7 +1077,7 @@ compare_help "-h wins over --schema-source"            --schema-source -h
 # 8. OS-level failures
 # --------------------------------------------------------------------------- #
 echo
-echo "== read and schema failures =="
+echo "== 8. read and schema failures =="
 
 # An unreadable file: Python renders str(OSError), which the port reproduces
 # rather than excluding — "[Errno 13] Permission denied: '<path>'", repr'd path
@@ -798,9 +1103,9 @@ chmod 644 "$unreadable"
 # This was a tree with NO schemas/ directory at all until SPGD-131. It cannot be
 # any more: the Go port now embeds the schema (schema.go) and falls back to that
 # copy when the file is ABSENT, so a schema-less tree is exactly where the two
-# are supposed to diverge — that is excluded group 4, and what the Go binary
-# does there instead is pinned in section 16 ("Go-side refusals — the excluded
-# surfaces, still asserted").
+# are supposed to diverge — that is excluded group 2, and what the Go binary
+# does there instead is pinned in section 16d ("excluded group 2 — a tree with
+# no schemas/ directory beside the binary").
 #
 # A MALFORMED schema replaces it, and is a strictly better probe:
 #
@@ -893,6 +1198,33 @@ else
 fi
 chmod 644 "$schema_root2/schemas/open-test-intent.v1.json"
 
+# WHICH ERROR WINS when the schema is unloadable AND --json asks for a mode that
+# refuses it. The reference loads the schema before it ever looks at as_json
+# (bin/validate-intent:895 vs :902), so the schema error wins and the self-test
+# refusal is never reached. Both paths exit 2, so an exit-code assertion sees
+# nothing — only the stderr comparison catches an implementation that ordered
+# its own refusal first. The port had exactly that ordering; main.go now
+# reproduces the reference's, and this is what holds it there.
+#
+# The probe has to be a schema that EXISTS and cannot be loaded. It used to be a
+# tree with no schemas/ directory at all, and that stopped working as a probe
+# when SPGD-131 gave the Go binary an embedded fallback: on a schema-LESS tree
+# the port now loads its compiled-in copy and never reaches either branch, so
+# the crossing would pass whichever side of the load the refusal sat on. A
+# schema present but not JSON is a different exception class reaching the same
+# handler, so the ordering is pinned by the message as well as by the path.
+schema_root3="$WORK/malformedschema"
+mkdir -p "$schema_root3/bin" "$schema_root3/schemas"
+cp "$REFERENCE" "$schema_root3/bin/validate-intent"
+cp "$GO_BIN" "$schema_root3/bin/validate-intent-go"
+printf 'not json at all' > "$schema_root3/schemas/open-test-intent.v1.json"
+compare_in "$schema_root3" "$schema_root3/bin/validate-intent" \
+  "$schema_root3/bin/validate-intent-go" \
+  "malformed schema beats the self-test --json refusal" --json
+# ...and the refusal still fires when the schema DOES load, so the case above
+# cannot pass by having lost the refusal altogether.
+compare "self-test --json is refused when the schema loads" --json
+
 # --------------------------------------------------------------------------- #
 # 9. a grown schema — the validator keywords the shipped one does not declare
 # --------------------------------------------------------------------------- #
@@ -904,7 +1236,7 @@ chmod 644 "$schema_root2/schemas/open-test-intent.v1.json"
 # first time someone adds a constraint. These cases grow the schema in a
 # throwaway tree and compare the same way — byte for byte, no exceptions.
 echo
-echo "== grown schema: pattern, bounds, items, nested paths =="
+echo "== 9. grown schema: pattern, bounds, items, nested paths =="
 
 grown="$(make_schema_root grown <<'JSON'
 {
@@ -1040,7 +1372,7 @@ compare_root "$grown" "grown: every fixture in one invocation" '*.json'
 # "correctly rejected — ..." and "FAIL file:line — problem" is load-bearing
 # output, so these comparisons are also what pins the port's non-ASCII bytes.
 echo
-echo "== --source over the shipped corpus =="
+echo "== 10. --source over the shipped corpus =="
 compare "--source examples/sources/*"          --source 'examples/sources/*'
 compare "--source examples/sources/invalid/*"  --source 'examples/sources/invalid/*'
 compare "-s alias"                             -s 'examples/sources/*'
@@ -1078,7 +1410,7 @@ compare "adopter over a .rb file"    examples/sources/order_spec.rb
 # source files) while the source fixtures print one line per ANNOTATION. A port
 # that "fixed" the arithmetic would fail right here.
 echo
-echo "== self-test =="
+echo "== 11. self-test =="
 compare "bare invocation (self-test)"
 # --json is refused in self-test mode by the REFERENCE (exit 2 + usage on
 # stderr), so this is a reproduced refusal, not a port limitation — which is why
@@ -1103,7 +1435,7 @@ compare "self-test refuses --json" --json
 # `ascii`, and a byte-indexed decoder gets that wrong by exactly the number of
 # non-ASCII characters preceding it.
 echo
-echo "== malformed payloads and documents =="
+echo "== 12. malformed payloads and documents =="
 
 malformed="$WORK/malformed"
 mkdir -p "$malformed"
@@ -1159,7 +1491,7 @@ compare "adopter: an empty document" "$malformed/empty.json"
 # A reviewer can see the exact bytes and the reason for them side by side; in a
 # checked-in fixture they would be a mystery nobody could verify by reading.
 echo
-echo "== --source hazards =="
+echo "== 13. --source hazards =="
 
 SRC="$WORK/sources"
 mkdir -p "$SRC"
@@ -1345,7 +1677,7 @@ chmod 644 "$unreadable_src"
 # json.dumps on both counts. The em dashes in the extraction messages make that
 # visible here rather than theoretical.
 echo
-echo "== --source --json =="
+echo "== 14. --source --json =="
 compare "--json: all passing"        --source examples/sources/order_spec.rb --json
 compare "--json: mixed failures"     --source 'examples/sources/invalid/*' --json
 compare "--json: the whole corpus"   --source 'examples/sources/*' 'examples/sources/invalid/*' --json
@@ -1380,7 +1712,7 @@ chmod 644 "$unreadable_src"
 # checking anything — so these trees assert the diagnostics as well as the exit
 # code.
 echo
-echo "== self-test empty-fixture-set guard =="
+echo "== 15. self-test empty-fixture-set guard =="
 
 # make_fixture_root <name> — a tree holding both implementations, the real
 # schema, and whichever fixture directories the caller then populates.
@@ -1424,6 +1756,788 @@ printf 'describe Order do\nend\n' > "$noann_root/examples/sources/unannotated_sp
 compare_root "$noann_root" "self-test: a fixture with no annotations is a mismatch"
 
 # --------------------------------------------------------------------------- #
+# 15b. stdin mode (`-`) — text and --json
+# --------------------------------------------------------------------------- #
+#
+# The programmatic input path, and the mode where a divergence costs most: the
+# caller has no filename to sanity-check the answer against, only the document
+# that came back.
+#
+# Every input here is a FILE of exact bytes, fed to both implementations by
+# redirection, because half of what is being pinned is what happens to bytes
+# that are not text.
+echo
+echo "== 15b. stdin (-) =="
+
+STDIN_DIR="$WORK/stdin"
+mkdir -p "$STDIN_DIR"
+
+cp "$REPO_ROOT/examples/unit-order-total.json" "$STDIN_DIR/valid.json"
+printf '{"layer":"e2e"}'                > "$STDIN_DIR/schemafail.json"
+printf '{"broken"'                      > "$STDIN_DIR/malformed.json"
+printf ''                               > "$STDIN_DIR/empty.json"
+printf '   \n\t '                       > "$STDIN_DIR/whitespace.json"
+printf '[1,2,3]'                        > "$STDIN_DIR/not-an-object.json"
+# A non-ASCII enum value: json.dumps escapes it to é while Go's own
+# marshaller would emit it raw. The exact opposite of the `<root>` case below.
+printf '{"layer":"caf\xc3\xa9"}'        > "$STDIN_DIR/nonascii.json"
+# NUL and other control characters inside a string literal — the parser's
+# problem, and repr's.
+printf '{"layer":"a\\u0000b"}'          > "$STDIN_DIR/control.json"
+# Bytes that are not UTF-8 at all, in three shapes that make CPython's decoder
+# reach for three different message templates: a stray lead byte (singular
+# "byte 0xff in position 0"), a truncated three-byte character followed by more
+# input (plural "bytes in position 10-11"), and a truncated one at EOF
+# ("unexpected end of data").
+printf '\xff\xfe{"layer":"unit"}'       > "$STDIN_DIR/bad-lead.json"
+printf '{"layer":"\xe2\x82"}'           > "$STDIN_DIR/bad-continuation.json"
+printf '{"layer":"unit\xe2\x82'         > "$STDIN_DIR/truncated-at-eof.json"
+# A KEY holding undecodable bytes. This is the one that reaches the renderers
+# unescaped: "missing required property '%s'" and "additional property '%s' is
+# not allowed" interpolate key names with %s, not %r (bin/validate-intent:169,
+# 178), so a lone surrogate lands in the output rather than being repr'd on the
+# way. Text mode writes it back out as the original bytes (sys.stdout is
+# surrogateescape too); --json escapes it to \udcXX.
+printf '{"la\xe2\x82yer":"unit"}'       > "$STDIN_DIR/bad-key.json"
+
+for case in valid schemafail malformed empty whitespace not-an-object nonascii \
+            control bad-lead bad-continuation truncated-at-eof bad-key; do
+  compare_stdin "stdin text: $case" "$STDIN_DIR/$case.json" -
+  compare_stdin "stdin json: $case" "$STDIN_DIR/$case.json" - --json
+done
+
+# --json is stripped before the positional dispatch, so it may sit anywhere.
+compare_stdin "stdin json: --json leads"   "$STDIN_DIR/valid.json" --json -
+compare_stdin "stdin json: --json trails"  "$STDIN_DIR/valid.json" - --json
+# stdin mode ignores every argument after `-` (bin/validate-intent:911). A port
+# that validated them instead would refuse patterns the reference never looks
+# at — including `**`, which is otherwise a Go-side refusal.
+compare_stdin "stdin: trailing arguments are ignored" "$STDIN_DIR/valid.json" - nope.json
+compare_stdin "stdin: even a ** argument is ignored"  "$STDIN_DIR/valid.json" - 'examples/**/*.json'
+compare_stdin "stdin json: trailing arguments ignored" "$STDIN_DIR/valid.json" - nope.json --json
+
+# The trailing-newline contract, on bytes. Invisible to any assertion that
+# parses the document first.
+assert_trailing_newline "stdin json: exactly one trailing newline (pass)" \
+  "$STDIN_DIR/valid.json" - --json
+assert_trailing_newline "stdin json: exactly one trailing newline (fail)" \
+  "$STDIN_DIR/schemafail.json" - --json
+
+# --------------------------------------------------------------------------- #
+# 15c. the OTHER error handler, and the assumption behind the default
+# --------------------------------------------------------------------------- #
+#
+# `sys.stdin.errors` decides whether undecodable bytes are a READ failure or a
+# string full of lone surrogates, and the two produce different `kind` values,
+# different `summary.annotations` and sometimes different exit codes for the
+# SAME bytes. The port reproduces CPython's choice
+# (cmd/validate-intent/pyioerrors.go, pyIOErrors) rather than hard-coding one,
+# so both branches are compared.
+#
+# ONE HANDLER, TWO STREAMS. PYTHONIOENCODING is not a stdin setting: it gives
+# sys.stdout the same handler, and the port answers for the output side from the
+# same function. Both values are asserted here, not just the one this section is
+# named for — a port that read the variable for the input side and hard-coded
+# the output side is exactly what round 4 of SPGD-107's review found, and it
+# diverged with the SAME exit code, in every mode, with no stdin involved.
+echo
+echo "== 15c. stdin error handlers =="
+read -r default_in default_out <<<"$("$PYTHON" -c \
+  'import sys; print(sys.stdin.errors, sys.stdout.errors)' </dev/null)"
+if [ "$default_in" = "surrogateescape" ] && [ "$default_out" = "surrogateescape" ]; then
+  passed=$((passed + 1))
+  printf '  ok    sys.stdin.errors and sys.stdout.errors both default to surrogateescape\n'
+else
+  failed=$((failed + 1))
+  red "  FAIL  defaults are stdin='$default_in' stdout='$default_out', not both 'surrogateescape'"
+  printf '        pyIOErrors() assumes the C/POSIX-locale default for BOTH streams;\n'
+  printf '        this environment disagrees, so section 15b ("stdin mode (`-`) — text and --json")\n'
+  printf '        is comparing the wrong branch.\n'
+fi
+
+# The premise pyIOErrors rests on, asserted rather than assumed: whatever the
+# handler is, the two streams carry the SAME one. If CPython ever set them
+# apart, answering for stdout from stdin's variable would be unsound — so this
+# says so, rather than the port picking the wrong one in silence.
+for spec in "" "utf-8" ":replace" "utf-8:ignore"; do
+  read -r probe_in probe_out <<<"$(env ${spec:+PYTHONIOENCODING=$spec} "$PYTHON" -c \
+    'import sys; print(sys.stdin.errors, sys.stdout.errors)' </dev/null)"
+  if [ "$probe_in" = "$probe_out" ]; then
+    passed=$((passed + 1))
+    printf '  ok    PYTHONIOENCODING=%-12s -> both streams %s\n' "${spec:-(unset)}" "$probe_in"
+  else
+    failed=$((failed + 1))
+    red "  FAIL  PYTHONIOENCODING=${spec:-(unset)} — stdin='$probe_in' but stdout='$probe_out'"
+    printf '        cmd/validate-intent/pyioerrors.go answers for BOTH streams from one\n'
+    printf '        function, on the premise that they always agree. Here they do not.\n'
+  fi
+done
+
+# strict, on the way IN: the UnicodeDecodeError -> KIND_READ path, with
+# annotations 0 — the only route to a `read` finding that stdin mode has, and
+# dead code under the default handler.
+PARITY_ENV="PYTHONIOENCODING=utf-8"
+for case in valid bad-lead bad-continuation truncated-at-eof bad-key; do
+  compare_stdin "stdin text (strict): $case" "$STDIN_DIR/$case.json" -
+  compare_stdin "stdin json (strict): $case" "$STDIN_DIR/$case.json" - --json
+done
+PARITY_ENV=""
+
+# An error handler the port does NOT reproduce must refuse, not substitute one
+# it does. `replace` decodes successfully into different text, so answering with
+# surrogateescape's verdict would be confidently about the wrong string.
+unsupported_rc=0
+(cd "$REPO_ROOT" && PYTHONIOENCODING=:replace "$GO_BIN" - \
+   <"$STDIN_DIR/bad-lead.json" >"$WORK/go.out" 2>"$WORK/go.err") || unsupported_rc=$?
+if [ "$unsupported_rc" -eq 2 ] && [ -s "$WORK/go.err" ] && [ ! -s "$WORK/go.out" ]; then
+  passed=$((passed + 1))
+  printf '  ok    an unreproducible stdin error handler refuses (exit 2: %s)\n' \
+    "$(head -1 "$WORK/go.err")"
+else
+  failed=$((failed + 1))
+  red "  FAIL  PYTHONIOENCODING=:replace — expected a clean exit-2 refusal, got rc=$unsupported_rc"
+fi
+
+# --------------------------------------------------------------------------- #
+# 15d. adopter mode --json — three counting rules over one batch
+# --------------------------------------------------------------------------- #
+#
+# `files`, `annotations` and `failed` are three DIFFERENT counts and a naive
+# port collapses them into one. The mixed batch below is built so all three
+# disagree — 4 / 3 / 4 over five arguments — which is the only arrangement that
+# can tell a collapsed counter from a correct one:
+#
+#   files       every file matched, readable or not; the no-match PATTERN is
+#               not a file and does not count.
+#   annotations sites EXAMINED; the malformed file counts (the site existed,
+#               its payload was bad), the unreadable one does not.
+#   failed      every failing finding, INCLUDING the no-match that neither of
+#               the other two counted.
+echo
+echo "== 15d. adopter --json =="
+
+# The shipped corpus first — and note what it proves: these fixtures' messages
+# contain `<root>`, which Go's encoding/json escapes to `<root>` by
+# default. Parity breaks on the very first shipped invalid fixture unless the
+# document is rendered by hand.
+compare "adopter --json: one valid fixture"   --json examples/unit-order-total.json
+compare "adopter --json: the invalid corpus"  --json 'examples/invalid/*.json'
+compare "adopter --json: the whole corpus"    --json 'examples/*.json' 'examples/invalid/*.json'
+compare "adopter --json: position-independent (trailing)" 'examples/invalid/*.json' --json
+compare "adopter --json: several explicit files" --json \
+  examples/unit-order-total.json examples/invalid/bad-layer.json
+
+# The mixed batch.
+MIXED="$WORK/mixed"
+mkdir -p "$MIXED"
+cp "$REPO_ROOT/examples/unit-order-total.json" "$MIXED/ok.json"
+printf '{"broken"'          > "$MIXED/bad.json"
+printf '{"layer":"e2e"}'    > "$MIXED/schemafail.json"
+printf '{}'                 > "$MIXED/unread.json"
+
+compare_in "$REPO_ROOT" "$REFERENCE" "$GO_BIN" "adopter --json: no-match is a finding" \
+  --json 'nope*.json'
+compare_in "$REPO_ROOT" "$REFERENCE" "$GO_BIN" "adopter --json: no-match mixed with matches" \
+  --json 'examples/*.json' 'nope*.json'
+
+chmod 000 "$MIXED/unread.json"
+if [ -r "$MIXED/unread.json" ]; then
+  skipped=$((skipped + 1))
+  red "  SKIP  adopter --json mixed batch — chmod 000 did not make the file unreadable (running as root?)"
+else
+  compare_in "$MIXED" "$REFERENCE" "$GO_BIN" \
+    "adopter --json: mixed batch (files 4 / annotations 3 / failed 4)" \
+    --json ok.json bad.json schemafail.json unread.json 'nope*.json'
+  # The summary is the point of that case, so it is also asserted directly
+  # against the Go binary. A whole-document comparison would go green if BOTH
+  # implementations were compared with the summary lines absent; this cannot.
+  (cd "$MIXED" && "$GO_BIN" --json ok.json bad.json schemafail.json unread.json \
+     'nope*.json' >"$WORK/mixed.out" 2>/dev/null)
+  got="$(tr -d ' \n' < "$WORK/mixed.out" | sed 's/.*"summary":{\([^}]*\)}.*/\1/')"
+  want='"files":4,"annotations":3,"failed":4'
+  if [ "$got" = "$want" ]; then
+    passed=$((passed + 1))
+    printf '  ok    adopter --json: summary is %s\n' "$want"
+  else
+    failed=$((failed + 1))
+    red "  FAIL  adopter --json summary — want $want, got $got"
+  fi
+fi
+chmod 644 "$MIXED/unread.json"
+
+# A non-UTF-8 FILE is a read finding with annotations 0 — the file-side twin of
+# the strict-stdin case above, and now compared for its PROSE too (the exclusion
+# that slice 3 retired).
+printf '\xff\xfe{"layer":"unit"}' > "$MIXED/bad-lead.json"
+printf '{"layer":"\xe2\x82"}'     > "$MIXED/bad-continuation.json"
+compare_in "$MIXED" "$REFERENCE" "$GO_BIN" "adopter: non-UTF-8 file, text" bad-lead.json
+compare_in "$MIXED" "$REFERENCE" "$GO_BIN" "adopter --json: non-UTF-8 file (read, annotations 0)" \
+  --json bad-lead.json
+compare_in "$MIXED" "$REFERENCE" "$GO_BIN" "adopter: truncated multi-byte file, text" \
+  bad-continuation.json
+compare_in "$MIXED" "$REFERENCE" "$GO_BIN" "adopter --json: truncated multi-byte file" \
+  --json bad-continuation.json
+
+# --------------------------------------------------------------------------- #
+# 15e. lone surrogates on the way OUT, under BOTH handlers
+# --------------------------------------------------------------------------- #
+#
+# The mirror of the stdin decoding above, and reachable with no stdin at all: a
+# file whose KEY carries a "\udc82" escape puts a lone surrogate into a str, and
+# "additional property '%s' is not allowed" interpolates key names with %s, not
+# %r (bin/validate-intent:178) — so unlike every other interpolated value it is
+# NOT repr'd into ASCII on the way out. See cmd/validate-intent/pystdout.go.
+#
+# THE HANDLER AXIS IS THE POINT OF THIS SECTION, and it used to be missing. What
+# sys.stdout does with such a character depends on PYTHONIOENCODING's handler
+# exactly as the input side does — under `surrogateescape` CPython writes the
+# ORIGINAL BYTE back, under `strict` it raises UnicodeEncodeError mid-report and
+# dies. Section 15c ("the OTHER error handler, and the assumption behind the
+# default") ran strict-mode stdin over inputs that either decode cleanly or fail
+# the READ, and this section ran its escape cases only under the default
+# environment; the product of the two axes was the one cell nothing covered, and
+# the port diverged in it. Every case below is therefore run under both.
+#
+# Three inputs, because the two surrogate ranges behave differently and the
+# difference is a range boundary:
+#
+#   esc   U+DC82  in U+DC80-U+DCFF, the range the DECODER produces
+#   high  U+DCFF  the upper bound of that range
+#   unenc U+D800  outside it — only reachable from an explicit \uXXXX escape
+#
+# and two renderers, because they do NOT agree: json.dumps' ensure_ascii=True
+# turns the surrogate into a literal \udc82 in the JSON text, so the --json path
+# writes pure ASCII and never reaches the encoder at all. That makes --json a
+# byte-for-byte comparison in every cell while text mode is a comparison in
+# three of six and an assert-pair in the other three. Measured, not assumed.
+echo
+echo "== 15e. lone surrogates on stdout =="
+printf '{"\\udc82key":"x"}'      > "$MIXED/escaped-surrogate.json"
+printf '{"a\\udcffb":"x"}'       > "$MIXED/escaped-surrogate-high.json"
+printf '{"\\ud800key":"x"}'      > "$MIXED/unencodable-surrogate.json"
+
+# assert_encode_failure <label> <env-or-empty> <stdin-file-or-empty> [args...]
+#
+# The reference dies with a traceback naming CPython's own source lines, which
+# is not a surface this port can be byte-identical to. So the pair is ASSERTED
+# rather than compared: identical exit 1, identical stdout (both truncate at the
+# line that failed, because TextIOWrapper encodes before it buffers), and a
+# stated prose difference on stderr.
+#
+# stdout is compared with cmp, not merely required to be non-empty. That is the
+# half a "both failed" assertion would throw away — the reference's partial
+# report is the evidence that the port stops at the same character, and an
+# implementation that wrote nothing at all would otherwise pass.
+#
+# The stderr check is not "the port said something". The offending character is
+# lifted out of CPython's own message and required VERBATIM in the port's, so
+# the two must agree on WHICH character failed and on how it is spelled. Go's
+# string(rune) turns a surrogate into U+FFFD, which produced a diagnostic that
+# read perfectly and named the replacement character; only an assertion tied to
+# the reference's own text catches that.
+assert_encode_failure() {
+  local label="$1"
+  shift
+  assert_encode_failure_in "$MIXED" "$label" "$@"
+}
+
+# assert_encode_failure_in <cwd> <label> <env-or-empty> <stdin-file-or-empty> [args...]
+#
+# The same assertion from a directory of the caller's choosing. Section 15g
+# ("non-UTF-8 filenames and argv — the other end of the same channel") needs it:
+# a lone surrogate reaches the text renderers through a FILENAME as well as
+# through stdin and a JSON escape, so the same ratified pair has to be pinned
+# over a fixture tree that is not $MIXED.
+assert_encode_failure_in() {
+  local cwd="$1" label="$2" penv="$3" input="$4"
+  shift 4
+  local py_rc=0 go_rc=0
+  if [ -n "$input" ]; then
+    (cd "$cwd" && env ${penv:+"$penv"} "$PYTHON" "$REFERENCE" "$@" \
+       <"$input" >"$WORK/py.out" 2>"$WORK/py.err") || py_rc=$?
+    (cd "$cwd" && env ${penv:+"$penv"} "$GO_BIN" "$@" \
+       <"$input" >"$WORK/go.out" 2>"$WORK/go.err") || go_rc=$?
+  else
+    (cd "$cwd" && env ${penv:+"$penv"} "$PYTHON" "$REFERENCE" "$@" \
+       </dev/null >"$WORK/py.out" 2>"$WORK/py.err") || py_rc=$?
+    (cd "$cwd" && env ${penv:+"$penv"} "$GO_BIN" "$@" \
+       </dev/null >"$WORK/go.out" 2>"$WORK/go.err") || go_rc=$?
+  fi
+  # e.g. `can't encode character '\udc82'` — CPython's spelling, not ours.
+  local py_char
+  py_char="$(grep -o "can't encode character '[^']*'" "$WORK/py.err" | head -1)"
+  if [ "$py_rc" -eq 1 ] && [ "$go_rc" -eq 1 ] &&
+     grep -q 'UnicodeEncodeError' "$WORK/py.err" &&
+     [ -n "$py_char" ] && grep -qF "$py_char" "$WORK/go.err" &&
+     cmp -s "$WORK/py.out" "$WORK/go.out"; then
+    passed=$((passed + 1))
+    printf '  ok    %s: same exit 1, same stdout, same character named\n' "$label"
+    return 0
+  fi
+  failed=$((failed + 1))
+  red "  FAIL  $label — python rc=$py_rc go rc=$go_rc"
+  printf '        python stderr: %s\n' "$(tail -1 "$WORK/py.err")"
+  printf '        go stderr:     %s\n' "$(head -1 "$WORK/go.err")"
+  if [ -n "$py_char" ] && ! grep -qF "$py_char" "$WORK/go.err"; then
+    printf '        the port does not name the character CPython names: %s\n' "$py_char"
+  fi
+  if ! cmp -s "$WORK/py.out" "$WORK/go.out"; then
+    printf '        --- stdout (-python +go), od -c ---\n'
+    diff -u <(od -c "$WORK/py.out") <(od -c "$WORK/go.out") | tail -n +3 | sed 's/^/        /'
+  fi
+  return 1
+}
+
+# ---- default handler (surrogateescape) ----
+#
+# The escape range round-trips: CPython writes the original byte, and so must
+# the port. Every other byte of these runs agrees, which is exactly what makes
+# it the shape of divergence that ships.
+compare_in "$MIXED" "$REFERENCE" "$GO_BIN" \
+  "surrogateescape range on stdout, text" escaped-surrogate.json
+compare_in "$MIXED" "$REFERENCE" "$GO_BIN" \
+  "surrogateescape range on stdout, --json" --json escaped-surrogate.json
+compare_in "$MIXED" "$REFERENCE" "$GO_BIN" \
+  "surrogateescape range, upper bound (U+DCFF)" escaped-surrogate-high.json
+compare_in "$MIXED" "$REFERENCE" "$GO_BIN" \
+  "surrogateescape range, upper bound, --json" --json escaped-surrogate-high.json
+
+# U+D800 is outside what surrogateescape can encode, so even the default
+# handler raises here. A DEFECT IN THE REFERENCE, not a port gap.
+assert_encode_failure "an unencodable surrogate (surrogateescape)" "" "" \
+  unencodable-surrogate.json
+compare_in "$MIXED" "$REFERENCE" "$GO_BIN" \
+  "an unencodable surrogate, --json (ensure_ascii escapes it)" \
+  --json unencodable-surrogate.json
+
+# ---- strict (PYTHONIOENCODING=utf-8) — the cell that was missing ----
+#
+# Now the ESCAPE range raises too, because nothing under `strict` ever produced
+# it: the decoder raised instead, so a surrogate here can only have come from a
+# \uXXXX escape, and CPython refuses to encode it. The port applied the
+# surrogateescape encoder in every mode until round 4, which made it write byte
+# 0x82 and finish the line where the reference truncated and died.
+assert_encode_failure "escape range under strict, adopter text" \
+  "PYTHONIOENCODING=utf-8" "" escaped-surrogate.json
+assert_encode_failure "escape range upper bound under strict, adopter text" \
+  "PYTHONIOENCODING=utf-8" "" escaped-surrogate-high.json
+assert_encode_failure "unencodable surrogate under strict, adopter text" \
+  "PYTHONIOENCODING=utf-8" "" unencodable-surrogate.json
+
+# stdin mode, same environment, same bytes: the reviewer's reported case. The
+# document is pure ASCII on the wire, so it decodes fine under `strict` — the
+# surrogate arrives from the JSON escape, not from the bytes — which is why the
+# input-side gate could never have caught this.
+assert_encode_failure "escape range under strict, stdin text" \
+  "PYTHONIOENCODING=utf-8" "$MIXED/escaped-surrogate.json" -
+
+# --json under strict stays a byte-for-byte comparison in every one of them,
+# because ensure_ascii=True leaves the encoder nothing to fail on. A section
+# that only asserted the failures would have missed that the two renderers
+# genuinely disagree here.
+PARITY_ENV="PYTHONIOENCODING=utf-8"
+compare_in "$MIXED" "$REFERENCE" "$GO_BIN" \
+  "escape range under strict, --json" --json escaped-surrogate.json
+compare_in "$MIXED" "$REFERENCE" "$GO_BIN" \
+  "escape range upper bound under strict, --json" --json escaped-surrogate-high.json
+compare_in "$MIXED" "$REFERENCE" "$GO_BIN" \
+  "unencodable surrogate under strict, --json" --json unencodable-surrogate.json
+compare_stdin "escape range under strict, stdin --json" \
+  "$MIXED/escaped-surrogate.json" - --json
+PARITY_ENV=""
+
+# --json in SELF-TEST mode is a usage error in the reference too — exit 2, one
+# error line, then the whole usage block on stderr. Compared, not asserted: it
+# is reproduced behaviour, not a port limitation, and the difference matters if
+# the reference's usage text ever changes.
+compare "--json is refused in self-test mode" --json
+
+# The trailing-newline contract again, on a document with findings.
+assert_trailing_newline "adopter --json: exactly one trailing newline" \
+  /dev/null --json 'examples/invalid/*.json'
+
+# --------------------------------------------------------------------------- #
+# 15f. the ENCODING half of PYTHONIOENCODING
+# --------------------------------------------------------------------------- #
+#
+# `PYTHONIOENCODING` is `ENCODING:HANDLER`. Section 15c ("the OTHER error
+# handler, and the assumption behind the default") covers the second field. This
+# one covers the first, which round 5 of SPGD-107's review found parsed and then
+# discarded: the port inferred `strict` from "an encoding is named" and never
+# looked at WHICH, so `latin-1` — handler `strict`, which the port reproduces —
+# went straight through a gate whose whole job was to catch it, while CPython
+# encoded and decoded both streams as iso8859-1 and the port hard-coded UTF-8.
+#
+# THE MISSING CELL, precisely. Every PYTHONIOENCODING value this harness set
+# before this section was unset, `utf-8`, `:replace` or `utf-8:ignore` — each of
+# which either omits the encoding field or names the one the port assumes. The
+# handler axis was varied across four spellings; the encoding axis was never
+# varied at all, so it was UNTESTED rather than excluded, and an untested axis
+# reads exactly like a passing one.
+#
+# The port's answer is to REFUSE any codec that is not UTF-8 (asserted per mode
+# in section 16, "Go-side refusals — the excluded surfaces, still asserted").
+# This section establishes the two things that refusal rests on and that a
+# refusal alone cannot show:
+#
+#   1. the codecs it refuses genuinely make the REFERENCE answer differently, so
+#      the gate is not refusing a run it could have reproduced; and
+#   2. the codecs it accepts — including six aliases of utf-8 that are not
+#      spelled "utf-8" — are still compared byte-for-byte, so closing the hole
+#      did not close it too far.
+#
+# Without (1) the refusal could be tightened to nothing and every test here
+# would stay green, which is this project's house defect: a gate reporting
+# success having verified nothing.
+echo
+echo "== 15f. the PYTHONIOENCODING encoding =="
+
+# The premise pyIOEncodingSupported rests on, asserted rather than assumed.
+# Same shape as 15c's handler probe, on the other field: whatever the codec is,
+# both streams carry the SAME one, and with no encoding named it is utf-8 —
+# which is what the port hard-codes and what makes the unset/`:replace` cases
+# reproducible at all. Asked of python3 at run time so an image whose locale
+# default is not UTF-8 reports a broken assumption instead of quietly diverging.
+#
+# os.write to the raw fd, not print(): this probe runs UNDER the encodings it
+# reports, and `print` would encode its own answer with them — the utf-16 row
+# comes back as UTF-16 and unparseable otherwise.
+for spec in "" "utf-8" ":replace" "latin-1" "ascii" "utf-16"; do
+  read -r enc_in enc_out <<<"$(env ${spec:+PYTHONIOENCODING=$spec} "$PYTHON" -c \
+    'import os, sys; os.write(1, ("%s %s\n" % (sys.stdin.encoding, sys.stdout.encoding)).encode("ascii"))' </dev/null)"
+  # Does this spelling NAME an encoding, or leave CPython on the locale default?
+  names_encoding=yes
+  case "$spec" in "" | :*) names_encoding=no ;; esac
+
+  if [ "$enc_in" != "$enc_out" ]; then
+    failed=$((failed + 1))
+    red "  FAIL  PYTHONIOENCODING=${spec:-(unset)} — stdin codec '$enc_in' but stdout codec '$enc_out'"
+    printf '        cmd/validate-intent/pyioerrors.go answers for BOTH streams from one\n'
+    printf '        function, on the premise that they always agree. Here they do not.\n'
+  elif [ "$names_encoding" = no ] && [ "$enc_in" != "utf-8" ]; then
+    # The rows that name no encoding resolve to the locale default, and the
+    # port accepts them because that default is UTF-8 here. If it is not, the
+    # port is answering in the wrong codec rather than refusing.
+    failed=$((failed + 1))
+    red "  FAIL  PYTHONIOENCODING=${spec:-(unset)} — locale default codec is '$enc_in', not utf-8"
+    printf '        pyIOEncodingSupported() accepts an empty encoding field on the\n'
+    printf '        premise that the default is UTF-8. On this image it is not.\n'
+  else
+    passed=$((passed + 1))
+    printf '  ok    PYTHONIOENCODING=%-10s -> both streams %s\n' "${spec:-(unset)}" "$enc_in"
+  fi
+done
+
+# (1) The refusal is not vacuous: the REFERENCE really does answer differently.
+#
+# iso8859-1 decodes every byte, so bytes that are not valid UTF-8 never reach
+# the reference's read failure at all — the document parses and is rejected on
+# SCHEMA instead. Measured on the same input, stdin --json:
+#
+#   PYTHONIOENCODING=utf-8     kind "read",   annotations 0, 1 error,  rc 1
+#   PYTHONIOENCODING=latin-1   kind "schema", annotations 1, 5 errors, rc 1
+#
+# That is the read/parse split of section 15b ("stdin mode (`-`) — text and
+# --json") inverted, with the SAME exit code on both sides. This asserts python3
+# against python3 — no Go involved — so if a future CPython ever made the two
+# agree, the port's refusal would have become over-refusal and this says so
+# rather than the refusal quietly outliving its reason.
+ENC_DIR="$WORK/encoding"
+mkdir -p "$ENC_DIR"
+# Valid JSON structurally, and NOT valid UTF-8: 0xe2 0x82 is a truncated
+# three-byte sequence, which iso8859-1 happily reads as two characters.
+printf '{"schema":"open-test-intent/v1","action":"a","entity":"e","layer":"\xe2\x82unit"}' \
+  > "$ENC_DIR/not-utf8.json"
+
+assert_reference_diverges_on_codec() {
+  local label="$1" codec="$2"
+  shift 2
+  local utf8_rc=0 other_rc=0
+  (cd "$REPO_ROOT" && PYTHONIOENCODING=utf-8 "$PYTHON" "$REFERENCE" "$@" \
+     <"$ENC_DIR/not-utf8.json" >"$WORK/py.utf8" 2>/dev/null) || utf8_rc=$?
+  (cd "$REPO_ROOT" && PYTHONIOENCODING="$codec" "$PYTHON" "$REFERENCE" "$@" \
+     <"$ENC_DIR/not-utf8.json" >"$WORK/py.other" 2>/dev/null) || other_rc=$?
+  if cmp -s "$WORK/py.utf8" "$WORK/py.other" && [ "$utf8_rc" = "$other_rc" ]; then
+    failed=$((failed + 1))
+    red "  FAIL  $label — the reference answers IDENTICALLY under utf-8 and $codec"
+    printf '        The port refuses %s because it changes the reference'"'"'s answer.\n' "$codec"
+    printf '        It no longer does, so the refusal asserted in\n'
+    printf '        section 16 ("Go-side refusals — the excluded surfaces, still asserted")\n'
+    printf '        is now over-refusal: the port declines a run it could\n'
+    printf '        reproduce byte-for-byte.\n'
+    return 1
+  fi
+  passed=$((passed + 1))
+  printf '  ok    %s (utf-8 rc=%s/%sB vs %s rc=%s/%sB)\n' "$label" \
+    "$utf8_rc" "$(wc -c <"$WORK/py.utf8")" "$codec" "$other_rc" "$(wc -c <"$WORK/py.other")"
+  return 0
+}
+
+assert_reference_diverges_on_codec "latin-1 changes the reference's stdin verdict" \
+  latin-1 -
+assert_reference_diverges_on_codec "latin-1 changes it under --json too" \
+  latin-1 - --json
+# `ascii` is the sharper one: it decodes nothing above 0x7f, and then cannot
+# ENCODE the em dash in the port's own report prose, so the reference dies with
+# UnicodeEncodeError and a truncated stdout. The port used to emit a full,
+# clean, plausible report and exit 1 where the reference produced no report at
+# all — answering confidently where the oracle declined to answer.
+assert_reference_diverges_on_codec "ascii makes the reference die mid-report" \
+  ascii -
+assert_reference_diverges_on_codec "ascii, --json" \
+  ascii - --json
+
+# (2) The other direction: a whitelist that is too tight is also a defect, and
+# it is the one this fix could plausibly have introduced. CPython resolves six
+# aliases plus several punctuations to the utf-8 codec, and it ANSWERS every one
+# of them — so the port must too, byte-for-byte, rather than refusing anything
+# it does not recognise on sight.
+#
+# Compared, not asserted. `U8` and `cp65001` under the too-tight implementation
+# (`encoding == "utf-8"`) would refuse with exit 2 while the reference printed a
+# report, which is a parity failure these lines catch and a bare "did it refuse?"
+# assertion would not.
+for spec in "utf-8" "UTF-8" "utf8" "utf_8" "utf---8" "U8" "utf" "cp65001" \
+            "utf8_ucs2" "utf8_ucs4" "utf-8:strict"; do
+  PARITY_ENV="PYTHONIOENCODING=$spec"
+  compare_stdin "utf-8 alias '$spec' is answered, not refused (stdin --json)" \
+    "$ENC_DIR/not-utf8.json" - --json
+  compare "utf-8 alias '$spec' is answered, not refused (adopter)" \
+    'examples/invalid/*.json'
+  PARITY_ENV=""
+done
+
+# --------------------------------------------------------------------------- #
+# 15g. non-UTF-8 FILENAMES and argv — the other end of the same channel
+# --------------------------------------------------------------------------- #
+#
+# Every `\x`-byte case above this line builds a PAYLOAD. Not one builds a
+# filename or an argument, and that gap is what round 6 of SPGD-107's review
+# found: `pySurrogateEscape` was wired to sys.stdin and to nothing else, so a
+# byte that is not valid UTF-8 in a FILENAME decoded to U+FFFD where CPython
+# produces U+DC00+byte. The axis was UNTESTED rather than excluded, and the
+# exclusions header did not name it — which reads exactly like covered.
+#
+# CPython decodes sys.argv and every os.listdir result with the filesystem
+# encoding under surrogateescape, so this is the same channel as stdin's, at the
+# other end. See cmd/validate-intent/pyfspath.go.
+#
+# WHY IT IS WORTH A SECTION OF ITS OWN, rather than one more case above.
+# The failure is LOSSY, and lossy failures do not stay local. U+FFFD is one
+# value, so three files whose names differ only in that byte collapse onto ONE
+# `file` key while `summary.files` still says three — in documents of identical
+# byte length, with identical exit codes and identical structure. A consumer
+# aggregating findings across invocations silently loses two of them. The
+# distinct-key assertion below is the part a whole-document comparison would
+# also catch but a structural one would not, and it is written out because it is
+# the property the field exists for (see JSONFinding in report.go).
+#
+# It does not need exotic argv: an ordinary ASCII glob over a real badly-named
+# file reaches it, which is why the fixtures here are matched with `*.json`.
+#
+# ORDERING IS PART OF THE CONTRACT. _expand_files sorts (bin/validate-intent:464)
+# and Python sorts `str` by code point. Sorting the raw BYTES is a different
+# order, and it agrees by luck on most name sets: every escaped byte becomes
+# U+DC80-U+DCFF, whose WTF-8 lead byte is 0xED, so the fixtures below include a
+# name carrying U+FF21 (lead 0xEF) — which sorts after all of them decoded and
+# in the middle of them raw. Without that one character an implementation that
+# sorted before decoding would pass this whole section.
+echo
+echo "== 15g. non-UTF-8 filenames and argv =="
+
+BAD_DIR="$WORK/badnames"
+mkdir -p "$BAD_DIR/sub"
+# A directory whose own NAME is undecodable, so the escape has to survive being
+# a path PREFIX and not only a final component.
+BAD_SUBDIR="$BAD_DIR/$(printf 'd\xe2\x82')"
+mkdir -p "$BAD_SUBDIR"
+
+cp examples/unit-order-total.json "$BAD_DIR/$(printf 'x\xe9.json')"
+cp examples/unit-order-total.json "$BAD_DIR/$(printf 'x\xee.json')"
+cp examples/unit-order-total.json "$BAD_DIR/$(printf 'x\xf0.json')"
+printf '{"broken"' > "$BAD_DIR/$(printf 'x\xff.json')"
+cp examples/unit-order-total.json "$BAD_DIR/xé.json"
+cp examples/unit-order-total.json "$BAD_DIR/xＡ.json"
+cp examples/invalid/missing-required.json "$BAD_DIR/$(printf 'bad\x80.json')"
+cp examples/unit-order-total.json "$BAD_SUBDIR/inside.json"
+cp examples/sources/checkout_service_test.py "$BAD_DIR/sub/$(printf 's\xe9.py')"
+
+# THE FIXTURE INVENTORY, checked before anything is compared.
+#
+# Not defensive noise — this caught a real vacuous pass. An earlier draft copied
+# `examples/sources/test_order_total.py`, which does not exist: `cp` failed, the
+# `sub/` directory stayed empty, and BOTH implementations then answered
+# "no file(s) match ..." byte-identically. Two green `--source` cases that
+# compared a missing file to a missing file, in a section whose entire subject
+# is what happens to a badly-named one.
+#
+# A glob-based comparison cannot tell "agreed about the files" from "agreed
+# there were none", so the inventory is asserted separately and the run stops
+# here if it is short.
+bad_fixture_missing=0
+for expected in "$BAD_DIR/$(printf 'x\xe9.json')" "$BAD_DIR/$(printf 'x\xee.json')" \
+                "$BAD_DIR/$(printf 'x\xf0.json')" "$BAD_DIR/$(printf 'x\xff.json')" \
+                "$BAD_DIR/xé.json" "$BAD_DIR/xＡ.json" \
+                "$BAD_DIR/$(printf 'bad\x80.json')" "$BAD_SUBDIR/inside.json" \
+                "$BAD_DIR/sub/$(printf 's\xe9.py')"; do
+  if [ ! -f "$expected" ]; then
+    bad_fixture_missing=$((bad_fixture_missing + 1))
+    red "  FAIL  fixture not created: $(printf '%q' "$expected")"
+  fi
+done
+if [ "$bad_fixture_missing" -gt 0 ]; then
+  failed=$((failed + bad_fixture_missing))
+  printf '        Every case below globs this directory, so a missing fixture makes\n'
+  printf '        both implementations answer "no file(s) match" and agree about it.\n'
+else
+  passed=$((passed + 1))
+  printf '  ok    the badly-named fixture set was created (9 files)\n'
+fi
+
+compare "badly-named files, adopter text"     "$BAD_DIR/*.json"
+compare "badly-named files, adopter --json"   --json "$BAD_DIR/*.json"
+compare "badly-named files, --source text"    --source "$BAD_DIR/sub/*.py"
+compare "badly-named files, --source --json"  --source --json "$BAD_DIR/sub/*.py"
+compare "an undecodable DIRECTORY component"  --json "$BAD_DIR/"'*'"/*.json"
+compare "recursive ** over badly-named files" --json "$BAD_DIR/**/*.json"
+
+# Patterns that make the MATCHER look at the escaped byte, which `*.json` never
+# does — it matches whatever is there and would go green over names the port had
+# collapsed to U+FFFD. A `?` has to count one escaped byte as ONE character, and
+# a character class has to tell two of them apart. Reverting fnmatch to Go's
+# `[]rune` (which turns every WTF-8 surrogate into U+FFFD) leaves every `*` case
+# above green and fails exactly these.
+compare "one escaped byte is one ? "          --json "$BAD_DIR/x?.json"
+compare "a class over escaped bytes"          --json "$BAD_DIR/x[$(printf '\xe9\xff')].json"
+compare "a class excluding escaped bytes"     --json "$BAD_DIR/x[!$(printf '\xe9')].json"
+# The literal path through the glob (`_glob0`): no magic character at all, so the
+# name is resolved by lexists() rather than by the matcher — which is the other
+# place a mis-encoded path stops finding its own file.
+compare "a literal escaped name, no wildcard" --json "$BAD_DIR/$(printf 'x\xe9.json')"
+
+# The same names typed directly, so the argv leg is exercised without a glob in
+# the way. A `--json` position is varied too, because the strip happens before
+# the positional dispatch and both operate on the decoded argv.
+for badname in 'x\xe9.json' 'x\xff.json' 'bad\x80.json'; do
+  literal="$BAD_DIR/$(printf "$badname")"
+  compare "literal argv $badname, text"          "$literal"
+  compare "literal argv $badname, --json"        --json "$literal"
+  compare "literal argv $badname, trailing flag" "$literal" --json
+done
+
+# A pattern that matches NOTHING and carries bad bytes. It reaches BOTH renderers
+# and lands in two fields at once — `file` and `errors[0]` — and the two spell it
+# differently on purpose (repr in text, bare in JSON, no_match at
+# bin/validate-intent:551-559), so a decode applied to one and not the other
+# shows up here.
+for pattern in 'nope\xe2\x82*.json' '\xff*.json' '\xe9literal.json'; do
+  missing="$(printf "$pattern")"
+  compare "no-match $pattern, text"     "$missing"
+  compare "no-match $pattern, --json"   --json "$missing"
+  compare "no-match $pattern, --source" --source "$missing"
+done
+
+# The path that reaches str(OSError). `pyOSError` renders the filename with
+# repr, and the bytes it gets back from the syscall are the RE-ENCODED ones — so
+# this is the one message whose whole job is to name the file that failed, and
+# the one place a missing decode on the way back out is invisible to every case
+# above (they all name files that read fine).
+unread_bad="$BAD_DIR/$(printf 'unread\xe9.json')"
+cp examples/unit-order-total.json "$unread_bad"
+chmod 000 "$unread_bad"
+if [ -r "$unread_bad" ]; then
+  # A case that could not be SET UP must not be counted as one that passed.
+  skipped=$((skipped + 1))
+  red "  SKIP  unreadable badly-named file — chmod 000 did nothing (running as root?)"
+else
+  compare "an unreadable badly-named file, text"   "$unread_bad"
+  compare "an unreadable badly-named file, --json" --json "$unread_bad"
+  compare "an unreadable badly-named file, glob"   --json "$BAD_DIR/unread*.json"
+fi
+chmod 644 "$unread_bad"
+rm -f "$unread_bad"
+
+# THE `strict` HANDLER REACHES THIS CHANNEL TOO, and the asymmetry between the
+# renderers is measured rather than assumed.
+#
+# A surrogateescaped byte is a lone surrogate, and under `strict` CPython cannot
+# encode one for stdout. That was already ratified for stdin and for a `"\udc82"`
+# JSON escape — section 15e ("lone surrogates on the way OUT, under BOTH
+# handlers") — and a FILENAME is simply a third way to get one there. Measured
+# with PYTHONIOENCODING=utf-8 (whose handler is `strict`) over these fixtures:
+#
+#   text / --source   BOTH sides die, rc 1, identical (truncated) stdout. Only
+#                     the stderr prose differs: CPython raises a traceback
+#                     naming its own source lines, which is not a surface this
+#                     port can reproduce. The ratified pair, asserted below.
+#   --json            BYTE-IDENTICAL, and that is not luck: json.dumps'
+#                     ensure_ascii=True turns the surrogate into the seven ASCII
+#                     characters `\udce2`, which encode fine under any codec. The
+#                     compares below pin it, so a renderer that stopped escaping
+#                     would fail here rather than quietly joining the ratified
+#                     group.
+PARITY_ENV="PYTHONIOENCODING=utf-8"
+compare "--json survives strict (ensure_ascii escapes the surrogate)" \
+  --json "$BAD_DIR/*.json"
+compare "--source --json survives strict" \
+  --source --json "$BAD_DIR/sub/*.py"
+PARITY_ENV=""
+assert_encode_failure_in "$REPO_ROOT" "a surrogate from a FILENAME, adopter text" \
+  PYTHONIOENCODING=utf-8 "" "$BAD_DIR/*.json"
+assert_encode_failure_in "$REPO_ROOT" "a surrogate from a FILENAME, --source text" \
+  PYTHONIOENCODING=utf-8 "" --source "$BAD_DIR/sub/*.py"
+
+# assert_distinct_file_keys <label> <want> [args...] — the lossy-collapse guard.
+#
+# Asserted on the PORT, and cross-checked against the reference, because it is a
+# property rather than a byte comparison: N files must produce N DISTINCT `file`
+# values. Before the fix this read 1 where python read 6, in two documents of
+# the same length. `summary.files` is checked against the same number, so a
+# document that loses keys while still counting them cannot pass.
+assert_distinct_file_keys() {
+  local label="$1" want="$2"
+  shift 2
+  local go_keys py_keys go_files
+  go_keys="$(cd "$REPO_ROOT" && "$GO_BIN" "$@" 2>/dev/null |
+    grep -c '^      "file": ' || true)"
+  go_files="$(cd "$REPO_ROOT" && "$GO_BIN" "$@" 2>/dev/null |
+    grep '^      "file": ' | sort -u | wc -l)"
+  py_keys="$(cd "$REPO_ROOT" && "$PYTHON" "$REFERENCE" "$@" 2>/dev/null |
+    grep '^      "file": ' | sort -u | wc -l)"
+
+  if [ "$go_files" != "$want" ] || [ "$py_keys" != "$want" ]; then
+    failed=$((failed + 1))
+    red "  FAIL  $label — wanted $want distinct \"file\" keys, got go=$go_files python=$py_keys"
+    printf '        (%s findings emitted; U+FFFD collapses distinct names onto one key)\n' "$go_keys"
+    return 1
+  fi
+  passed=$((passed + 1))
+  printf '  ok    %s (%s distinct "file" keys, both sides)\n' "$label" "$want"
+  return 0
+}
+
+assert_distinct_file_keys "seven badly-named files stay seven keys" 7 \
+  --json "$BAD_DIR/*.json"
+
+# And the reverse guard: the fixture set must actually CONTAIN names that a
+# naive decode would collapse, or the assertion above is vacuous. Four of the
+# seven carry a byte that is not valid UTF-8; a set of clean names would pass
+# the distinct-key check under the very implementation it exists to catch.
+lossy_names=0
+for name in "$BAD_DIR"/*.json; do
+  printf '%s' "$(basename "$name")" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 ||
+    lossy_names=$((lossy_names + 1))
+done
+if [ "$lossy_names" -lt 2 ]; then
+  failed=$((failed + 1))
+  red "  FAIL  the fixture set carries $lossy_names undecodable name(s) — fewer than two"
+  printf '        cannot collide, so the distinct-key assertion above proves nothing.\n'
+else
+  passed=$((passed + 1))
+  printf '  ok    %s of the fixture names are undecodable (the collision is reachable)\n' "$lossy_names"
+fi
+
+# --------------------------------------------------------------------------- #
 # 16. Go-side refusals — the excluded surfaces, still asserted
 # --------------------------------------------------------------------------- #
 #
@@ -1438,7 +2552,7 @@ compare_root "$noann_root" "self-test: a fixture with no annotations is a mismat
 # answer.
 #
 # One is NOT a refusal, and the distinction is deliberate rather than an
-# oversight in the prose. `--version` (excluded group 5, slice 6 / SPGD-141) is
+# oversight in the prose. `--version` (excluded group 4, slice 6 / SPGD-141) is
 # a Go-only surface that SUCCEEDS: exit 0, a line on stdout, nothing on stderr.
 # assert_refusal asserts the exact opposite of all three, so it could not be
 # stretched to cover it — assert_version_line below is its counterpart, and it
@@ -1446,13 +2560,18 @@ compare_root "$noann_root" "self-test: a fixture with no annotations is a mismat
 # thing a refusal never has to prove: that the payload on stdout actually says
 # something.
 echo
-echo "== excluded surfaces refuse loudly (Go only) =="
-assert_refusal() {
-  local label="$1"
-  shift
-  local rc
-  (cd "$REPO_ROOT" && "$GO_BIN" "$@" >"$WORK/go.out" 2>"$WORK/go.err")
-  rc=$?
+echo "== 16. excluded surfaces refuse loudly (Go only) =="
+
+# How many refusals this section actually asserted. Checked below, because the
+# list SHRANK as slices implemented their modes, and a list that shrinks to zero
+# would leave assert_refusal defined, never called, and this section reporting a
+# clean pass having probed nothing.
+refusals_asserted=0
+
+# _refusal_verdict <label> <rc> — grade the run whose output is already in $WORK.
+_refusal_verdict() {
+  local label="$1" rc="$2"
+  refusals_asserted=$((refusals_asserted + 1))
   if [ "$rc" -ne 2 ]; then
     failed=$((failed + 1))
     red "  FAIL  $label — expected exit 2, got $rc"
@@ -1473,19 +2592,181 @@ assert_refusal() {
   return 0
 }
 
-assert_refusal "stdin mode" -
-assert_refusal "--json for adopter mode" --json 'examples/*.json'
-assert_refusal "--json for adopter mode, anywhere on the line" 'examples/*.json' --json
+assert_refusal() {
+  local label="$1"
+  shift
+  local rc=0
+  (cd "$REPO_ROOT" && "$GO_BIN" "$@" </dev/null >"$WORK/go.out" 2>"$WORK/go.err") || rc=$?
+  _refusal_verdict "$label" "$rc"
+}
 
-# The mirror of the list above: the surfaces slice 2 IMPLEMENTED must NOT be
+# assert_refusal_env <label> <VAR=VALUE> [args...] — the same, for a refusal that
+# only fires under a particular environment. The one surviving refusal is of that
+# shape: with PYTHONIOENCODING unset the encoding is utf-8 and the handler is
+# `surrogateescape`, both of which the port reproduces and therefore does NOT
+# refuse.
+assert_refusal_env() {
+  local label="$1" assignment="$2"
+  shift 2
+  local rc=0
+  (cd "$REPO_ROOT" && env "$assignment" "$GO_BIN" "$@" </dev/null \
+     >"$WORK/go.out" 2>"$WORK/go.err") || rc=$?
+  _refusal_verdict "$label ($assignment)" "$rc"
+}
+
+# Nothing in this list is an unported MODE any more. Slice 3 implemented the last
+# two — stdin and adopter `--json` — and slice 4 implemented recursive `**`;
+# every entry that used to stand here moved to the assert_not_refused list below,
+# which is the point of that list existing.
+#
+# What remains is the refusal that was never about missing work: a
+# PYTHONIOENCODING this port cannot reproduce — EITHER HALF of it. The variable
+# is `ENCODING:HANDLER`, and both fields get their own block below:
+#
+#   HANDLER   `replace` and `ignore` SUCCEED in both directions and each
+#             produces different bytes, so answering with an implemented
+#             handler's reading would be a confident verdict about a string the
+#             reference never saw.
+#   ENCODING  `latin-1`, `ascii`, `cp1252`, `utf-16` all carry handler `strict`,
+#             which the port DOES reproduce — so the handler block waves every
+#             one of them through, and only the encoding block catches them.
+#             The port hard-codes UTF-8 on both sides; iso8859-1 decodes bytes
+#             UTF-8 rejects, so the reference reaches a different verdict on the
+#             same input with the same exit code.
+#
+# EVERY MODE, not just stdin. The variable governs sys.stdout as well as
+# sys.stdin, so an adopter run over a file whose key carries a surrogate escape
+# diverges under `replace` with no stdin involved — measured, before the fix:
+#
+#   python3   ... additional property '?key' is not allowed
+#   port      ... additional property '\202key' is not allowed
+#
+# The refusal used to be scoped to `-`, which left the other three modes
+# answering confidently. Each mode is asserted separately here, because a gate
+# that reads the mode is a gate that can be re-scoped to one of them again.
+assert_refusal_env "unreproducible handler (replace), stdin" \
+  PYTHONIOENCODING=:replace -
+assert_refusal_env "unreproducible handler (ignore), stdin" \
+  PYTHONIOENCODING=utf-8:ignore -
+assert_refusal_env "unreproducible handler (replace), adopter" \
+  PYTHONIOENCODING=:replace 'examples/*.json'
+assert_refusal_env "unreproducible handler (replace), adopter --json" \
+  PYTHONIOENCODING=:replace --json 'examples/*.json'
+assert_refusal_env "unreproducible handler (replace), --source" \
+  PYTHONIOENCODING=:replace --source 'examples/sources/*'
+assert_refusal_env "unreproducible handler (replace), self-test" \
+  PYTHONIOENCODING=:replace
+
+# The ENCODING half, which is the round-5 fix and the cell this section was
+# missing. Every spelling above names `utf-8` or no encoding at all, so the
+# refusals above prove only that the port reads the variable's SECOND field.
+#
+# These codecs all carry handler `strict`, which the port DOES reproduce — so
+# the handler gate waves every one of them through, and only the encoding gate
+# can catch them. Before the fix the port answered all of them in UTF-8, with
+# the same exit code as the reference and a different verdict: section 15f ("the
+# ENCODING half of PYTHONIOENCODING") measures the reference actually changing
+# its answer, which is what makes these refusals honest rather than merely safe.
+#
+# EVERY MODE and BOTH RENDERERS, for the same reason as the handler above: a
+# gate that reads the mode is a gate that can be re-scoped to one of them again.
+assert_refusal_env "unreproducible encoding (latin-1), stdin" \
+  PYTHONIOENCODING=latin-1 -
+assert_refusal_env "unreproducible encoding (latin-1), stdin --json" \
+  PYTHONIOENCODING=latin-1 - --json
+assert_refusal_env "unreproducible encoding (latin-1), adopter" \
+  PYTHONIOENCODING=latin-1 'examples/*.json'
+assert_refusal_env "unreproducible encoding (latin-1), adopter --json" \
+  PYTHONIOENCODING=latin-1 --json 'examples/*.json'
+assert_refusal_env "unreproducible encoding (latin-1), --source" \
+  PYTHONIOENCODING=latin-1 --source 'examples/sources/*'
+assert_refusal_env "unreproducible encoding (latin-1), self-test" \
+  PYTHONIOENCODING=latin-1
+assert_refusal_env "unreproducible encoding (ascii), stdin" \
+  PYTHONIOENCODING=ascii -
+assert_refusal_env "unreproducible encoding (ascii), stdin --json" \
+  PYTHONIOENCODING=ascii - --json
+assert_refusal_env "unreproducible encoding (ascii), adopter" \
+  PYTHONIOENCODING=ascii 'examples/*.json'
+assert_refusal_env "unreproducible encoding (ascii), adopter --json" \
+  PYTHONIOENCODING=ascii --json 'examples/*.json'
+assert_refusal_env "unreproducible encoding (cp1252), adopter" \
+  PYTHONIOENCODING=cp1252 'examples/*.json'
+assert_refusal_env "unreproducible encoding (utf-16), stdin --json" \
+  PYTHONIOENCODING=utf-16 - --json
+# Both fields unreproducible at once. The encoding is named, because it is the
+# field that decides which STRING the reference validated where the handler only
+# decides how an unrepresentable character in that string is rendered.
+assert_refusal_env "both fields unreproducible names the encoding" \
+  PYTHONIOENCODING=latin-1:replace -
+if grep -q "encoding 'latin-1'" "$WORK/go.err"; then
+  passed=$((passed + 1))
+  printf '  ok    ...and it names the codec, not the handler: %s\n' "$(head -1 "$WORK/go.err")"
+else
+  failed=$((failed + 1))
+  red "  FAIL  latin-1:replace refused without naming the encoding"
+  printf '        got: %s\n' "$(head -1 "$WORK/go.err")"
+fi
+# An encoding CPython does not know at all. ACKNOWLEDGED NON-PARITY, asserted
+# rather than compared: the reference dies in init_stdio_encoding with a fatal
+# error and rc 1 before bin/validate-intent's first line runs, and the port exits
+# 2 naming the encoding. Neither produces a report, so no consumer is misled.
+# What is pinned here is the half that WOULD mislead — before the fix the port
+# read `bogus` as "an encoding is named, therefore handler strict, therefore
+# reproducible" and printed a clean report where the reference refused to start.
+assert_refusal_env "an encoding CPython cannot even start with" \
+  PYTHONIOENCODING=bogus -
+
+if [ "$refusals_asserted" -eq 0 ]; then
+  failed=$((failed + 1))
+  red "  FAIL  this section asserted NO refusals at all"
+  printf '        assert_refusal is defined and never called, so the section\n'
+  printf '        reported a clean pass having probed nothing. If the last\n'
+  printf '        refusal was genuinely retired, delete the section and its\n'
+  printf '        entry in the header rather than leaving an empty one.\n'
+fi
+
+# --help under a refusing environment, and the two fields answer DIFFERENTLY —
+# which is worth pinning rather than assuming, because assuming is how this got
+# written wrong the first time.
+#
+# Under an unreproducible HANDLER, --help is still answered and still compared
+# byte-for-byte. A handler only alters characters the codec cannot represent,
+# and UTF-8 represents every character in the usage block, so no handler can
+# change a byte of it.
+#
+# Under an unreproducible ENCODING it is REFUSED, because the usage block is not
+# ASCII — it carries an em dash (U+2014), copied from the reference's USAGE,
+# which the two texts are compared byte-for-byte to keep. Measured on the
+# reference itself:
+#
+#   PYTHONIOENCODING=latin-1   dies, UnicodeEncodeError, rc 1, 0 bytes of stdout
+#   PYTHONIOENCODING=utf-16    1644 bytes of UTF-16, against UTF-8's 824
+#
+# The first draft of the encoding gate sat BELOW the --help check, on the
+# inherited premise that "--help is a compile-time ASCII constant no environment
+# can alter". Half of that was true and the ASCII half was simply wrong; this
+# comparison is what found it.
+PARITY_ENV="PYTHONIOENCODING=:replace"
+compare_help "--help is unaffected by an unreproducible handler" --help
+PARITY_ENV=""
+assert_refusal_env "--help IS refused under an unreproducible encoding" \
+  PYTHONIOENCODING=latin-1 --help
+assert_refusal_env "--help under a codec that merely re-encodes it" \
+  PYTHONIOENCODING=utf-16 --help
+
+# The mirror of the list above: the surfaces the port IMPLEMENTED must NOT be
 # refused any more. Without this, deleting a mode's dispatch would leave every
-# comparison in sections 10-15 unrun and the refusal assertions still green — a
-# suite that got smaller without going red.
+# comparison of that mode above unrun and the refusal assertions still green — a
+# suite that got smaller without going red. The stdin and adopter-`--json`
+# entries are the ones slice 3 moved across, and they are the reason this list
+# exists.
 assert_not_refused() {
   local label="$1"
   shift
   local rc
-  (cd "$REPO_ROOT" && "$GO_BIN" "$@" >"$WORK/go.out" 2>"$WORK/go.err")
+  # </dev/null so the stdin-mode entries below cannot block on a terminal.
+  (cd "$REPO_ROOT" && "$GO_BIN" "$@" </dev/null >"$WORK/go.out" 2>"$WORK/go.err")
   rc=$?
   if [ "$rc" -eq 2 ] && grep -q 'not implemented in the Go port' "$WORK/go.err"; then
     failed=$((failed + 1))
@@ -1509,8 +2790,17 @@ assert_not_refused "recursive glob is implemented" 'examples/**/*.json'
 assert_not_refused "recursive glob under --source is implemented" --source 'examples/**/*.rb'
 assert_not_refused "recursive glob, bare, is implemented" '**'
 
+# Slice 3's entries. `- --json` and `--json -` are BOTH here because the
+# position-independent strip is what routes them, and a dispatch that only
+# handled one order would leave the other falling through to adopter mode with
+# `-` read as a filename.
+assert_not_refused "stdin mode is implemented" -
+assert_not_refused "stdin --json is implemented" - --json
+assert_not_refused "adopter --json is implemented" --json 'examples/*.json'
+assert_not_refused "adopter --json, anywhere on the line" 'examples/*.json' --json
+
 # --------------------------------------------------------------------------- #
-# Excluded group 5: --version, the Go-only surface that SUCCEEDS
+# 16b. --version — the excluded surface that SUCCEEDS
 # --------------------------------------------------------------------------- #
 #
 # assert_refusal above cannot be reused for this one. It asserts exit 2, a
@@ -1562,7 +2852,7 @@ assert_not_refused "recursive glob, bare, is implemented" '**'
 # answers `unknown`; or no SHA-256 tool on PATH — the affected check degrades to
 # shape only and says so, rather than silently asserting less.
 echo
-echo "== --version reports an identity (Go only) =="
+echo "== 16b. --version reports an identity (Go only) =="
 
 want_identity=""
 if command -v git >/dev/null 2>&1 && git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
@@ -1614,12 +2904,20 @@ if [ -z "$want_schema" ]; then
 fi
 
 # assert_version_line_in <cwd> <bin> <label> [args...]
+#
+# PARITY_ENV, if set, is applied — the same convention compare_in and
+# compare_stdin follow, and section 17c ("the locale's default codec") needs it:
+# the ACCEPTED half of that gate has to be proven for `--version` too, and no
+# `compare` can do it because the reference has no such flag. Without the
+# variable being honoured here, that assertion would run in the harness's own
+# environment and pass whatever the gate did.
 assert_version_line_in() {
   local cwd="$1" gobin="$2" label="$3"
   shift 3
 
   local rc
-  (cd "$cwd" && "$gobin" "$@" >"$WORK/go.out" 2>"$WORK/go.err")
+  (cd "$cwd" && env ${PARITY_ENV:+"$PARITY_ENV"} "$gobin" "$@" \
+     >"$WORK/go.out" 2>"$WORK/go.err")
   rc=$?
 
   local problems=()
@@ -1718,7 +3016,7 @@ assert_version_line_in "/" "$installprefix/bin/validate-intent" \
 # and the assertion would stay green with --version moved anywhere below it.
 #
 # The probe has to be a schema that EXISTS and cannot be loaded — the same
-# distinction excluded group 4 draws, for the same reason. On this tree
+# distinction excluded group 2 draws, for the same reason. On this tree
 # LoadSchema genuinely fails, so a `--version` that had drifted below it would
 # answer `could not load schema ...` on stderr with exit 2, and every check in
 # assert_version_line fires at once.
@@ -1761,7 +3059,7 @@ assert_version_line_in "$versionbadschema_root" "$versionbadschema_root/bin/vali
   "--version is answered above LoadSchema (unloadable schema present)" --version
 
 # --------------------------------------------------------------------------- #
-# Excluded group 6: --schema-source, the Go-only surface that reads the disk
+# 16c. --schema-source — the second Go-only surface that SUCCEEDS (excluded group 5)
 # --------------------------------------------------------------------------- #
 #
 # The flag `--version` cannot be: it runs the real loader and reports the schema
@@ -1790,7 +3088,7 @@ assert_version_line_in "$versionbadschema_root" "$versionbadschema_root/bin/vali
 # the affected check degrades to shape only and says so, rather than silently
 # asserting less. The ORIGIN is still compared in that case: it needs no tool.
 echo
-echo "== --schema-source reports the ENFORCED schema (Go only) =="
+echo "== 16c. --schema-source reports the ENFORCED schema (Go only) =="
 
 # assert_schema_source_in <cwd> <bin> <label> <want-origin> <want-digest> [args...]
 #
@@ -2008,7 +3306,7 @@ else
 fi
 
 # --------------------------------------------------------------------------- #
-# Excluded group 4: a tree with no schemas/ directory beside the binary
+# 16d. excluded group 2 — a tree with no schemas/ directory beside the binary
 # --------------------------------------------------------------------------- #
 #
 # These five argument sets USED to be compared, in section 8 ("OS-level
@@ -2030,7 +3328,7 @@ fi
 # "Excluded" must not mean "unchecked", and it must not mean "assumed to work"
 # either: two of the five still fail, and they are asserted failing.
 echo
-echo "== excluded group 4: no schemas/ beside the binary (Go only) =="
+echo "== 16d. excluded group 2: no schemas/ beside the binary (Go only) =="
 
 noschema_root="$WORK/noschema"
 mkdir -p "$noschema_root/bin"
@@ -2045,7 +3343,7 @@ cp "$REPO_ROOT/examples/unit-order-total.json" "$noschema_root/thing.json"
 # the quietest way to lose coverage.
 if [ -e "$noschema_root/schemas" ]; then
   failed=$((failed + 1))
-  red "  FAIL  excluded group 4 — this tree must have NO schemas/ directory, and it has one"
+  red "  FAIL  excluded group 2 — this tree must have NO schemas/ directory, and it has one"
 fi
 
 # assert_no_schema_tree <label> <want-rc> <want-stdout> <want-stderr> [args...]
@@ -2148,10 +3446,182 @@ assert_no_schema_tree "--source with no argument still refuses" \
   2 EMPTY "--source requires at least one FILE/glob argument" --source
 
 # --------------------------------------------------------------------------- #
+# 16e. stderr's error handler — unmodeled, and pinned where it shows
+# --------------------------------------------------------------------------- #
+#
+# Excluded group 7, and the only group in this file that is a measured
+# DIVERGENCE rather than a refusal or a Go-only surface. The header states the
+# rule; this section states what the port actually does, so "excluded" cannot
+# drift into "whatever it does now".
+#
+# CPython's sys.stderr carries the `backslashreplace` handler by default,
+# independently of PYTHONIOENCODING and differently from sys.stdout. This port
+# models the stdout encoder (pyioerrors.go, pystdout.go) and has no stderr
+# counterpart, which shows in exactly one place: schemaLoadError interpolates
+# the schema's origin with a bare `%s`, so an install directory whose name is
+# not valid UTF-8 comes out as raw WTF-8 bytes where the reference writes the
+# six ASCII characters `\udce9`.
+#
+# Three claims are pinned here, and the second and third are the ones that stop
+# this from being a licence:
+#
+#   1. THE DIVERGENCE ITSELF, in both directions. The reference must emit the
+#      escape and the port must emit the bytes. A port that started agreeing
+#      would fail here — which is the point: if someone models stderr later,
+#      this section is what tells them the exclusion can be retired, instead of
+#      leaving a stale paragraph in the header claiming a divergence that no
+#      longer exists.
+#
+#   2. THE HALF THAT IS ALREADY CORRECT. The `[Errno ...]` clause on that same
+#      line goes through pyOSError -> PyReprString and IS byte-identical. The
+#      unreadable case prints both renderings on ONE line of the port's output,
+#      which is the clearest available statement of where the boundary runs, and
+#      asserting it keeps a future "simplification" of pyOSError from quietly
+#      widening the group.
+#
+#   3. THE BLAST RADIUS. Everything else on a badly-named install tree is
+#      COMPARED, not excluded: adopter, adopter --json, --source, --source
+#      --json, stdin, self-test and --help all run from a directory the port
+#      cannot name in ASCII, and all must be byte-identical. Without these the
+#      exclusion would read as "the port is untested under a badly-named install
+#      prefix", which is a much larger claim than the one being made.
+echo
+echo "== 16e. stderr's error handler (excluded group 7) =="
+
+BADINSTALL="$WORK/badinstall/$(printf 'd\xe9')"
+mkdir -p "$BADINSTALL/bin" "$BADINSTALL/schemas"
+cp "$REFERENCE" "$BADINSTALL/bin/validate-intent"
+cp "$GO_BIN" "$BADINSTALL/bin/validate-intent-go"
+BADINSTALL_PY="$BADINSTALL/bin/validate-intent"
+BADINSTALL_GO="$BADINSTALL/bin/validate-intent-go"
+
+# NON-VACUITY, first. Every claim below is about a path CPython has to
+# surrogate-escape. If the directory name were decodable — a tmpdir that
+# sanitised it, a filesystem that rejected the byte — the comparisons would
+# still pass and would prove nothing at all, which is the failure mode this
+# repo keeps re-finding. So the premise is checked before it is used.
+if "$PYTHON" - "$BADINSTALL" <<'PROBE'
+import os, sys
+raw = os.fsencode(sys.argv[1])
+sys.exit(0 if raw.decode("utf-8", "surrogateescape") != raw.decode("utf-8", "replace") else 1)
+PROBE
+then
+  passed=$((passed + 1))
+  printf '  ok    the install directory name is genuinely undecodable\n'
+else
+  failed=$((failed + 1))
+  red "  FAIL  the install directory name decodes cleanly — this section proves nothing"
+fi
+
+# assert_stderr_bytes <label> <file> <pattern>... — every pattern must appear in
+# <file>, matched as raw BYTES (grep -F under LC_ALL=C, because two of these
+# patterns are not valid UTF-8 and a locale-aware grep may refuse them).
+assert_stderr_bytes() {
+  local label="$1" file="$2"
+  shift 2
+  local missing=() pat
+  for pat in "$@"; do
+    LC_ALL=C grep -qF -- "$pat" "$file" || missing+=("$pat")
+  done
+  if [ ${#missing[@]} -eq 0 ]; then
+    passed=$((passed + 1))
+    printf '  ok    %s\n' "$label"
+    return 0
+  fi
+  failed=$((failed + 1))
+  red "  FAIL  $label"
+  for pat in "${missing[@]}"; do
+    printf '        missing from stderr: %s\n' "$(printf '%s' "$pat" | cat -v)"
+  done
+  printf '        stderr was: %s\n' "$(cat -v "$file")"
+  return 1
+}
+
+# The two renderings of the same directory name, built here rather than written
+# as literals so the relationship between them is visible: one is what
+# backslashreplace produces from U+DCE9, the other is U+DCE9 in WTF-8.
+BADINSTALL_ESCAPED='d\udce9'
+BADINSTALL_RAW="$(printf 'd\xed\xb3\xa9')"
+
+# (1) THE DIVERGENCE. A schema that is PRESENT and malformed, so both sides
+# reach the diagnostic rather than the embedded fallback (which fires on ENOENT
+# only — see LoadSchema).
+printf '{ this is not json' > "$BADINSTALL/schemas/open-test-intent.v1.json"
+badinstall_py_rc=0
+(cd "$REPO_ROOT" && "$PYTHON" "$BADINSTALL_PY" 'examples/*.json' \
+   </dev/null >"$WORK/bi.py.out" 2>"$WORK/bi.py.err") || badinstall_py_rc=$?
+badinstall_go_rc=0
+(cd "$REPO_ROOT" && "$BADINSTALL_GO" 'examples/*.json' \
+   </dev/null >"$WORK/bi.go.out" 2>"$WORK/bi.go.err") || badinstall_go_rc=$?
+
+if [ "$badinstall_py_rc" = 2 ] && [ "$badinstall_go_rc" = 2 ]; then
+  passed=$((passed + 1))
+  printf '  ok    both implementations still exit 2 on the unloadable schema\n'
+else
+  failed=$((failed + 1))
+  red "  FAIL  exit codes diverge: python=$badinstall_py_rc go=$badinstall_go_rc"
+fi
+assert_stderr_bytes "the reference backslashreplaces the path (\\udce9)" \
+  "$WORK/bi.py.err" "$BADINSTALL_ESCAPED"
+assert_stderr_bytes "the port writes the raw WTF-8 bytes — group 7, declared" \
+  "$WORK/bi.go.err" "$BADINSTALL_RAW"
+if cmp -s "$WORK/bi.py.err" "$WORK/bi.go.err"; then
+  failed=$((failed + 1))
+  red "  FAIL  the two stderr streams now AGREE — group 7 is stale, retire it"
+else
+  passed=$((passed + 1))
+  printf '  ok    the two stderr streams differ, and only here\n'
+fi
+
+# (2) THE HALF THAT IS ALREADY CORRECT. A schema that EXISTS and cannot be read
+# — a directory in the file's place, which is EISDIR for root and non-root alike
+# (chmod 000 does nothing when this suite runs as root, and a case that SKIPs is
+# not a case). The port's one line then carries both renderings: the `%s` half
+# raw, the pyOSError half escaped exactly as the reference writes it.
+rm -f "$BADINSTALL/schemas/open-test-intent.v1.json"
+mkdir -p "$BADINSTALL/schemas/open-test-intent.v1.json"
+(cd "$REPO_ROOT" && "$PYTHON" "$BADINSTALL_PY" 'examples/*.json' \
+   </dev/null >"$WORK/bi2.py.out" 2>"$WORK/bi2.py.err") || true
+(cd "$REPO_ROOT" && "$BADINSTALL_GO" 'examples/*.json' \
+   </dev/null >"$WORK/bi2.go.out" 2>"$WORK/bi2.go.err") || true
+assert_stderr_bytes "the reference's [Errno] clause reprs the path" \
+  "$WORK/bi2.py.err" "[Errno 21] Is a directory: '" "$BADINSTALL_ESCAPED"
+assert_stderr_bytes "the port's [Errno] clause reprs it IDENTICALLY, on a line whose %s half does not" \
+  "$WORK/bi2.go.err" "[Errno 21] Is a directory: '" "$BADINSTALL_ESCAPED" "$BADINSTALL_RAW"
+rmdir "$BADINSTALL/schemas/open-test-intent.v1.json"
+
+# (3) THE BLAST RADIUS. With a real schema in place, every mode is compared
+# byte-for-byte from the same badly-named prefix. These are COMPARISONS: the
+# exclusion covers one diagnostic, and this is what says so in a form that can
+# go red.
+cp "$REPO_ROOT/schemas/open-test-intent.v1.json" "$BADINSTALL/schemas/"
+compare_in "$REPO_ROOT" "$BADINSTALL_PY" "$BADINSTALL_GO" \
+  "badly-named install prefix: adopter" 'examples/*.json'
+compare_in "$REPO_ROOT" "$BADINSTALL_PY" "$BADINSTALL_GO" \
+  "badly-named install prefix: adopter --json" --json 'examples/invalid/*.json'
+compare_in "$REPO_ROOT" "$BADINSTALL_PY" "$BADINSTALL_GO" \
+  "badly-named install prefix: --source" --source 'examples/sources/*.rb'
+compare_in "$REPO_ROOT" "$BADINSTALL_PY" "$BADINSTALL_GO" \
+  "badly-named install prefix: --source --json" --source --json 'examples/sources/*.rb'
+compare_in "$REPO_ROOT" "$BADINSTALL_PY" "$BADINSTALL_GO" \
+  "badly-named install prefix: a no-match diagnostic" 'nope*.json'
+# The two modes that resolve something ELSE from the executable's own path: the
+# self-test finds its corpus there (and does not, on this tree), and --help does
+# not touch the path at all. Both are here because the self-test's diagnostic
+# names a pattern relative to that root, and a port that leaked the undecoded
+# root into it would fail here and nowhere above.
+compare_in "$REPO_ROOT" "$BADINSTALL_PY" "$BADINSTALL_GO" \
+  "badly-named install prefix: self-test finds no corpus, identically" 
+compare_help_in "$BADINSTALL_PY" "$BADINSTALL_GO" \
+  "badly-named install prefix: --help" --help
+compare_stdin_in "$REPO_ROOT" "$BADINSTALL_PY" "$BADINSTALL_GO" \
+  "badly-named install prefix: stdin --json" "examples/unit-order-total.json" - --json
+
+# --------------------------------------------------------------------------- #
 # 17. Go-side refusals — schemas carrying a pattern RE2 cannot reproduce
 # --------------------------------------------------------------------------- #
 #
-# The other half of excluded group 3. Each case builds a tree whose schema
+# The other half of excluded group 1. Each case builds a tree whose schema
 # declares one divergent `pattern`, and asserts both halves of the claim:
 #
 #   * what python3 does with that schema — either it answers the document
@@ -2167,7 +3637,7 @@ assert_no_schema_tree "--source with no argument still refuses" \
 # which is why the port allow-lists the constructs it can reproduce instead of
 # deny-listing the ones somebody remembered to look for.
 echo
-echo "== schemas the port refuses (Go only) =="
+echo "== 17. schemas the port refuses (Go only) =="
 pattern_refusals=0
 
 # assert_pattern_refusal <label> <pattern> <value> <pass|error>
@@ -2281,6 +3751,350 @@ assert_pattern_refusal 'backreference' \
   '(a)\\1' '"aa"' pass
 
 # --------------------------------------------------------------------------- #
+# 17b. truncation sweep — every prefix of a \uXXXX-bearing document
+# --------------------------------------------------------------------------- #
+#
+# WHY A SWEEP AND NOT A HANDFUL OF POINT CASES
+#
+# A real parity bug lived in this class and the 228 hand-picked cases above did
+# not see it. CPython's C scanner refuses to decode a \uXXXX escape unless a
+# character FOLLOWS the four hex digits, so an escape ending exactly at
+# end-of-document raises `Invalid \uXXXX escape` at the 'u' — it never reaches
+# the "unterminated" path. The port's bound was one character short, so it
+# decoded the escape, ran off the end, and reported `Unterminated string` at the
+# opening quote instead: wrong message AND wrong offset, which is a different
+# errors[0] in the --json document machine consumers read.
+#
+# The fix was one character in decodeUXXXX (cmd/validate-intent/pyjson.go). A
+# point case for the exact reported input would go green while leaving the rest
+# of the class unguarded — the escape nested inside an object, the low half of a
+# surrogate pair, the escape whose hex digits are not hex. So what is pinned
+# here is the CLASS: every prefix of each document below, through all three
+# input paths. Truncating one character at a time walks the scanner into every
+# partial-token state it has, which is exactly how the original was found.
+#
+# Scope note: these documents are deliberately pure ASCII, so a byte prefix and
+# a character prefix are the same thing and `${doc:0:i}` is unambiguous.
+# Truncated multi-byte UTF-8 at EOF is a different failure — a DECODE error,
+# raised before the parser ever runs — and is the job of section 15b
+# ("stdin mode (`-`) — text and --json"). Mixing the two
+# would test neither cleanly.
+echo
+echo "== 17b. truncation sweep: every prefix of a \\uXXXX-bearing document =="
+
+SWEEP_DIR="$WORK/sweep"
+mkdir -p "$SWEEP_DIR"
+
+# sweep_prefixes <label> <document> <leg>
+#
+# Compares every prefix (length 1..N) and books ONE harness case per
+# document/leg pair. A per-prefix "ok" line would bury the rest of the run in
+# several hundred lines of noise, and would also let a single document inflate
+# the headline count until "N/N passed" stopped meaning anything.
+#
+# On failure it names how many prefixes diverged and the first one, then replays
+# that prefix through the ordinary comparison helper so the real diff is
+# printed. The replay books its own pass/fail, so the counters are saved and
+# restored around it — otherwise one logical failure would be counted twice.
+#
+# A sweep that compared nothing is a failure, not a pass: the prefix count is
+# asserted non-zero. That is this project's own vacuous-green rule (SPGD-78)
+# applied to the harness — "nothing to check" must not read as "all clear".
+sweep_prefixes() {
+  local label="$1" doc="$2" leg="$3"
+  local n=${#doc}
+  local i swept=0 bad=0 first_bad=""
+  local py_rc go_rc
+
+  for (( i = 1; i <= n; i++ )); do
+    printf '%s' "${doc:0:i}" > "$SWEEP_DIR/prefix.json"
+    case "$leg" in
+      stdin-text)
+        (cd "$REPO_ROOT" && "$PYTHON" "$REFERENCE" - \
+           <"$SWEEP_DIR/prefix.json" >"$WORK/py.out" 2>"$WORK/py.err"); py_rc=$?
+        (cd "$REPO_ROOT" && "$GO_BIN" - \
+           <"$SWEEP_DIR/prefix.json" >"$WORK/go.out" 2>"$WORK/go.err"); go_rc=$?
+        ;;
+      stdin-json)
+        (cd "$REPO_ROOT" && "$PYTHON" "$REFERENCE" - --json \
+           <"$SWEEP_DIR/prefix.json" >"$WORK/py.out" 2>"$WORK/py.err"); py_rc=$?
+        (cd "$REPO_ROOT" && "$GO_BIN" - --json \
+           <"$SWEEP_DIR/prefix.json" >"$WORK/go.out" 2>"$WORK/go.err"); go_rc=$?
+        ;;
+      file)
+        # Adopter mode over the same bytes on disk. A parse failure travels a
+        # different path here (check_file, not run_stdin) and is rendered per
+        # file with its own prefix, so the escape bound has to be right in both.
+        (cd "$SWEEP_DIR" && "$PYTHON" "$REFERENCE" prefix.json \
+           >"$WORK/py.out" 2>"$WORK/py.err"); py_rc=$?
+        (cd "$SWEEP_DIR" && "$GO_BIN" prefix.json \
+           >"$WORK/go.out" 2>"$WORK/go.err"); go_rc=$?
+        ;;
+      *)
+        failed=$((failed + 1))
+        red "  FAIL  $label — unknown sweep leg '$leg'"
+        return 1
+        ;;
+    esac
+
+    swept=$((swept + 1))
+    if [ "$py_rc" != "$go_rc" ] \
+       || ! cmp -s "$WORK/py.out" "$WORK/go.out" \
+       || ! cmp -s "$WORK/py.err" "$WORK/go.err"; then
+      bad=$((bad + 1))
+      [ -z "$first_bad" ] && first_bad="$i"
+    fi
+  done
+
+  if [ "$swept" -eq 0 ]; then
+    failed=$((failed + 1))
+    red "  FAIL  $label — swept 0 prefixes, so this case verified nothing"
+    return 1
+  fi
+
+  if [ "$bad" -eq 0 ]; then
+    passed=$((passed + 1))
+    printf '  ok    %s (%d prefixes)\n' "$label" "$swept"
+    return 0
+  fi
+
+  failed=$((failed + 1))
+  red "  FAIL  $label — $bad/$swept prefixes diverged, first at length $first_bad"
+  printf '        prefix: %s\n' "${doc:0:first_bad}"
+  printf '%s' "${doc:0:first_bad}" > "$SWEEP_DIR/prefix.json"
+
+  local saved_passed=$passed saved_failed=$failed
+  case "$leg" in
+    stdin-text) compare_stdin "(replay) $label" "$SWEEP_DIR/prefix.json" - ;;
+    stdin-json) compare_stdin "(replay) $label" "$SWEEP_DIR/prefix.json" - --json ;;
+    file)       compare_in "$SWEEP_DIR" "$REFERENCE" "$GO_BIN" \
+                  "(replay) $label" prefix.json ;;
+  esac
+  passed=$saved_passed
+  failed=$saved_failed
+  return 1
+}
+
+# Each document targets a distinct corner of the class. They are single-quoted
+# so the backslashes stay literal, and they are written with `printf '%s'`
+# rather than `printf "$doc"` — bash's own printf decodes \uXXXX, which would
+# quietly feed the sweep the DECODED character and test nothing.
+sweep_docs=(
+  # the reported bug: a plain BMP escape inside a value, truncated mid-document.
+  # `layer` is an enum, so once it parses the decoded value is echoed back in the
+  # error prose — a mis-decode changes the message, not just the offset.
+  'plain-bmp|{"layer":"a\u0041b","entity":"ab"}'
+  # a surrogate PAIR. The bound governs the low half independently of the high
+  # one, and the pair is combined only when the second escape decodes.
+  'surrogate-pair|{"layer":"\ud800\udc00"}'
+  # a lone high surrogate followed by an ordinary character: it decodes, does
+  # not combine, and must still reach the unterminated path at the right offset.
+  'lone-surrogate|{"layer":"\ud800x"}'
+  # an escape that decodes INTO a valid enum member, so a wrong decode flips the
+  # schema verdict rather than only the error text.
+  'escape-to-enum|{"layer":"\u0075nit","entity":"ab"}'
+  # nested, and with hex digits that are not hex — the other route to the same
+  # message, reported at the same offset.
+  'nested-bad-hex|["\u0041",{"k":"\uZZZZ"}]'
+  # a document that is fully VALID once complete, so the sweep also walks the
+  # success path out the far end instead of only comparing error prose.
+  'valid-tail|{"entity":"\u004Fx","action":"go","behavior":"abcdefghijklmno","layer":"unit"}'
+)
+
+for entry in "${sweep_docs[@]}"; do
+  sweep_prefixes "sweep stdin text: ${entry%%|*}" "${entry#*|}" stdin-text
+  sweep_prefixes "sweep stdin json: ${entry%%|*}" "${entry#*|}" stdin-json
+  sweep_prefixes "sweep file:       ${entry%%|*}" "${entry#*|}" file
+done
+
+# --------------------------------------------------------------------------- #
+# 17c. the locale's default codec
+# --------------------------------------------------------------------------- #
+#
+# The THIRD variable in the PYTHONIOENCODING family, and the one nothing here
+# was looking at. CPython derives sys.getfilesystemencoding() — which decodes
+# argv and every directory listing — AND sys.std*.encoding, whenever
+# PYTHONIOENCODING names no codec, from a single default codec that the LOCALE
+# picks. Two claims the port relied on turn out to be properties of this
+# container rather than of CPython:
+#
+#   pyioerrors.go   "an empty PYTHONIOENCODING encoding field means the locale
+#                    default, and the locale default is utf-8"
+#   pyfspath.go     "the filesystem encoding is utf-8/surrogateescape"
+#
+# Both are false under `PYTHONUTF8=0 LC_ALL=C`, where all three become `ascii`
+# with nothing in PYTHONIOENCODING set at all — so the gate in section 15f
+# ("the ENCODING half of PYTHONIOENCODING") cannot see it. Measured:
+# `python3 bin/validate-intent --help` DIES there (UnicodeEncodeError on the
+# usage block's em dash, 0 bytes, rc 1) where the port printed 824 clean bytes
+# and exited 0.
+#
+# The port refuses those environments (cmd/validate-intent/pylocale.go). This
+# section pins the same two things section 15f ("the ENCODING half of
+# PYTHONIOENCODING") pins for its own variable:
+#
+#   1. THE PREMISE, python3 against python3 — the environments this refuses must
+#      genuinely change the reference's own answer, or the refusal has become
+#      over-refusal and nothing else here would notice; and
+#   2. THE OVER-REFUSAL DIRECTION — the environments it accepts are still
+#      compared byte-for-byte, including the C locale and several spellings of a
+#      UTF-8 one, so closing the hole did not close it too far.
+#
+# The gate is a WHITELIST and is knowingly wider than CPython's rule, because
+# CPython's rule is libc's `nl_langinfo(CODESET)` for a locale that may or may
+# not be installed — unanswerable from a cgo-free Go binary. It therefore
+# refuses some environments CPython would have answered (`PYTHONUTF8=0` with a
+# real UTF-8 locale is the main one). Those are visible exit 2s, which is the
+# direction this gate is allowed to be wrong in;
+# cmd/validate-intent/pylocale_test.go runs the same matrix against python3 and
+# fails on an UNDER-refusal only.
+echo
+echo "== 17c. the locale's default codec =="
+
+# assert_refusal_envs <label> <"VAR=V VAR=V ..."> [args...] — a refusal that
+# needs SEVERAL variables. PYTHONUTF8 alone does not select a non-UTF-8 codec; it
+# hands the choice to the locale, so the halves have to be set together to reach
+# the row that matters. The assignments are deliberately word-split (no locale
+# name or codec name here contains a space).
+#
+# `env -i` — a PRISTINE environment, not the harness's own. This is the one place
+# in the file where inheriting the caller's LANG changes the answer rather than
+# merely being untidy: PEP 538's C-locale coercion is skipped when LC_ALL is set
+# and applied otherwise, so `LC_CTYPE=C` on top of an ambient `LANG=C.UTF-8`
+# resolves to utf-8 while the same variable in an empty environment does not.
+# PATH is restored because python3 and the port both need it; it carries no
+# codec.
+assert_refusal_envs() {
+  local label="$1" assignments="$2"
+  shift 2
+  local rc=0
+  # shellcheck disable=SC2086
+  (cd "$REPO_ROOT" && env -i PATH="$PATH" $assignments "$GO_BIN" "$@" </dev/null \
+     >"$WORK/go.out" 2>"$WORK/go.err") || rc=$?
+  _refusal_verdict "$label ($assignments)" "$rc"
+}
+
+# (1) THE PREMISE. Ask python3 what its default codec actually is in each
+# environment this refuses, and require that it is NOT utf-8 — i.e. that the
+# refusal is declining a real divergence rather than a hypothetical one.
+#
+# os.write to the raw fd rather than print(), for the same reason as section 15f
+# ("the ENCODING half of PYTHONIOENCODING"): the probe runs under the very codec
+# it is reporting.
+# The three rows below are the environments this section then asserts a refusal
+# for. A fourth shape — `PYTHONUTF8=0 LC_CTYPE=C` with no PYTHONCOERCECLOCALE —
+# is deliberately NOT here, and finding out why is what these rows are for: PEP
+# 538's C-locale coercion rewrites LC_CTYPE to C.UTF-8, and it is SKIPPED when
+# LC_ALL is set and applied otherwise. So `LC_ALL=C` gives ascii while the same
+# locale named through LC_CTYPE or LANG gives utf-8. The port refuses both (it
+# refuses PYTHONUTF8=0 outright), which makes the second an OVER-refusal — the
+# direction this gate is allowed to be wrong in, and one this premise loop must
+# not claim is a real divergence.
+locale_premise_checked=0
+for assignments in "PYTHONUTF8=0 LC_ALL=C" \
+                   "PYTHONUTF8=0 LC_ALL=POSIX" \
+                   "PYTHONUTF8=0 PYTHONCOERCECLOCALE=0 LC_CTYPE=C"; do
+  # shellcheck disable=SC2086
+  read -r fs_enc fs_err out_enc <<<"$(env -i PATH="$PATH" $assignments "$PYTHON" -c \
+    'import os, sys; os.write(1, ("%s %s %s\n" % (sys.getfilesystemencoding(), sys.getfilesystemencodeerrors(), sys.stdout.encoding)).encode("ascii"))' </dev/null)"
+  locale_premise_checked=$((locale_premise_checked + 1))
+  if [ "$fs_enc" = "utf-8" ] && [ "$out_enc" = "utf-8" ] && [ "$fs_err" = "surrogateescape" ]; then
+    failed=$((failed + 1))
+    red "  FAIL  $assignments — CPython's default codec IS utf-8 here"
+    printf '        cmd/validate-intent/pylocale.go refuses this environment. If the\n'
+    printf '        reference no longer diverges in it, the refusal has outlived its\n'
+    printf '        reason and has become pure over-refusal.\n'
+  else
+    passed=$((passed + 1))
+    printf '  ok    %s makes CPython use %s/%s (stdout %s) — the refusal is real\n' \
+      "$assignments" "$fs_enc" "$fs_err" "$out_enc"
+  fi
+done
+if [ "$locale_premise_checked" -eq 0 ]; then
+  failed=$((failed + 1))
+  red "  FAIL  the premise loop probed no environments — this section proved nothing"
+fi
+
+# The reference genuinely dies on --help there, which is the sharpest statement
+# of "these are not the same run". Asserted rather than described, because it is
+# the measurement that decided the gate sits ABOVE the --help check in main.go.
+help_rc=0
+(env -i PATH="$PATH" PYTHONUTF8=0 LC_ALL=C \
+   "$PYTHON" "$REFERENCE" --help >"$WORK/py.out" 2>"$WORK/py.err") || help_rc=$?
+if [ "$help_rc" -eq 0 ] || [ -s "$WORK/py.out" ]; then
+  failed=$((failed + 1))
+  red "  FAIL  PYTHONUTF8=0 LC_ALL=C: the reference answered --help (rc $help_rc, $(wc -c <"$WORK/py.out") bytes)"
+  printf '        main.go puts the locale gate ABOVE its --help check on the measurement\n'
+  printf '        that it does NOT. If that changed, the ordering should be revisited.\n'
+else
+  passed=$((passed + 1))
+  printf '  ok    PYTHONUTF8=0 LC_ALL=C kills the reference on --help (rc %s, 0 bytes)\n' "$help_rc"
+fi
+
+# (2) THE REFUSAL, in every mode and both renderers. A gate that reads the mode
+# is a gate that can be re-scoped to one of them again — which is exactly what
+# happened to the handler gate in round 4.
+assert_refusal_envs "non-UTF-8 locale, stdin" \
+  "PYTHONUTF8=0 LC_ALL=C" -
+assert_refusal_envs "non-UTF-8 locale, stdin --json" \
+  "PYTHONUTF8=0 LC_ALL=C" - --json
+assert_refusal_envs "non-UTF-8 locale, adopter" \
+  "PYTHONUTF8=0 LC_ALL=C" 'examples/*.json'
+assert_refusal_envs "non-UTF-8 locale, adopter --json" \
+  "PYTHONUTF8=0 LC_ALL=POSIX" --json 'examples/*.json'
+assert_refusal_envs "non-UTF-8 locale, --source" \
+  "PYTHONUTF8=0 PYTHONCOERCECLOCALE=0 LC_CTYPE=C" --source 'examples/sources/*'
+assert_refusal_envs "non-UTF-8 locale, self-test" \
+  "PYTHONUTF8=0 PYTHONCOERCECLOCALE=0 LANG=C"
+assert_refusal_envs "non-UTF-8 locale, --help" \
+  "PYTHONUTF8=0 LC_ALL=C" --help
+# --version too, and this one is the case that would go red if someone hoisted
+# it above the gates. It is the ONE surface with no reference behaviour at all
+# (excluded group 4), so the argument for answering it here is real and is
+# written out at its call site in main.go; the decision is that these gates
+# refuse the PROCESS rather than a mode, so nothing answers from inside an
+# environment the port has just declared unreproducible. Pinned so that changing
+# it has to be a deliberate edit with its own reason.
+assert_refusal_envs "non-UTF-8 locale, --version" \
+  "PYTHONUTF8=0 LC_ALL=C" --version
+assert_refusal_env "unreproducible encoding (latin-1), --version" \
+  PYTHONIOENCODING=latin-1 --version
+assert_refusal_env "a locale naming a non-UTF-8 codeset" \
+  LC_ALL=en_US.ISO-8859-1 'examples/*.json'
+assert_refusal_env "a locale naming no codeset at all" \
+  LC_ALL=en_US 'examples/*.json'
+# CPython refuses to START on this one (rc 1, before the reference's first
+# line). An acknowledged NON-parity, the same shape as PYTHONIOENCODING=bogus:
+# neither side produces a report, so no consumer is handed a wrong answer.
+assert_refusal_env "a PYTHONUTF8 value CPython will not start on" \
+  PYTHONUTF8=2 'examples/*.json'
+
+# (3) THE OVER-REFUSAL DIRECTION. Everything the gate accepts is still compared
+# byte-for-byte. Without these, tightening the gate to "refuse everything" would
+# leave every assertion above green.
+for locale_spec in "LC_ALL=C" "LC_ALL=POSIX" "LC_ALL=C.UTF-8" "LC_ALL=C.utf8" \
+                   "LANG=C.UTF-8" "LC_CTYPE=C.UTF-8" "PYTHONUTF8=1"; do
+  PARITY_ENV="$locale_spec"
+  compare "$locale_spec is answered, not refused (adopter --json)" \
+    --json 'examples/invalid/*.json'
+  compare_help "$locale_spec is answered, not refused (--help)" --help
+  # ...and the Go-only flag, which no comparison can cover: the reference reads
+  # `--version` as a filename. Without this the accepted half of the gate would
+  # be proven only for surfaces the reference also has, and a gate that had
+  # tightened to refuse `--version` everywhere would stay green. PARITY_ENV is
+  # still set here, deliberately — that is the whole assertion.
+  assert_version_line_in "$REPO_ROOT" "$GO_BIN" \
+    "$locale_spec answers --version" --version
+  PARITY_ENV=""
+done
+# PYTHONUTF8=1 with a locale that would otherwise be refused: UTF-8 mode wins,
+# and the port must follow it rather than reading the locale it overrode.
+PARITY_ENV="PYTHONUTF8=1"
+compare "UTF-8 mode forced on is answered (badly-named files, --json)" \
+  --json "$BAD_DIR/*.json"
+PARITY_ENV=""
+
+# --------------------------------------------------------------------------- #
 # 18. the reference is untouched
 # --------------------------------------------------------------------------- #
 #
@@ -2296,7 +4110,7 @@ assert_pattern_refusal 'backreference' \
 # reviewed change to the reference leaves this green; an edit made to get out of
 # a red run does not.
 echo
-echo "== the oracle is unmodified =="
+echo "== 18. the oracle is unmodified =="
 if command -v git >/dev/null 2>&1 && git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
   dirty="$(git -C "$REPO_ROOT" status --porcelain -- bin/validate-intent tests/test_validate_intent.py)"
   if [ -n "$dirty" ]; then
@@ -2335,7 +4149,7 @@ fi
 # were not verified, because the one thing this harness must never do is report
 # a green on behalf of a leg that never ran.
 echo
-echo "== the Ruby leg (specguard-lint vs. the port) =="
+echo "== 19. the Ruby leg (specguard-lint vs. the port) =="
 RUBY_LEG="$REPO_ROOT/tests/parity/run_ruby_parity.sh"
 if [ ! -x "$RUBY_LEG" ]; then
   failed=$((failed + 1))

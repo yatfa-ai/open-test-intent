@@ -20,12 +20,15 @@ import (
 // SchemaPath does is what makes a Go binary built into bin/ resolve the same
 // fixture globs the Python script does — and therefore what lets the self-test
 // output be compared byte for byte.
+//
+// Decoded for the same reason SchemaPath decodes: the fixture paths this root
+// is joined onto are printed, relative to it, on every PASS/FAIL line.
 func RepoRoot() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Dir(filepath.Dir(exe)), nil
+	return filepath.Dir(filepath.Dir(pyFSDecodeString(exe))), nil
 }
 
 // selfTestSourceFixture is the port of `_self_test_source_fixture`
@@ -39,11 +42,11 @@ func selfTestSourceFixture(path, root string, schema *Schema, expectValid bool) 
 	rel := relTo(root, path)
 	findings, readError := CheckSourceFile(path, schema)
 	if readError != "" {
-		fmt.Printf("FAIL  %s — %s\n", rel, readError)
+		pyPrintf("FAIL  %s — %s\n", rel, readError)
 		return false
 	}
 	if len(findings) == 0 {
-		fmt.Printf("FAIL  %s — no @intent annotations extracted\n", rel)
+		pyPrintf("FAIL  %s — no @intent annotations extracted\n", rel)
 		return false
 	}
 
@@ -52,7 +55,7 @@ func selfTestSourceFixture(path, root string, schema *Schema, expectValid bool) 
 		where := fmt.Sprintf("%s:%d", rel, finding.Line)
 		if finding.Valid == expectValid {
 			if expectValid {
-				fmt.Printf("PASS  %s\n", where)
+				pyPrintf("PASS  %s\n", where)
 				continue
 			}
 			// The reference's `problem or (errors[0] if errors else "invalid")`.
@@ -64,7 +67,7 @@ func selfTestSourceFixture(path, root string, schema *Schema, expectValid bool) 
 					detail = "invalid"
 				}
 			}
-			fmt.Printf("PASS  %s (correctly rejected — %s)\n", where, detail)
+			pyPrintf("PASS  %s (correctly rejected — %s)\n", where, detail)
 			continue
 		}
 		matched = false
@@ -73,12 +76,12 @@ func selfTestSourceFixture(path, root string, schema *Schema, expectValid bool) 
 			if finding.Problem != "" {
 				suffix = " (" + finding.Problem + ")"
 			}
-			fmt.Printf("FAIL  %s — unexpectedly invalid%s\n", where, suffix)
+			pyPrintf("FAIL  %s — unexpectedly invalid%s\n", where, suffix)
 			for _, err := range finding.Errors {
-				fmt.Printf("        -> %s\n", err)
+				pyPrintf("        -> %s\n", err)
 			}
 		} else {
-			fmt.Printf("FAIL  %s — unexpectedly valid\n", where)
+			pyPrintf("FAIL  %s — unexpectedly valid\n", where)
 		}
 	}
 	return matched
@@ -160,14 +163,14 @@ func RunSelfTest(schema *Schema) int {
 		valid, errs, parseError, _ := CheckFile(path, schema)
 		switch {
 		case parseError != "":
-			fmt.Printf("FAIL  %s — unexpectedly invalid (%s)\n", rel, parseError)
+			pyPrintf("FAIL  %s — unexpectedly invalid (%s)\n", rel, parseError)
 			mismatches++
 		case valid:
-			fmt.Printf("PASS  %s\n", rel)
+			pyPrintf("PASS  %s\n", rel)
 		default:
-			fmt.Printf("FAIL  %s — unexpectedly invalid\n", rel)
+			pyPrintf("FAIL  %s — unexpectedly invalid\n", rel)
 			for _, err := range errs {
-				fmt.Printf("        -> %s\n", err)
+				pyPrintf("        -> %s\n", err)
 			}
 			mismatches++
 		}
@@ -181,12 +184,12 @@ func RunSelfTest(schema *Schema) int {
 		switch {
 		case parseError != "":
 			// Malformed JSON is a rejection too — but flag it so it's visible.
-			fmt.Printf("PASS  %s (correctly rejected — %s)\n", rel, parseError)
+			pyPrintf("PASS  %s (correctly rejected — %s)\n", rel, parseError)
 		case valid:
-			fmt.Printf("FAIL  %s — unexpectedly valid\n", rel)
+			pyPrintf("FAIL  %s — unexpectedly valid\n", rel)
 			mismatches++
 		default:
-			fmt.Printf("PASS  %s (correctly invalid)\n", rel)
+			pyPrintf("PASS  %s (correctly invalid)\n", rel)
 		}
 	}
 
@@ -204,7 +207,7 @@ func RunSelfTest(schema *Schema) int {
 		}
 	}
 
-	fmt.Printf("\n%d/%d fixtures matched expectation.\n", checked-mismatches, checked)
+	pyPrintf("\n%d/%d fixtures matched expectation.\n", checked-mismatches, checked)
 	if mismatches == 0 {
 		return 0
 	}
