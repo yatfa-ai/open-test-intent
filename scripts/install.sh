@@ -108,7 +108,7 @@
 # having loaded the schema perfectly well; adopter and --source modes want a
 # FILE. Carrying a fixture inside the installer to reach that code path is a
 # larger decision than this script, so the fallback stays covered where it is
-# already covered end to end — tests/cross/run_cross_build.sh:266-287, which
+# already covered end to end — tests/cross/run_cross_build.sh:298-319, which
 # asserts the installed prefix has no schemas/ on disk and THEN runs a real
 # fixture through the installed binary. Do not restore the claim here without
 # restoring a check to go with it.

@@ -143,6 +143,38 @@ ok()   { passed=$((passed + 1)); green "  PASS  $*"; }
 bad()  { failed=$((failed + 1)); red   "  FAIL  $*"; }
 
 # --------------------------------------------------------------------------- #
+# preflight: the corpus
+# --------------------------------------------------------------------------- #
+#
+# The installed-layout section below asserts each BAD_FIXTURES entry exits 1.
+# The validator ALSO exits 1 for a path it cannot find ("error: no file(s)
+# match ..."), so that assertion cannot tell a rejected document from an absent
+# one: rename a fixture and the harness prints `PASS ... exits 1`, increments
+# the score, and exits 0 having read nothing. The expect-0 and expect-2
+# assertions self-guard on that axis for free — only the expect-1 loop is blind,
+# which is why the corpus is asserted to exist before it is asserted to be
+# rejected. GOOD_FIXTURE rides along: cheap, and it turns that assertion's
+# incidental red into a diagnostic that names the missing file.
+#
+# exit 2, not bad(): a fixture that is not on disk was never checked, and bad()
+# would report "checked and wrong" for something nothing looked at. Deliberately
+# ahead of the four cross-compiles, and before the cd, so $REPO_ROOT-relative
+# names still read as written.
+#
+# The lists above are character-identical to the ones restated in
+# scripts/build-release.sh, which guards them the same way; nothing enforces
+# that, and drift is silent in both directions.
+for fixture in "$GOOD_FIXTURE" "${BAD_FIXTURES[@]}"; do
+  if [ ! -f "$REPO_ROOT/$fixture" ]; then
+    red "error: $fixture is named in this script's corpus and is not in the checkout."
+    red "       The validator exits 1 for a path it cannot find, which an 'expect 1'"
+    red "       assertion below could read as a legitimate verdict."
+    red "       The installed-layout claim was NOT checked."
+    exit 2
+  fi
+done
+
+# --------------------------------------------------------------------------- #
 # preflight: the toolchain
 # --------------------------------------------------------------------------- #
 if ! command -v "$GO" >/dev/null 2>&1; then
