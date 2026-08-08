@@ -28,6 +28,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	opentestintent "github.com/yatfa-ai/open-test-intent"
 )
 
 // --------------------------------------------------------------------------- //
@@ -117,12 +119,17 @@ func TestResolveVersionIsNeverEmpty(t *testing.T) {
 
 // versionLineRE is the shape a consumer can rely on:
 //
-//	validate-intent <identity> (<goversion> <goos>/<goarch>)
+//	validate-intent <identity> (<goversion> <goos>/<goarch>) schema sha256:<hex>
 //
 // The identity group deliberately excludes whitespace and the closing paren, so
 // an empty or multi-token identity fails the match rather than parsing into
 // something plausible.
-var versionLineRE = regexp.MustCompile(`^validate-intent (\S+) \((go\S+) (\S+)/(\S+)\)$`)
+//
+// The digest group is `[0-9a-f]{64}` rather than `\S+` for the same reason: a
+// truncated, uppercased or templated digest is a wrong answer to the one
+// question this token exists to answer, and it must fail the match rather than
+// be captured and then compared as an equally-wrong string.
+var versionLineRE = regexp.MustCompile(`^validate-intent (\S+) \((go\S+) (\S+)/(\S+)\) schema sha256:([0-9a-f]{64})$`)
 
 func TestVersionLineShape(t *testing.T) {
 	line := VersionLine()
@@ -141,8 +148,52 @@ func TestVersionLineShape(t *testing.T) {
 		t.Errorf("VersionLine() reports %s/%s, want %s/%s",
 			match[3], match[4], runtime.GOOS, runtime.GOARCH)
 	}
+	// The point of the token: it must be the digest of the schema this binary
+	// carries, not merely 64 hex characters. schema_test.go holds
+	// SchemaSHA256 itself to the embedded bytes and to the canonical pin, so
+	// this one comparison inherits both.
+	if match[5] != opentestintent.SchemaSHA256() {
+		t.Errorf("VersionLine() reports schema digest %q, the embedded schema digests to %q",
+			match[5], opentestintent.SchemaSHA256())
+	}
 	if strings.Contains(line, "\n") {
 		t.Errorf("VersionLine() = %q — it must be one line, with the newline added by the caller", line)
+	}
+}
+
+// The budget the line has to fit in, and it belongs to a different repository.
+//
+// specguard-rspec's identity probe (lib/specguard/rspec/validator_backend.rb)
+// shells out to `--version` to name which implementation produced a run's
+// verdicts, and DISCARDS the answer if it is not one renderable line under
+// IDENTITY_MAX_BYTES = 200. Discards it silently — the run still succeeds, with
+// the identity simply absent — so a line that outgrew the budget would not fail
+// anything here, or there: it would quietly stop being reported, which is the
+// vacuous shape this project keeps naming.
+//
+// The worst case is derived from the real line rather than re-stating the format
+// string, so this cannot pass while VersionLine's format drifts underneath it.
+// Fixed overhead is everything except the identity token; the longest identity
+// resolveVersion can produce from a plain build is a 40-hex VCS revision from a
+// modified tree.
+func TestVersionLineFitsTheGemsIdentityBudget(t *testing.T) {
+	// validator_backend.rb's IDENTITY_MAX_BYTES. Changing it there without
+	// changing it here is caught by nothing; the constant is repeated with its
+	// source named so the two can at least be found together.
+	const identityMaxBytes = 200
+
+	line := VersionLine()
+	if len(line) > identityMaxBytes {
+		t.Errorf("VersionLine() is %d bytes, over specguard-rspec's %d-byte identity budget:\n  %s",
+			len(line), identityMaxBytes, line)
+	}
+
+	overhead := len(line) - len(VersionString())
+	worst := overhead + 40 + len(dirtySuffix)
+	if worst > identityMaxBytes {
+		t.Errorf("a plain build from a modified tree would report %d bytes, over specguard-rspec's %d-byte "+
+			"identity budget — its probe would drop the identity rather than fail, so nothing else would say so",
+			worst, identityMaxBytes)
 	}
 }
 

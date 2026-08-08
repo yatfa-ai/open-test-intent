@@ -85,6 +85,49 @@ func TestEmbeddedSchemaIsTheCanonicalFile(t *testing.T) {
 	}
 }
 
+// What `validate-intent --version` reports, and the reason it can be believed.
+//
+// SchemaSHA256 exists so an INSTALLED artifact can name the contract it carries
+// (see the function's own comment for why no existing guard can). That answer is
+// only worth having if it is genuinely a fold of the embedded bytes, so this
+// asserts it against a digest computed here, in the test, from SchemaJSON() —
+// and then against the same pin every other copy of this contract is held to.
+//
+// The first comparison is the load-bearing one. A SchemaSHA256 that had drifted
+// into reporting a stored constant, a digest of a different asset, or a digest
+// of the on-disk file would satisfy the pin check alone on a clean tree and
+// start lying the moment the two diverged, which is precisely the moment anyone
+// asks.
+func TestSchemaSHA256DigestsTheEmbeddedBytes(t *testing.T) {
+	reported := SchemaSHA256()
+
+	if got := digest(SchemaJSON()); reported != got {
+		t.Errorf("SchemaSHA256 is not the digest of SchemaJSON()\n  reported: %s\n  actual:   %s\n"+
+			"--version reports this value as the contract the binary carries; it must be "+
+			"computed from the embedded bytes and nothing else.",
+			reported, got)
+	}
+
+	if reported != CanonicalV1SHA256 {
+		t.Errorf("the schema compiled into this binary is not the reviewed one\n  want: %s\n  got:  %s",
+			CanonicalV1SHA256, reported)
+	}
+
+	// Lowercase hex of exactly 32 bytes. The version line is parsed as text by
+	// tests/parity/run_parity.sh and by scripts/install.sh's caller, and an
+	// uppercase or truncated rendering would compare unequal against every other
+	// pin of this same contract while naming the same bytes.
+	if len(reported) != 64 {
+		t.Errorf("SchemaSHA256 returned %d characters, want 64: %q", len(reported), reported)
+	}
+	for _, r := range reported {
+		if !(r >= '0' && r <= '9') && !(r >= 'a' && r <= 'f') {
+			t.Errorf("SchemaSHA256 returned a non-lowercase-hex character %q in %q", r, reported)
+			break
+		}
+	}
+}
+
 // A fresh copy per call, so a caller decoding in place cannot corrupt the copy
 // the next caller receives. The embedded asset is process-wide and every mode
 // of the validator loads it through this one accessor.

@@ -615,7 +615,11 @@ cat > "$WORK/help-trailer.expected" <<'TRAILER'
 Go port only — the Python reference has no such flag:
 
        --version   print this binary's identity (name, version, Go toolchain
-                   and target) on stdout and exit 0.
+                   and target) followed by the SHA-256 of the schema compiled
+                   into it, on stdout, and exit 0. The digest names the
+                   contract this artifact CARRIES; a schema file found beside
+                   the binary wins over the compiled-in copy at validation
+                   time, so it is not a claim about what a given run enforced.
 TRAILER
 
 # compare_help <label> [args...] — for invocations where --help wins and the
@@ -1442,7 +1446,7 @@ assert_not_refused "recursive glob, bare, is implemented" '**'
 # and a non-empty stdout, so it fails all three by design. This is the inverted
 # counterpart.
 #
-# It checks four things, and the fourth is the one that matters:
+# It checks five things, and the last two are the ones that matter:
 #
 #   * exit 0 — the whole point of the flag. Before slice 6 (SPGD-141) this
 #     surface exited 1, the code the contract reserves for "at least one
@@ -1450,7 +1454,7 @@ assert_not_refused "recursive glob, bare, is implemented" '**'
 #     installed"` reported a content failure for a tool failure;
 #   * stderr empty — a version report is not a diagnostic;
 #   * stdout is exactly ONE line, matching
-#     `validate-intent <identity> (<goversion> <goos>/<goarch>)`;
+#     `validate-intent <identity> (<goversion> <goos>/<goarch>) schema sha256:<hex>`;
 #   * the IDENTITY is the right one. Not merely "non-empty" — an assertion that
 #     the line is non-blank would pass on `validate-intent  (go1.22 linux/amd64)`
 #     and on a binary reporting an unexpanded build template, which is this
@@ -1459,12 +1463,32 @@ assert_not_refused "recursive glob, bare, is implemented" '**'
 #     of this file), so tier 2 of resolveVersion applies and the identity must
 #     be exactly the HEAD revision git reports, optionally suffixed `-dirty`.
 #     That makes every run of this harness a live exercise of the VCS fallback
-#     rather than a one-off claim made once at review time.
+#     rather than a one-off claim made once at review time;
+#   * the SCHEMA DIGEST is the right one, held to the same standard for the same
+#     reason. "64 hex characters" is the version-number defect one field to the
+#     right: a digest of the wrong file, of a stale embed, or of an empty asset
+#     is 64 hex characters and answers the one question this token exists to
+#     answer with a plausible lie. It is compared against the SHA-256 of
+#     $REPO_ROOT/schemas/open-test-intent.v1.json — the canonical contract this
+#     build was made from.
+#
+# Why $REPO_ROOT and not the cwd this function is handed. The three call sites
+# pass three different working directories, and two of them would make a
+# cwd-relative read of schemas/open-test-intent.v1.json actively wrong: from `/`
+# (the install-prefix case) there is no such file, and from
+# $versionbadschema_root there is one and it is DELIBERATELY CORRUPT. Reading it
+# there would assert the binary reports the digest of a file it must not have
+# read — inverting the check into a guarantee of failure.
+#
+# That third site is the gift, and it is used rather than tolerated: it is the
+# one tree where the on-disk schema exists and cannot be loaded, so a reported
+# digest that still equals the CANONICAL one is direct positive evidence that
+# the answer came from the embedded copy with no disk access at all.
 #
 # Where the expectation cannot be computed — no git, or not a checkout, which is
 # the extracted-tarball case where resolveVersion's third tier legitimately
-# answers `unknown` — the revision check degrades to "non-empty and not a
-# placeholder" and says so, rather than silently asserting less.
+# answers `unknown`; or no SHA-256 tool on PATH — the affected check degrades to
+# shape only and says so, rather than silently asserting less.
 echo
 echo "== --version reports an identity (Go only) =="
 
@@ -1475,6 +1499,32 @@ fi
 if [ -z "$want_identity" ]; then
   dim "note: not a git checkout — --version's identity is checked for shape only,"
   dim "      not against a revision (resolveVersion's third tier applies here)"
+fi
+
+# The canonical contract's digest, computed the same way scripts/install.sh
+# computes one: sha256sum (GNU coreutils) or shasum -a 256 (BSD/macOS), in that
+# order, because a stock macOS has no sha256sum and many minimal Linux images
+# have no shasum. The result is validated as 64 lowercase hex before it is
+# trusted as an expectation — an expectation silently set to "" would turn the
+# comparison below into no comparison at all.
+canonical_schema="$REPO_ROOT/schemas/open-test-intent.v1.json"
+want_schema=""
+if [ -r "$canonical_schema" ]; then
+  if command -v sha256sum >/dev/null 2>&1; then
+    want_schema="$(sha256sum "$canonical_schema" 2>/dev/null || true)"
+  elif command -v shasum >/dev/null 2>&1; then
+    want_schema="$(shasum -a 256 "$canonical_schema" 2>/dev/null || true)"
+  fi
+  want_schema="${want_schema%% *}"
+  case "$want_schema" in
+    *[!0-9a-f]*|"") want_schema="" ;;
+  esac
+  [ "${#want_schema}" -eq 64 ] || want_schema=""
+fi
+if [ -z "$want_schema" ]; then
+  dim "note: no SHA-256 tool on PATH (neither sha256sum nor shasum), or"
+  dim "      schemas/open-test-intent.v1.json is unreadable — --version's schema"
+  dim "      digest is checked for shape only, not against the canonical contract"
 fi
 
 # assert_version_line_in <cwd> <bin> <label> [args...]
@@ -1495,10 +1545,11 @@ assert_version_line_in() {
   count="$(wc -l < "$WORK/go.out" | tr -d ' ')"
   [ "$count" = "1" ] || problems+=("stdout: want exactly one line, got $count")
 
-  local line identity
+  local line identity schema
   line="$(head -1 "$WORK/go.out")"
-  if [[ "$line" =~ ^validate-intent\ ([^[:space:]]+)\ \(go[^[:space:]]+\ [^[:space:]/]+/[^[:space:]/]+\)$ ]]; then
+  if [[ "$line" =~ ^validate-intent\ ([^[:space:]]+)\ \(go[^[:space:]]+\ [^[:space:]/]+/[^[:space:]/]+\)\ schema\ sha256:([0-9a-f]{64})$ ]]; then
     identity="${BASH_REMATCH[1]}"
+    schema="${BASH_REMATCH[2]}"
     case "$identity" in
       *'$'*|*'{'*|*'}'*|*'%!'*)
         problems+=("identity '$identity' looks like an unexpanded build template") ;;
@@ -1508,8 +1559,11 @@ assert_version_line_in() {
        && [ "$identity" != "$want_identity-dirty" ]; then
       problems+=("identity: want '$want_identity' (optionally '-dirty'), got '$identity'")
     fi
+    if [ -n "$want_schema" ] && [ "$schema" != "$want_schema" ]; then
+      problems+=("schema digest: want '$want_schema' (schemas/open-test-intent.v1.json), got '$schema'")
+    fi
   else
-    problems+=("stdout: '$line' is not 'validate-intent <identity> (<goversion> <goos>/<goarch>)'")
+    problems+=("stdout: '$line' is not 'validate-intent <identity> (<goversion> <goos>/<goarch>) schema sha256:<hex>'")
   fi
 
   if [ ${#problems[@]} -eq 0 ]; then
@@ -1586,6 +1640,14 @@ assert_version_line_in "/" "$installprefix/bin/validate-intent" \
 # This one is a Go-side assertion rather than a comparison because Python has no
 # --version to compare against. The reference's behaviour on this tree is
 # already pinned, as a comparison, in section 8 ("OS-level failures").
+#
+# Since SPGD-290 this case carries a second proof at no extra cost. The line now
+# reports the SHA-256 of the schema the binary carries, and assert_version_line_in
+# compares it against $REPO_ROOT's canonical file — so on THIS tree, where the
+# on-disk schema exists, is a different file, and cannot even be parsed, a pass
+# says the digest was computed from the embedded copy and the corrupt file beside
+# the binary was never opened. A digest read from disk here could not match, and
+# a digest read from disk anywhere else would not be a claim about the artifact.
 versionbadschema_root="$WORK/version-badschema"
 mkdir -p "$versionbadschema_root/bin" "$versionbadschema_root/schemas"
 cp "$GO_BIN" "$versionbadschema_root/bin/validate-intent"
