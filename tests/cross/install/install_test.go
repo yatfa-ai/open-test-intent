@@ -1256,7 +1256,7 @@ func TestUsageReportsTheDefaultPrefixItActuallyUses(t *testing.T) {
 // `--version` is answered and returned above cmd/validate-intent's LoadSchema()
 // call, so a real artifact answers it without ever loading a schema. The
 // fallback on a bare prefix is checked end to end by
-// tests/cross/run_cross_build.sh:266-287, which asserts the installed prefix has
+// tests/cross/run_cross_build.sh:298-319, which asserts the installed prefix has
 // no schemas/ and then runs a real fixture through the installed binary.
 //
 // Skipped under -short because it cross-compiles four targets. It is not skipped

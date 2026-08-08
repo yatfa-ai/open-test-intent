@@ -167,8 +167,8 @@ bad()  { failed=$((failed + 1)); red   "  FAIL  $*"; }
 for fixture in "$GOOD_FIXTURE" "${BAD_FIXTURES[@]}"; do
   if [ ! -f "$REPO_ROOT/$fixture" ]; then
     red "error: $fixture is named in this script's corpus and is not in the checkout."
-    red "       The validator exits 1 for a path it cannot find, which the 'expect 1'"
-    red "       assertions below would read as a legitimate verdict."
+    red "       The validator exits 1 for a path it cannot find, which an 'expect 1'"
+    red "       assertion below could read as a legitimate verdict."
     red "       The installed-layout claim was NOT checked."
     exit 2
   fi
