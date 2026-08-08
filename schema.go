@@ -89,6 +89,13 @@ func SchemaJSON() []byte {
 // consults that decision — it cannot, it does not touch the disk. Anything
 // reporting this digest owes its reader that distinction; see helpTrailer.
 //
+// The distinction is now ANSWERABLE rather than only disclosed: `--schema-source`
+// (cmd/validate-intent/schemasource.go) runs the same LoadSchema a verdict run
+// does and reports the resolved origin plus the digest of the bytes it actually
+// loaded, computed through SHA256Hex below — the same fold this function uses, so
+// the two digests are comparable and a difference between them means the schemas
+// differ rather than the arithmetic does.
+//
 // The digest is recomputed per call rather than cached in a package-level var:
 // over 638 bytes it is far below the cost of the process start that precedes it,
 // and a function that is a pure fold of a compile-time constant has no
@@ -98,6 +105,27 @@ func SchemaJSON() []byte {
 // specguard-rspec pins, so the value this reports is guarded by the check that
 // already existed rather than by a second, independently-drifting claim.
 func SchemaSHA256() string {
-	sum := sha256.Sum256([]byte(schemaJSON))
+	return SHA256Hex([]byte(schemaJSON))
+}
+
+// SHA256Hex is the ONE way this module turns schema bytes into a digest:
+// SHA-256, hex-encoded, lowercase. SchemaSHA256 is its application to the
+// compiled-in copy; cmd/validate-intent applies it to whatever bytes a run
+// actually loaded (LoadSchema in fileio.go, reported by `--schema-source`).
+//
+// It is shared rather than reimplemented at the second call site because those
+// two digests are compared — by an operator, and by any consumer asking whether
+// the schema a run ENFORCED is the schema the artifact CARRIES. Equal bytes must
+// produce equal strings, and two independent folds are two chances to encode
+// them differently (uppercase hex, a truncation, a different digest entirely)
+// and turn "these agree" into "these were printed by different code". A
+// difference must mean the SCHEMAS differ; nothing else.
+//
+// It takes the bytes rather than reading a path on purpose: the caller has
+// already read them, and a function that re-read the file could digest
+// something other than what was loaded — which is the exact failure the
+// enforced-schema report exists to rule out.
+func SHA256Hex(schema []byte) string {
+	sum := sha256.Sum256(schema)
 	return hex.EncodeToString(sum[:])
 }

@@ -16,11 +16,12 @@
 #
 # One surface is a documented superset rather than an equality, and it is the
 # only one: `--help` prints the shared usage block plus a Go-only trailer
-# documenting `--version` (excluded group 5 below). That is not a "close
-# enough" tier either — section 7 ("--help") splits the port's stdout at the
-# reference's exact byte length and requires the shared half to be identical
-# and the trailer to equal a stated expectation. Both halves are compared; the
-# split is where they are compared against different things.
+# documenting `--version` and `--schema-source` (excluded groups 5 and 6
+# below). That is not a "close enough" tier either — section 7 ("--help")
+# splits the port's stdout at the reference's exact byte length and requires
+# the shared half to be identical and the trailer to equal a stated
+# expectation. Both halves are compared; the split is where they are compared
+# against different things.
 #
 # Python is the oracle here, and the port is proven by differential testing
 # against it rather than by a hand-written expectation file that could encode
@@ -56,12 +57,12 @@
 #
 # Excluded cases, and why
 # -----------------------
-# FIVE groups of inputs are deliberately NOT compared against Python. Each is
+# SIX groups of inputs are deliberately NOT compared against Python. Each is
 # excluded for a stated reason, and each is still asserted against on the Go
 # side (see "Go-side refusals" at the bottom) so the exclusion cannot quietly
 # become "untested".
 #
-# (Five, and the arithmetic has never gone in one direction, so it is worth
+# (Six, and the arithmetic has never gone in one direction, so it is worth
 # spelling out: slice 1 listed five, slice 2 retired two of them — see RETIRED
 # EXCLUSIONS below — and slice 1's separate "unsupported schema construct"
 # group folded into group 3 when the `pattern` port landed, which left four.
@@ -69,8 +70,9 @@
 # schema and stopped failing on trees the Python script still cannot run in,
 # which made five; slice 4 (SPGD-123) then retired the recursive-glob group
 # when `**` was implemented, which brought it back to four. Slice 6 (SPGD-141)
-# then ADDED group 5, the `--version` flag, which makes five again. The count is
-# right; it just does not arithmetic down from five in one step.)
+# then ADDED group 5, the `--version` flag, which made five again, and slice 19
+# (SPGD-301) ADDED group 6, `--schema-source`. The count is right; it just does
+# not arithmetic down from five in one step.)
 #
 #   1. Non-UTF-8 input — the PROSE only.
 #      A file whose bytes do not decode raises UnicodeDecodeError in Python, and
@@ -185,6 +187,53 @@
 #      as an exact expectation while still comparing the shared block
 #      byte-for-byte. Section 16 pins what the flag DOES; section 7 pins what
 #      --help SAYS about it. Neither is described without being checked.
+#
+#      That trailer now carries TWO rows — group 6 below is documented in the
+#      same constant, for the same reason and under the same comparison.
+#
+#   6. `--schema-source`.
+#      The second Go-only flag (slice 19, SPGD-301,
+#      cmd/validate-intent/schemasource.go), excluded for exactly the reason
+#      group 5 is: the reference has no such flag and reads it as a filename,
+#      reporting "no file(s) match '--schema-source'" with exit 1.
+#
+#      What it adds is the answer to the hedge group 5's trailer makes. That
+#      trailer has to say the reported digest names the contract the artifact
+#      CARRIES and not the one a run ENFORCED, because `--version` returns above
+#      LoadSchema and cannot know which copy wins. This flag runs the real
+#      loader and reports the resolved origin — an absolute path, or
+#      `<embedded schema>` — plus the SHA-256 of the bytes actually loaded.
+#
+#      The difference is this harness's own normal operating mode, not an edge
+#      case: compare_root and assert_pattern_refusal plant synthetic schemas
+#      beside the binary, so most of the schema coverage in this file runs
+#      against a contract the embedded digest has never seen.
+#
+#      Like group 5 it SUCCEEDS rather than refuses — exit 0, one line on
+#      stdout, nothing on stderr — so assert_refusal cannot cover it either. It
+#      is asserted by assert_schema_source_in in section 16, which pins the
+#      origin AND the digest against a sha256sum/shasum computed here, on three
+#      trees chosen so that the answer must differ between them: the repo (a
+#      real schema beside the binary), an install prefix (no schemas/, so the
+#      embedded copy), and a tree carrying a schema that is valid and DIFFERENT
+#      (where the reported digest must not equal `--version`'s — the whole point
+#      of the flag, and the one assertion a wrong implementation cannot pass by
+#      printing something plausible).
+#
+#      Its FAILURE is not excluded from comparison in spirit: on a tree whose
+#      schema exists and cannot be loaded it must exit 2 with the diagnostic
+#      that is itself compared against python3 in section 8 ("OS-level
+#      failures"). Section 16 asserts that by running the verdict path on the
+#      same tree and requiring the two stderr streams to be byte-identical,
+#      rather than by restating the message here where it could drift.
+#
+#      The crossing with `--help` is not excluded, for the same reason group 5's
+#      is not: the reference's --help loop pre-empts the argument, so both print
+#      usage and it is a real comparison in section 7. The crossing with
+#      `--version` IS Go-side (Python has neither flag) and is asserted in
+#      section 16: `--version` wins, because three external consumers already
+#      parse its output and a new flag must not change what any crossing of the
+#      two prints.
 #
 # RETIRED EXCLUSIONS — slice 2 (SPGD-102) closed two of slice 1's five, and
 # slice 4 (SPGD-123) closed a third:
@@ -581,9 +630,11 @@ compare "near-miss of --source"    --sources 'examples/*.json'
 # The block both implementations share is `usage` (cmd/validate-intent/main.go)
 # and `USAGE` (bin/validate-intent). Appended to it on the --help path — and on
 # no other path — is a Go-only trailer documenting `--version` (excluded group
-# 5, cmd/validate-intent/version.go). The flag is what scripts/install.sh runs
-# to prove the artifact executes on the target host, and on a host holding one
-# binary and no repo, `--help` is the whole documentation set.
+# 5, cmd/validate-intent/version.go) and `--schema-source` (excluded group 6,
+# cmd/validate-intent/schemasource.go). The first is what scripts/install.sh
+# runs to prove the artifact executes on the target host; the second is the only
+# way to ask which schema a run on this host actually enforces. On a host
+# holding one binary and no repo, `--help` is the whole documentation set.
 #
 # compare_help does NOT relax the comparison to accommodate that. It splits the
 # port's stdout at the EXACT byte length of the reference's and holds both
@@ -612,7 +663,7 @@ compare "near-miss of --source"    --sources 'examples/*.json'
 # against a stated expectation rather than a shape.
 cat > "$WORK/help-trailer.expected" <<'TRAILER'
 
-Go port only — the Python reference has no such flag:
+Go port only — the Python reference has no such flags:
 
        --version   print this binary's identity (name, version, Go toolchain
                    and target) followed by the SHA-256 of the schema compiled
@@ -620,6 +671,16 @@ Go port only — the Python reference has no such flag:
                    contract this artifact CARRIES; a schema file found beside
                    the binary wins over the compiled-in copy at validation
                    time, so it is not a claim about what a given run enforced.
+
+       --schema-source
+                   print the schema a run on this host ENFORCES — the resolved
+                   origin (an absolute path, or <embedded schema>) followed by
+                   the SHA-256 of the bytes actually loaded from it — on
+                   stdout, and exit 0. Resolved by the same loader the
+                   validating modes use, so a digest differing from --version's
+                   means a schema beside the binary is winning. Exit 2, with
+                   the usual "could not load schema" diagnostic, if that schema
+                   exists and cannot be loaded.
 TRAILER
 
 # compare_help <label> [args...] — for invocations where --help wins and the
@@ -695,6 +756,17 @@ compare_help "--help wins over a missing file" nope.json -h
 compare_help "--help wins over --version"        --help --version
 compare_help "--help wins over --version (reversed)" --version --help
 compare_help "-h wins over --version"            --version -h
+# The same crossing for the second Go-only surface (excluded group 6). It is
+# worth its own three cases rather than being assumed to follow from the three
+# above: `--schema-source` is answered by a SEPARATE loop in run(), below
+# --version's, so "help wins" is a property of where that loop sits and not of a
+# rule the file applies once. And unlike --version this flag TOUCHES THE DISK —
+# a port that let it win here would not merely print the wrong thing, it would
+# make `--help` fail on a tree whose schema cannot be loaded, which is precisely
+# the tree an adopter reaches for --help on.
+compare_help "--help wins over --schema-source"        --help --schema-source
+compare_help "--help wins over --schema-source (reversed)" --schema-source --help
+compare_help "-h wins over --schema-source"            --schema-source -h
 
 # --------------------------------------------------------------------------- #
 # 8. OS-level failures
@@ -1507,20 +1579,34 @@ fi
 # have no shasum. The result is validated as 64 lowercase hex before it is
 # trusted as an expectation — an expectation silently set to "" would turn the
 # comparison below into no comparison at all.
-canonical_schema="$REPO_ROOT/schemas/open-test-intent.v1.json"
-want_schema=""
-if [ -r "$canonical_schema" ]; then
+# sha256_hex <file> — the file's SHA-256 as 64 lowercase hex, or the empty
+# string when it cannot be computed: no tool on PATH, an unreadable file, or
+# output that is not a digest. Every caller must treat "" as "no expectation
+# available" and say so, because an expectation silently set to "" turns the
+# comparison it feeds into no comparison at all.
+#
+# A function rather than three copies of the same pipeline: this is now used for
+# the canonical contract below and, in the --schema-source section, for two
+# synthetic schemas whose digests must be computed the same way if comparing
+# them is to mean anything.
+sha256_hex() {
+  local file="$1" sum=""
+  [ -r "$file" ] || { printf ''; return; }
   if command -v sha256sum >/dev/null 2>&1; then
-    want_schema="$(sha256sum "$canonical_schema" 2>/dev/null || true)"
+    sum="$(sha256sum "$file" 2>/dev/null || true)"
   elif command -v shasum >/dev/null 2>&1; then
-    want_schema="$(shasum -a 256 "$canonical_schema" 2>/dev/null || true)"
+    sum="$(shasum -a 256 "$file" 2>/dev/null || true)"
   fi
-  want_schema="${want_schema%% *}"
-  case "$want_schema" in
-    *[!0-9a-f]*|"") want_schema="" ;;
+  sum="${sum%% *}"
+  case "$sum" in
+    *[!0-9a-f]*|"") sum="" ;;
   esac
-  [ "${#want_schema}" -eq 64 ] || want_schema=""
-fi
+  [ "${#sum}" -eq 64 ] || sum=""
+  printf '%s' "$sum"
+}
+
+canonical_schema="$REPO_ROOT/schemas/open-test-intent.v1.json"
+want_schema="$(sha256_hex "$canonical_schema")"
 if [ -z "$want_schema" ]; then
   dim "note: no SHA-256 tool on PATH (neither sha256sum nor shasum), or"
   dim "      schemas/open-test-intent.v1.json is unreadable — --version's schema"
@@ -1673,6 +1759,253 @@ else
 fi
 assert_version_line_in "$versionbadschema_root" "$versionbadschema_root/bin/validate-intent" \
   "--version is answered above LoadSchema (unloadable schema present)" --version
+
+# --------------------------------------------------------------------------- #
+# Excluded group 6: --schema-source, the Go-only surface that reads the disk
+# --------------------------------------------------------------------------- #
+#
+# The flag `--version` cannot be: it runs the real loader and reports the schema
+# a run on this host ENFORCES — resolved origin plus the SHA-256 of the bytes
+# actually loaded from it.
+#
+# Three trees, chosen because the correct answer DIFFERS on each, which is what
+# makes this block impossible to satisfy by printing something plausible:
+#
+#   * the repo, where a real schema sits beside the binary — origin is that
+#     path, digest is the canonical contract's;
+#   * an install prefix with no schemas/ — origin is <embedded schema>, digest
+#     EQUALS --version's, which is success criterion 2;
+#   * a tree carrying a valid but DIFFERENT schema — origin is that file, digest
+#     is that file's, and it must NOT equal --version's. That case is the slice:
+#     carried-versus-enforced becomes observable, and an implementation that
+#     reported the compiled-in digest next to the on-disk path fails here and
+#     nowhere else.
+#
+# Both halves of the line are held to a computed expectation. "64 hex
+# characters" would pass for a digest of the wrong file, and an origin checked
+# only for non-emptiness would pass for a binary that printed its own path — the
+# version-number defect one field to the left.
+#
+# Where sha256_hex cannot produce an expectation (no sha256sum and no shasum),
+# the affected check degrades to shape only and says so, rather than silently
+# asserting less. The ORIGIN is still compared in that case: it needs no tool.
+echo
+echo "== --schema-source reports the ENFORCED schema (Go only) =="
+
+# assert_schema_source_in <cwd> <bin> <label> <want-origin> <want-digest> [args...]
+#
+# <want-digest> may be empty, meaning "no expectation available — check the
+# shape only". <want-origin> is always compared.
+assert_schema_source_in() {
+  local cwd="$1" gobin="$2" label="$3" want_origin="$4" want_digest="$5"
+  shift 5
+
+  local rc
+  (cd "$cwd" && "$gobin" "$@" >"$WORK/go.out" 2>"$WORK/go.err")
+  rc=$?
+
+  local problems=()
+  [ "$rc" -eq 0 ] || problems+=("exit code: want 0, got $rc")
+  [ ! -s "$WORK/go.err" ] \
+    || problems+=("stderr: want empty, got '$(head -c 80 "$WORK/go.err")'")
+
+  local count
+  count="$(wc -l < "$WORK/go.out" | tr -d ' ')"
+  [ "$count" = "1" ] || problems+=("stdout: want exactly one line, got $count")
+
+  # The origin may contain spaces (it is a path), so the line is split from the
+  # RIGHT: the digest is the last field, the origin is everything between
+  # 'schema ' and it. This is the same extraction the flag's documentation
+  # promises a consumer can do, so asserting it here checks the promise too.
+  local line origin digest
+  line="$(head -1 "$WORK/go.out")"
+  digest="${line##* }"
+  origin="${line% *}"
+  origin="${origin#schema }"
+
+  case "$line" in
+    "schema "*" sha256:"*) ;;
+    *) problems+=("stdout: '$line' is not 'schema <origin> sha256:<hex>'") ;;
+  esac
+  digest="${digest#sha256:}"
+  case "$digest" in
+    *[!0-9a-f]*|"") problems+=("digest '$digest' is not lowercase hex") ;;
+  esac
+  [ "${#digest}" -eq 64 ] || problems+=("digest '$digest' is not 64 characters")
+
+  [ "$origin" = "$want_origin" ] \
+    || problems+=("origin: want '$want_origin', got '$origin'")
+  if [ -n "$want_digest" ] && [ "$digest" != "$want_digest" ]; then
+    problems+=("digest: want '$want_digest', got '$digest'")
+  fi
+
+  if [ ${#problems[@]} -eq 0 ]; then
+    passed=$((passed + 1))
+    printf '  ok    %s (%s)\n' "$label" "$line"
+    return 0
+  fi
+
+  failed=$((failed + 1))
+  red "  FAIL  $label"
+  printf '        args: %s\n' "$*"
+  local problem
+  for problem in "${problems[@]}"; do
+    printf '        %s\n' "$problem"
+  done
+  return 1
+}
+
+# schema_source_digest_of <cwd> <bin> — the digest the flag reports there, or ""
+# if it did not answer. Used to COMPARE two trees' answers rather than to check
+# either one, which is why it is separate from the assertion above.
+schema_source_digest_of() {
+  local cwd="$1" gobin="$2"
+  local line
+  line="$( (cd "$cwd" && "$gobin" --schema-source 2>/dev/null) | head -1)"
+  case "$line" in
+    "schema "*" sha256:"*) printf '%s' "${line##*sha256:}" ;;
+    *) printf '' ;;
+  esac
+}
+
+# 1. The repo itself: a real schema sits at $REPO_ROOT/schemas, and the binary
+#    lives in $REPO_ROOT/bin, so the executable-relative path resolves to it.
+assert_schema_source_in "$REPO_ROOT" "$GO_BIN" \
+  "--schema-source names the repo's schema" \
+  "$canonical_schema" "$want_schema" --schema-source
+
+# Position independence, for the same reason --version has it.
+assert_schema_source_in "$REPO_ROOT" "$GO_BIN" \
+  "--schema-source after a file" \
+  "$canonical_schema" "$want_schema" 'examples/*.json' --schema-source
+assert_schema_source_in "$REPO_ROOT" "$GO_BIN" \
+  "--schema-source ahead of the stdin refusal" \
+  "$canonical_schema" "$want_schema" --schema-source -
+
+# --version still wins when both are given. Three consumers parse that line
+# (scripts/install.sh, scripts/build-release.sh, specguard-rspec's identity
+# probe), so the newer flag must not change what any crossing of the two
+# prints. Asserted with the --version helper, which is the point: the expected
+# output is the version line, unchanged.
+assert_version_line "--version wins over --schema-source"        --version --schema-source
+assert_version_line "--version wins over --schema-source (reversed)" --schema-source --version
+
+# 2. Success criterion 2: the install layout. No schemas/ beside the binary, so
+#    the embedded copy is what a run enforces — and the digest must therefore
+#    EQUAL the one --version reports. $installprefix is the tree built for the
+#    --version case above, already asserted to carry no schemas/.
+assert_schema_source_in "/" "$installprefix/bin/validate-intent" \
+  "--schema-source from an install prefix, run from / (the embedded copy)" \
+  "<embedded schema>" "$want_schema" --schema-source
+
+# 3. Success criterion 1, and the reason the flag exists: a tree whose schema is
+#    valid, loadable and DIFFERENT from the compiled-in one. The origin must be
+#    that file and the digest must be that file's — which is to say it must NOT
+#    be the digest --version reports on the same binary.
+#
+#    pwd -P because the binary derives its path from os.Executable(): if $WORK
+#    sits under a symlinked prefix (/tmp on macOS), the string the binary prints
+#    is the resolved one and an unresolved expectation would fail for a reason
+#    that has nothing to do with the port.
+schemasource_root="$WORK/schema-source-override"
+mkdir -p "$schemasource_root/bin" "$schemasource_root/schemas"
+schemasource_root="$(cd "$schemasource_root" && pwd -P)"
+cp "$GO_BIN" "$schemasource_root/bin/validate-intent"
+override_schema="$schemasource_root/schemas/open-test-intent.v1.json"
+printf '{"type": "object"}\n' > "$override_schema"
+override_digest="$(sha256_hex "$override_schema")"
+if [ -z "$override_digest" ]; then
+  dim "note: no SHA-256 tool on PATH — the overriding schema's digest is checked"
+  dim "      for shape only. The carried-vs-enforced comparison below is unaffected:"
+  dim "      it compares the binary's own two answers and needs no external tool."
+fi
+
+# The premise, asserted rather than assumed. If this schema ever stopped
+# differing from the canonical one — someone copies the real file here, or the
+# canonical contract becomes `{"type": "object"}` — every assertion below would
+# still pass while having stopped testing the difference it is named for.
+if [ -n "$override_digest" ] && [ -n "$want_schema" ] && [ "$override_digest" = "$want_schema" ]; then
+  failed=$((failed + 1))
+  red "  FAIL  the override schema is identical to the canonical one — it cannot show carried≠enforced"
+fi
+# And it must actually LOAD: a schema that fails to load would make the flag
+# exit 2, and "the digest differs" would be established by a case that never
+# produced a digest.
+(cd "$schemasource_root" && "$schemasource_root/bin/validate-intent" \
+  --schema-source >"$WORK/probe.out" 2>"$WORK/probe.err")
+if [ -s "$WORK/probe.out" ]; then
+  passed=$((passed + 1))
+  printf '  ok    the override schema loads (so the comparison below has a digest to make)\n'
+else
+  failed=$((failed + 1))
+  red "  FAIL  the override schema did not load — the case below cannot compare digests"
+  printf '        stderr: %s\n' "$(head -1 "$WORK/probe.err")"
+fi
+
+assert_schema_source_in "$schemasource_root" "$schemasource_root/bin/validate-intent" \
+  "--schema-source names an overriding schema and digests ITS bytes" \
+  "$override_schema" "$override_digest" --schema-source
+
+# The comparison the whole slice is for, made explicitly rather than left to be
+# inferred from two expectations that happen to differ: on this tree the same
+# binary reports one digest for what it CARRIES and another for what it
+# ENFORCES.
+carried_digest="$(schema_source_digest_of "$installprefix" "$installprefix/bin/validate-intent")"
+enforced_digest="$(schema_source_digest_of "$schemasource_root" "$schemasource_root/bin/validate-intent")"
+if [ -z "$carried_digest" ] || [ -z "$enforced_digest" ]; then
+  failed=$((failed + 1))
+  red "  FAIL  carried-vs-enforced — one of the two runs did not report a digest"
+elif [ "$carried_digest" = "$enforced_digest" ]; then
+  failed=$((failed + 1))
+  red "  FAIL  carried-vs-enforced — the same digest ($carried_digest) on both trees"
+  printf '        A schema beside the binary is winning on one of them, so the two\n'
+  printf '        must differ. They do not, which is the defect this flag exists to expose.\n'
+else
+  passed=$((passed + 1))
+  printf '  ok    carried (%s…) differs from enforced (%s…)\n' \
+    "${carried_digest:0:12}" "${enforced_digest:0:12}"
+fi
+
+# Success criterion 3: a schema that EXISTS and cannot be loaded is not papered
+# over with the embedded copy and does not become a clean report. It must exit 2
+# with the SAME diagnostic a verdict run emits on that tree — and that
+# diagnostic is itself compared against python3 in section 8 ("OS-level
+# failures"), so requiring equality here inherits the comparison rather than
+# restating the message where it could drift.
+#
+# $versionbadschema_root is the tree built above: its schema is deliberately
+# truncated, and the probe there has already asserted it really does fail to
+# load.
+(cd "$versionbadschema_root" && "$versionbadschema_root/bin/validate-intent" \
+  --schema-source >"$WORK/ss.out" 2>"$WORK/ss.err")
+ss_rc=$?
+(cd "$versionbadschema_root" && "$versionbadschema_root/bin/validate-intent" \
+  thing.json >"$WORK/verdict.out" 2>"$WORK/verdict.err")
+verdict_rc=$?
+
+problems=()
+[ "$ss_rc" -eq 2 ] || problems+=("exit code: want 2, got $ss_rc")
+[ ! -s "$WORK/ss.out" ] \
+  || problems+=("stdout: want empty, got '$(head -c 80 "$WORK/ss.out")'")
+grep -q 'could not load schema' "$WORK/ss.err" \
+  || problems+=("stderr: want the could-not-load diagnostic, got '$(head -c 80 "$WORK/ss.err")'")
+[ "$ss_rc" = "$verdict_rc" ] \
+  || problems+=("exit code differs from the verdict path's: $ss_rc vs $verdict_rc")
+cmp -s "$WORK/ss.err" "$WORK/verdict.err" \
+  || problems+=("stderr differs from the verdict path's on the same tree")
+
+if [ ${#problems[@]} -eq 0 ]; then
+  passed=$((passed + 1))
+  printf '  ok    --schema-source fails exactly as the verdict path does (exit 2: %s)\n' \
+    "$(head -1 "$WORK/ss.err")"
+else
+  failed=$((failed + 1))
+  red "  FAIL  --schema-source on an unloadable schema"
+  for problem in "${problems[@]}"; do
+    printf '        %s\n' "$problem"
+  done
+  diff -u "$WORK/verdict.err" "$WORK/ss.err" | tail -n +3 | sed 's/^/        /'
+fi
 
 # --------------------------------------------------------------------------- #
 # Excluded group 4: a tree with no schemas/ directory beside the binary

@@ -55,8 +55,14 @@ import (
 // `usage + helpTrailer`; every other path that prints usage — all of them
 // refusals — prints `usage` alone.
 //
-// WHY --version IS DOCUMENTED AT ALL
-// ==================================
+// It documents BOTH Go-only flags that succeed: `--version` (this file) and
+// `--schema-source` (schemasource.go). It lives here rather than being split
+// across the two files because it is one constant compared as one blob, and a
+// trailer assembled from pieces in two places is a trailer whose exact bytes
+// nobody can read in one sitting.
+//
+// WHY THEY ARE DOCUMENTED AT ALL
+// ==============================
 //
 // On the host this binary actually ships to there is no repo, no README and no
 // schemas/ directory: a release artifact is a single file at a prefix, and
@@ -113,8 +119,16 @@ import (
 // enforces" would be false on precisely the trees where the difference matters,
 // which is the same shape of on-host documentation SPGD-279 removed from the
 // last line of `usage`.
+//
+// The hedge STAYS, and it now points somewhere. Slice 19 (SPGD-301) added
+// `--schema-source`, which runs the real loader and reports the origin and digest
+// of the bytes a run enforces, so the second row is the answer to the first row's
+// disclaimer rather than a second way to print the same number. Naming that
+// relationship in the trailer is the point of documenting it here at all: on the
+// host this ships to, `--help` is where an adopter finds out that the two digests
+// can differ and which one to ask for.
 const helpTrailer = `
-Go port only — the Python reference has no such flag:
+Go port only — the Python reference has no such flags:
 
        --version   print this binary's identity (name, version, Go toolchain
                    and target) followed by the SHA-256 of the schema compiled
@@ -122,6 +136,16 @@ Go port only — the Python reference has no such flag:
                    contract this artifact CARRIES; a schema file found beside
                    the binary wins over the compiled-in copy at validation
                    time, so it is not a claim about what a given run enforced.
+
+       --schema-source
+                   print the schema a run on this host ENFORCES — the resolved
+                   origin (an absolute path, or <embedded schema>) followed by
+                   the SHA-256 of the bytes actually loaded from it — on
+                   stdout, and exit 0. Resolved by the same loader the
+                   validating modes use, so a digest differing from --version's
+                   means a schema beside the binary is winning. Exit 2, with
+                   the usual "could not load schema" diagnostic, if that schema
+                   exists and cannot be loaded.
 `
 
 // programName is what the version line calls this binary. It is a constant
