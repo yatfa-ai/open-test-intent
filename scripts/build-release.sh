@@ -308,7 +308,11 @@ HOST_OS="$("$GO" env GOHOSTOS)"
 HOST_ARCH="$("$GO" env GOHOSTARCH)"
 native_verified=0
 built=0
-staged=()
+# Named for what it holds rather than `staged`, which is already the scalar the
+# mv-failure branch below uses for the abandoned staging path. Bash would let
+# both live: a scalar assignment writes element 0, so `$staged` would still read
+# back the right string by accident. Accident is the thing this script is about.
+staged_artifacts=()
 
 for target in "${TARGETS[@]}"; do
   goos="${target%%/*}"
@@ -325,7 +329,7 @@ for target in "${TARGETS[@]}"; do
 
   [ -s "$out" ] || die "$out was not produced, or is empty"
   built=$((built + 1))
-  staged+=("$out")
+  staged_artifacts+=("$out")
 
   # --- check 1: the stamp is physically in the artifact ------------------- #
   #
@@ -437,7 +441,7 @@ fi
 # saying so explicitly means it cannot quietly grow a row for something else that
 # appeared there. (The verification below catches that from the other side.)
 MANIFEST="$STAGE/$MANIFEST_NAME"
-"$SUMS" -o "$MANIFEST" "${staged[@]}" \
+"$SUMS" -o "$MANIFEST" "${staged_artifacts[@]}" \
   || die "could not write $MANIFEST_NAME for the staged artifacts.
        They are built and verified, but nothing downstream could tell what they
        are. 'Could not digest' is not a pass."

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,7 +28,7 @@ import (
 // the SPECIFIC diagnostic each should produce. This mirrors what
 // tests/cross/inspect-artifact/main_test.go does for the same reason.
 //
-// Two of these are load-bearing beyond the general principle:
+// Three of these are load-bearing beyond the general principle:
 //
 //   - TestVerifyCatchesAnArtifactCorruptedAfterEmit is the non-vacuousness
 //     proof. It corrupts a file in the window between digesting and verifying,
@@ -35,6 +37,63 @@ import (
 //     tool did not choose. Every other test here compares the tool against
 //     itself and would pass just as happily on a tool that hashed with the wrong
 //     algorithm, consistently.
+//   - TestTheCLIExitCodeIsTheContractTheReleaseScriptReads runs the COMPILED
+//     tool. Everything else drives emit()/verify() in-process, which says
+//     nothing about whether main() reports their verdict faithfully — and the
+//     exit code is the only thing scripts/build-release.sh reads.
+
+// sumsBin is this package, compiled. Built once by TestMain rather than per
+// test, since several tests exec it.
+var sumsBin string
+
+// TestMain builds the tool before running anything, because the exit-code tests
+// below assert against the real binary rather than against main() as a library.
+//
+// A build failure FAILS the run; it does not skip it. The package under test is
+// pure stdlib Go and the toolchain is already running (it is running this test),
+// so "could not build it" is a broken tree, not an unavailable platform — and
+// skipping would hide the exit-code contract behind a green summary, which is
+// the shape this whole file exists to refuse. That is also why this differs from
+// inspect-artifact's buildFixture, which legitimately skips: its fixtures are
+// CROSS-compiled, and a host that cannot produce a darwin/arm64 object really
+// has not been asked a question it can answer.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "sha256sums-bin")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "could not make a directory to build the tool into: %v\n", err)
+		os.Exit(1)
+	}
+	sumsBin = filepath.Join(dir, "sha256sums")
+
+	if out, err := exec.Command("go", "build", "-o", sumsBin, ".").CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "could not build the tool under test: %v\n%s", err, out)
+		os.RemoveAll(dir)
+		os.Exit(1)
+	}
+
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
+
+// runSums executes the compiled tool with dir as its working directory, so that
+// manifest and operand arguments can be the plain basenames the release script
+// ends up passing. It returns the exit code and the combined output.
+func runSums(t *testing.T, dir string, args ...string) (int, string) {
+	t.Helper()
+	cmd := exec.Command(sumsBin, args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return 0, string(out)
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		return exit.ExitCode(), string(out)
+	}
+	t.Fatalf("could not run the tool with %v: %v", args, err)
+	return 0, ""
+}
 
 // manifestRow matches the format a consumer's own sha256sum/shasum must read:
 // 64 lowercase hex characters, two spaces, then a plain basename.
@@ -62,20 +121,65 @@ var stagedArtifacts = map[string]string{
 	"validate-intent-darwin-arm64": "darwin arm64 bytes\n",
 }
 
-// emitFor digests every file in dir into dir/SHA256SUMS, the way the release
-// script does, and returns the manifest path.
-func emitFor(t *testing.T, dir string) string {
+// releaseOrder is the order scripts/build-release.sh hands its artifacts to
+// emit: its TARGETS list is linux/amd64, linux/arm64, darwin/amd64,
+// darwin/arm64, and the loop appends in that order.
+//
+// It is reproduced here because it is NOT lexicographic ("darwin" sorts before
+// "linux"), and that is what makes the sortedness assertion in
+// TestEmitWritesTheStandardFormatWithBasenamesOnly able to fail at all. An
+// operand list built straight from os.ReadDir would arrive already sorted — Go
+// returns directory entries in name order — so emit's sort could be deleted
+// outright and every test here would stay green, over a manifest whose row order
+// had quietly become a function of the build loop rather than of the set.
+var releaseOrder = []string{
+	"validate-intent-linux-amd64",
+	"validate-intent-linux-arm64",
+	"validate-intent-darwin-amd64",
+	"validate-intent-darwin-arm64",
+}
+
+// stagedOperands lists dir's files in releaseOrder, with anything else in dir
+// following in REVERSE name order — so this helper never hands emit an operand
+// list that is already sorted, whatever the fixture holds.
+func stagedOperands(t *testing.T, dir string) []string {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("reading %s: %v", dir, err)
 	}
-	var files []string
+
+	pending := make(map[string]bool, len(entries))
 	for _, e := range entries {
-		files = append(files, filepath.Join(dir, e.Name()))
+		pending[e.Name()] = true
 	}
+
+	var names []string
+	for _, n := range releaseOrder {
+		if pending[n] {
+			names = append(names, n)
+			delete(pending, n)
+		}
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		if pending[entries[i].Name()] {
+			names = append(names, entries[i].Name())
+		}
+	}
+
+	paths := make([]string, 0, len(names))
+	for _, n := range names {
+		paths = append(paths, filepath.Join(dir, n))
+	}
+	return paths
+}
+
+// emitFor digests every file in dir into dir/SHA256SUMS, the way the release
+// script does, and returns the manifest path.
+func emitFor(t *testing.T, dir string) string {
+	t.Helper()
 	manifest := filepath.Join(dir, "SHA256SUMS")
-	if err := emit(manifest, files); err != nil {
+	if err := emit(manifest, stagedOperands(t, dir)); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
 	return manifest
@@ -94,6 +198,23 @@ func requireProblem(t *testing.T, problems []string, want string) {
 
 func TestEmitWritesTheStandardFormatWithBasenamesOnly(t *testing.T) {
 	dir := stageWith(t, stagedArtifacts)
+
+	// The premise of the sortedness assertion at the bottom, asserted rather
+	// than assumed: if a future edit ever hands emit an already-sorted operand
+	// list, that assertion silently stops being able to fail and the sort it
+	// guards becomes untested. Fail here instead, where the cause is visible.
+	operands := stagedOperands(t, dir)
+	sortedOperands := true
+	for i := 1; i < len(operands); i++ {
+		if filepath.Base(operands[i-1]) > filepath.Base(operands[i]) {
+			sortedOperands = false
+			break
+		}
+	}
+	if sortedOperands {
+		t.Fatalf("the operand list is already sorted, so it cannot show that emit sorts: %v", operands)
+	}
+
 	manifest := emitFor(t, dir)
 
 	raw, err := os.ReadFile(manifest)
@@ -249,30 +370,73 @@ func TestVerifyCatchesAnArtifactThatNoRowDescribes(t *testing.T) {
 	requireProblem(t, problems, "described by no row in SHA256SUMS: validate-intent-windows-amd64")
 }
 
-func TestVerifyRefusesAManifestItCannotParse(t *testing.T) {
-	for name, body := range map[string]string{
-		"single space":    "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad abc\n",
-		"short digest":    "ba7816bf  abc\n",
-		"not hex":         "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz  abc\n",
-		"escaped name":    "\\ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  a\\nb\n",
-		"path in the row": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  /tmp/stage/abc\n",
-		"empty":           "",
-		"listed twice":    "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc\nba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc\n",
+// abcRow is a WELL-FORMED row for the file every parse fixture's directory
+// holds. Each fixture below is this row plus one bad row, and the pairing is the
+// whole point: with only the bad row present, refusing it would leave the
+// manifest with no entries at all, so parseManifest's "lists no files" guard
+// would produce an error whether or not the strictness each fixture names still
+// existed. Every one of these would pass over a parser that silently SKIPPED the
+// rows it could not read — which is a file silently unverified, the exact trade
+// this tool exists to undo. The valid row keeps the guard out of the way so the
+// assertion lands on the bad row.
+const abcRow = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc\n"
+
+func TestVerifyRefusesAManifestWithARowItCannotParse(t *testing.T) {
+	for _, tc := range []struct{ name, badRow string }{
+		{"single space", "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad def\n"},
+		{"short digest", "ba7816bf  def\n"},
+		{"not hex", "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz  def\n"},
+		{"escaped name", "\\ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  d\\nef\n"},
+		{"path in the row", "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  /tmp/stage/def\n"},
+		{"a name that is a directory", "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  ..\n"},
+		{"blank line", "\n"},
+		{"listed twice", abcRow},
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			dir := stageWith(t, map[string]string{"abc": "abc"})
 			manifest := filepath.Join(dir, "SHA256SUMS")
-			if err := os.WriteFile(manifest, []byte(body), 0o644); err != nil {
+			if err := os.WriteFile(manifest, []byte(abcRow+tc.badRow), 0o644); err != nil {
 				t.Fatalf("writing the manifest: %v", err)
 			}
+
 			// Refused as unexaminable rather than silently skipped: a row this
 			// tool cannot parse is a file it did not check, and a run that
 			// ignored it would report a green verification of fewer artifacts
 			// than it claimed.
-			if _, _, err := verify(manifest); err == nil {
-				t.Error("a manifest that cannot be parsed was accepted")
+			_, _, err := verify(manifest)
+			if err == nil {
+				t.Fatal("a manifest with a row that cannot be parsed was accepted")
+			}
+			// And refused FOR THAT ROW. "lists no files" here would mean the
+			// bad row was dropped and the manifest merely ended up empty — the
+			// skip this fixture exists to forbid.
+			if strings.Contains(err.Error(), "lists no files") {
+				t.Errorf("the bad row was skipped and the manifest refused for being empty instead: %v", err)
 			}
 		})
+	}
+}
+
+func TestVerifyRefusesAManifestThatListsNothing(t *testing.T) {
+	// An empty manifest verifies trivially: nothing to re-read, nothing to
+	// mismatch. A release promoted under it would carry a file asserting
+	// precisely nothing about the artifacts beside it.
+	dir := stageWith(t, map[string]string{"abc": "abc"})
+	manifest := filepath.Join(dir, "SHA256SUMS")
+	if err := os.WriteFile(manifest, nil, 0o644); err != nil {
+		t.Fatalf("writing the manifest: %v", err)
+	}
+	if _, _, err := verify(manifest); err == nil {
+		t.Error("an empty manifest was accepted")
+	}
+}
+
+func TestVerifyRefusesAManifestThatIsNotThere(t *testing.T) {
+	// Distinct from an empty one, and it must not be readable as a pass: the
+	// release script asks this tool whether the set is intact, and "there was
+	// no manifest" is an answer it has to be told rather than infer.
+	if _, _, err := verify(filepath.Join(t.TempDir(), "SHA256SUMS")); err == nil {
+		t.Error("a manifest that does not exist was accepted")
 	}
 }
 
@@ -300,6 +464,123 @@ func TestEmitRefusesWhatItCannotDescribeHonestly(t *testing.T) {
 		dir := stageWith(t, map[string]string{"SHA256SUMS": "old"})
 		if err := emit(filepath.Join(dir, "SHA256SUMS"), []string{filepath.Join(dir, "SHA256SUMS")}); err == nil {
 			t.Error("emit listed the manifest inside itself, which can never verify")
+		}
+	})
+}
+
+// TestTheCLIExitCodeIsTheContractTheReleaseScriptReads runs the COMPILED tool.
+//
+// Every other test in this file calls emit() and verify() directly and asserts
+// what they RETURN. scripts/build-release.sh cannot do that. It runs the binary
+// and reads one number, and its `case "$sums_rc" in 0) ;; 1) die ...; *) die ...`
+// is the entire consumer of everything above. So main()'s translation from
+// return value to exit code is a link in the chain with a consumer and, until
+// this test, no coverage: `os.Exit(1)` → `os.Exit(0)` on the problems branch is
+// a one-character edit that leaves the tool reporting every mismatch it finds on
+// stderr, exiting 0, and the release promoting a set whose own manifest fails
+// `sha256sum -c`. A green line over an unverified release, which is the shape
+// this slice exists to close — reproduced one level up, in the reporting rather
+// than in the checking.
+//
+// The three codes are asserted EXACTLY, never merely as zero/non-zero. 1 and 2
+// mean different things ("examined and wrong" vs "could not examine"), both
+// main.go's package comment and the release script's two `die` messages say so
+// at length, and a test that accepted either would let them collapse.
+func TestTheCLIExitCodeIsTheContractTheReleaseScriptReads(t *testing.T) {
+	// Emitting and verifying through the binary, in the order the release script
+	// does it, so what is exercised is the round trip and not two halves that
+	// have only ever been run apart.
+	emitStagedSet := func(t *testing.T) string {
+		t.Helper()
+		dir := stageWith(t, stagedArtifacts)
+		args := append([]string{"-o", "SHA256SUMS"}, releaseOrder...)
+		if rc, out := runSums(t, dir, args...); rc != 0 {
+			t.Fatalf("emitting a clean set exited %d, want 0:\n%s", rc, out)
+		}
+		return dir
+	}
+
+	t.Run("a clean set verifies: 0", func(t *testing.T) {
+		dir := emitStagedSet(t)
+		rc, out := runSums(t, dir, "-c", "SHA256SUMS")
+		if rc != 0 {
+			t.Fatalf("an untouched set exited %d, want 0:\n%s", rc, out)
+		}
+	})
+
+	t.Run("a tampered artifact is examined-and-wrong: 1", func(t *testing.T) {
+		dir := emitStagedSet(t)
+		victim := filepath.Join(dir, "validate-intent-linux-arm64")
+		if err := os.WriteFile(victim, []byte("tampered"), 0o755); err != nil {
+			t.Fatalf("corrupting the staged artifact: %v", err)
+		}
+
+		rc, out := runSums(t, dir, "-c", "SHA256SUMS")
+		if rc != 1 {
+			t.Fatalf("a tampered artifact exited %d, want 1 (examined and wrong):\n%s", rc, out)
+		}
+		if !strings.Contains(out, "validate-intent-linux-arm64") {
+			t.Errorf("the failing run did not name the artifact it rejected:\n%s", out)
+		}
+		// The tool must not claim a clean result anywhere in a run that found
+		// one wrong — the release script prints this output above its own
+		// summary line.
+		if strings.Contains(out, "each re-read and matching") {
+			t.Errorf("a failing run still printed the everything-matched note:\n%s", out)
+		}
+	})
+
+	t.Run("an unlisted artifact is examined-and-wrong: 1", func(t *testing.T) {
+		dir := emitStagedSet(t)
+		stray := filepath.Join(dir, "validate-intent-windows-amd64")
+		if err := os.WriteFile(stray, []byte("?"), 0o755); err != nil {
+			t.Fatalf("staging the stray artifact: %v", err)
+		}
+		if rc, out := runSums(t, dir, "-c", "SHA256SUMS"); rc != 1 {
+			t.Fatalf("an unlisted artifact exited %d, want 1 (examined and wrong):\n%s", rc, out)
+		}
+	})
+
+	t.Run("a manifest that cannot be parsed is could-not-examine: 2", func(t *testing.T) {
+		dir := stageWith(t, map[string]string{"abc": "abc"})
+		if err := os.WriteFile(filepath.Join(dir, "SHA256SUMS"), []byte(abcRow+"deadbeef  def\n"), 0o644); err != nil {
+			t.Fatalf("writing the manifest: %v", err)
+		}
+		if rc, out := runSums(t, dir, "-c", "SHA256SUMS"); rc != 2 {
+			t.Fatalf("an unparseable manifest exited %d, want 2 (could not examine):\n%s", rc, out)
+		}
+	})
+
+	t.Run("a manifest that is not there is could-not-examine: 2", func(t *testing.T) {
+		if rc, out := runSums(t, t.TempDir(), "-c", "SHA256SUMS"); rc != 2 {
+			t.Fatalf("a missing manifest exited %d, want 2 (could not examine):\n%s", rc, out)
+		}
+	})
+
+	t.Run("an emit that cannot digest an operand: 2", func(t *testing.T) {
+		// The release script dies on a non-zero emit for the same reason it
+		// dies on a failed verify: artifacts with no recorded identity are not
+		// a release. A zero here would promote them anyway.
+		dir := t.TempDir()
+		rc, out := runSums(t, dir, "-o", "SHA256SUMS", "absent")
+		if rc != 2 {
+			t.Fatalf("emitting over a file that is not there exited %d, want 2:\n%s", rc, out)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "SHA256SUMS")); err == nil {
+			t.Error("a failed emit still left a manifest behind")
+		}
+	})
+
+	t.Run("a bad invocation is could-not-examine: 2", func(t *testing.T) {
+		for _, args := range [][]string{
+			{},                                       // neither mode
+			{"-o", "SHA256SUMS"},                     // emit with nothing to digest
+			{"-c", "SHA256SUMS", "extra"},            // check takes no operands
+			{"-o", "SHA256SUMS", "-c", "SHA256SUMS"}, // both modes at once
+		} {
+			if rc, out := runSums(t, t.TempDir(), args...); rc != 2 {
+				t.Errorf("invocation %v exited %d, want 2 (could not examine):\n%s", args, rc, out)
+			}
 		}
 	})
 }
