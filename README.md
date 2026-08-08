@@ -180,10 +180,6 @@ falling through to the nearest surface that would accept the arguments — `-` r
 filename glob that matches nothing, or a `--json` request answered with the human
 report — and delivering a confident, correctly formatted, wrong result.
 
-These two lists are not maintained by hand alone. `tests/parity/check_readme_surfaces.py`
-parses them and runs the built binary once for every surface it knows how to probe, so a
-surface that ships without this block being updated turns the parity harness red.
-
 That same refuse-rather-than-guess rule covers the schema's `pattern` keyword. Python's
 `re` and Go's RE2 are not the same regex language even where both accept the same source
 text — Python's `$` also matches before a trailing newline, `\d`/`\w`/`\s`/`\b` are

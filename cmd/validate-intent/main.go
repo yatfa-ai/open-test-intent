@@ -175,9 +175,9 @@ func run(argv []string) int {
 			//
 			// The section NAME is quoted alongside the number
 			// because that file renumbers as slices are added: if the two
-			// ever disagree the name is the one to trust, and
-			// tests/parity/check_section_refs.py fails the harness loudly
-			// when they do.
+			// ever disagree the name is the one to trust. Nothing checks
+			// the pair, so grep for the name rather than counting to the
+			// number.
 			fmt.Fprintln(os.Stderr, "error: --json is not supported in self-test mode "+
 				"(it needs -, FILE... or --source FILE...)")
 			os.Stderr.WriteString(usage)

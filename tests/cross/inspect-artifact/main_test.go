@@ -27,9 +27,7 @@ import (
 // comparison, so a test that only counted problems would pass even if the
 // header assertions — the whole point of the file — had been deleted.
 //
-// This mirrors what tests/parity/check_readme_surfaces.py does for the same
-// reason, and is cheap: the fixtures are a three-line program, not the
-// validator.
+// This is cheap: the fixtures are a three-line program, not the validator.
 
 // tinyProgram is the smallest thing that still produces a realistic Go binary.
 // It imports os so that the darwin fixtures carry the same libresolv load

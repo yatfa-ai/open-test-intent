@@ -127,8 +127,9 @@ const EmbeddedSchemaLabel = "<embedded schema>"
 // beside itself. A pure embed would make it ignore every one of those synthetic
 // schemas while the harness went on reporting green: coverage deleted without a
 // single case going red, which is this project's house defect wearing a new hat.
-// (No count is given on purpose. It moves whenever cases are added, and a stale
-// figure in a comment is the same drift check_section_refs.py exists to stop.)
+// (No count is given on purpose. It moves whenever cases are added, and a
+// stale figure in a comment reads like evidence long after it has stopped
+// being any.)
 //
 // So disk wins whenever there is a file to win with, and the ABSENT/UNREADABLE
 // distinction carries the whole design:
