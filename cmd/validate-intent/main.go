@@ -22,6 +22,13 @@
 // group 5 in its header) and asserted Go-side in section 16 ("Go-side refusals
 // — the excluded surfaces, still asserted"). See version.go.
 //
+// It is also DOCUMENTED, in `--help` and only there, by a trailer appended to
+// the shared usage block (helpTrailer in version.go). On a host holding just
+// this binary, `--help` is the entire documentation set, and a flag the
+// installer runs cannot be invisible on it. Section 7 ("--help") still compares
+// the shared block byte-for-byte and checks the trailer against an exact
+// expectation; neither half is waved through. See version.go (SPGD-279).
+//
 // Still a later slice: stdin (`-`), and `--json` for the stdin and FILE... modes.
 // They are not silently absent — each refuses with exit 2 and a diagnostic
 // naming itself. That matters more than it looks. Python's main() falls through
@@ -41,26 +48,33 @@ import (
 // (bin/validate-intent) by tests/parity/run_parity.sh, in section 7 ("--help")
 // and wherever a refusal prints the usage block.
 //
-// KNOWN-MISLEADING LAST LINE, and why it is still here.
+// It therefore holds only text that is true of BOTH implementations. The one
+// Go-only line this binary prints — the `--version` row — is not here: it lives
+// in helpTrailer (version.go) and is appended on the `--help` path alone. See
+// that file for why a row in this constant would have broken three compared
+// refusals as well as section 7, and why no edit to the reference could have
+// restored them.
 //
-// "Validates JSON against schemas/open-test-intent.v1.json" is true of the
-// Python script — it always lives at <repo>/bin/ — and is no longer true of
-// this binary. Since SPGD-131 an installed copy at /usr/local/bin/ validates
-// against its embedded schema; the path this line names does not exist there
-// and governs nothing.
+// THE LAST LINE, and why it names a contract instead of a path.
 //
-// Because the two texts are compared byte-for-byte, they can only move
-// together: editing this constant alone fails section 7 ("--help") and every
-// refusal that prints the usage block, which is deleting real coverage to fix
-// a sentence.
+// It used to read "Validates JSON against schemas/open-test-intent.v1.json".
+// That was true of the Python script, which always lives at <repo>/bin/, and
+// false of this binary everywhere it actually ships. Since SPGD-131 an
+// installed copy falls back to its compiled-in schema when no file sits at
+// <exe>/../schemas/ — and tests/cross/run_cross_build.sh ASSERTS that directory
+// is absent beside an installed binary, aborting the run if it exists. So the
+// release artifact's only on-host documentation named the one path the repo
+// guarantees is not there.
 //
-// The matched edit belongs in bin/validate-intent, and SPGD-131 put that file
-// out of scope. That — a scope boundary, nothing more — is the whole reason
-// the line still reads this way. Nothing in the tooling prevents the change.
+// Because the two texts are compared byte-for-byte they can only move together,
+// which is why they were corrected in a single commit (SPGD-279) rather than
+// by relaxing the comparison — relaxing it would have deleted real coverage to
+// fix a sentence.
 //
-// A follow-up slice permitted to touch the reference should edit both texts in
-// one commit. The accurate statement of where the schema actually comes from
-// lives on LoadSchema in fileio.go.
+// Naming the CONTRACT is true of both, because the disagreement was never about
+// which schema is enforced; it is about where the bytes come from. That second
+// question has one accurate answer and a usage line is not the place for it:
+// see LoadSchema in fileio.go.
 const usage = `usage: validate-intent                    # self-test the in-repo fixtures
        validate-intent -                  # validate one annotation JSON read from stdin
        validate-intent FILE...            # validate FILE(s)/glob(s) as valid intent JSON
@@ -72,7 +86,7 @@ const usage = `usage: validate-intent                    # self-test the in-repo
                 human report — for the stdin, FILE... and --source modes only.
                 Position-independent. Exit codes are identical either way.
 
-Validates JSON against schemas/open-test-intent.v1.json (zero dependencies).
+Validates JSON against the OpenTestIntent v1 schema (zero dependencies).
 `
 
 func main() {
@@ -84,7 +98,13 @@ func run(argv []string) int {
 	// `--help` wins over everything else on the command line.
 	for _, arg := range argv {
 		if arg == "-h" || arg == "--help" {
-			os.Stdout.WriteString(usage)
+			// usage is the block both implementations share; helpTrailer is the
+			// Go-only addendum documenting --version (version.go). It is
+			// appended HERE and nowhere else — the refusal paths below write
+			// bare `usage`, because those are byte-compared against the
+			// reference too, and a Go-only line inside the shared constant
+			// would break them rather than only this surface.
+			os.Stdout.WriteString(usage + helpTrailer)
 			return 0
 		}
 	}

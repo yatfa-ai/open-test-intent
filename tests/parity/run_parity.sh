@@ -14,6 +14,14 @@
 # Any single mismatch fails the whole run with a non-zero exit and a unified
 # diff naming the case. There is no "close enough" tier.
 #
+# One surface is a documented superset rather than an equality, and it is the
+# only one: `--help` prints the shared usage block plus a Go-only trailer
+# documenting `--version` (excluded group 5 below). That is not a "close
+# enough" tier either — section 7 ("--help") splits the port's stdout at the
+# reference's exact byte length and requires the shared half to be identical
+# and the trailer to equal a stated expectation. Both halves are compared; the
+# split is where they are compared against different things.
+#
 # Python is the oracle here, and the port is proven by differential testing
 # against it rather than by a hand-written expectation file that could encode
 # the same mistake twice.
@@ -161,9 +169,22 @@
 #      The crossing WITH `--help` is not excluded, because it does not diverge:
 #      `--help` wins over everything in both implementations, so the reference
 #      prints usage for `--help --version` exactly as the port does. It is
-#      compared byte-for-byte in section 7 ("--help") rather than asserted here,
-#      which is what keeps "--help still wins" from becoming a Go-side claim
-#      about the port checked only against itself.
+#      compared in section 7 ("--help") rather than asserted here, which is what
+#      keeps "--help still wins" from becoming a Go-side claim about the port
+#      checked only against itself.
+#
+#      `--help` is also where this flag is DOCUMENTED, and that is the one place
+#      a Go-only surface reaches a compared output. The row cannot go in the
+#      shared usage constant: that text is printed on refusals too, three of
+#      which are compared, and the matched edit to bin/validate-intent that
+#      would normally restore them is unavailable — the reference has no
+#      --version to document, and a usage block advertising a flag that answers
+#      "no file(s) match" would be a worse falsehood than none. So the row is a
+#      TRAILER appended on the --help path alone
+#      (cmd/validate-intent/version.go), and section 7's compare_help asserts it
+#      as an exact expectation while still comparing the shared block
+#      byte-for-byte. Section 16 pins what the flag DOES; section 7 pins what
+#      --help SAYS about it. Neither is described without being checked.
 #
 # RETIRED EXCLUSIONS — slice 2 (SPGD-102) closed two of slice 1's five, and
 # slice 4 (SPGD-123) closed a third:
@@ -552,23 +573,124 @@ compare "near-miss of --source"    --sources 'examples/*.json'
 # --------------------------------------------------------------------------- #
 # 7. --help
 # --------------------------------------------------------------------------- #
+#
+# This is the ONE place the port's stdout is deliberately a SUPERSET of the
+# reference's, and the arrangement below is what keeps that from costing any
+# coverage.
+#
+# The block both implementations share is `usage` (cmd/validate-intent/main.go)
+# and `USAGE` (bin/validate-intent). Appended to it on the --help path — and on
+# no other path — is a Go-only trailer documenting `--version` (excluded group
+# 5, cmd/validate-intent/version.go). The flag is what scripts/install.sh runs
+# to prove the artifact executes on the target host, and on a host holding one
+# binary and no repo, `--help` is the whole documentation set.
+#
+# compare_help does NOT relax the comparison to accommodate that. It splits the
+# port's stdout at the EXACT byte length of the reference's and holds both
+# halves to an exact expectation:
+#
+#   * the PREFIX must equal the reference's stdout byte-for-byte — so the two
+#     shared texts still can only move together, and either one moving alone is
+#     still red. That is the whole reason this comparison is worth having, and
+#     it is why the shared last line was corrected in both files in one commit
+#     (SPGD-279) rather than by loosening anything here;
+#   * the REMAINDER must equal $WORK/help-trailer.expected, exactly. Not matched
+#     by pattern, not merely stripped: a stripped trailer is an unchecked one,
+#     and the house rule in this file is that an excluded surface is still
+#     asserted.
+#
+# Note what confining the trailer to --help protects. The refusal paths print
+# the shared block ALONE, and three of those are compared: `--source` with no
+# FILE and `-s` with no FILE (section 10), `--json` in self-test mode
+# (section 11), `--source --json` with no FILE (section 14). Had the --version
+# row gone into the shared constant instead, all of them would have gone red
+# alongside this section — and no matched edit to bin/validate-intent could
+# have restored them, because the reference has no --version to document. It
+# reads the flag as a filename and reports "no file(s) match".
+
+# The Go-only trailer, written out here so the check below is an equality
+# against a stated expectation rather than a shape.
+cat > "$WORK/help-trailer.expected" <<'TRAILER'
+
+Go port only — the Python reference has no such flag:
+
+       --version   print this binary's identity (name, version, Go toolchain
+                   and target) on stdout and exit 0.
+TRAILER
+
+# compare_help <label> [args...] — for invocations where --help wins and the
+# usage block goes to STDOUT. stderr and the exit code are compared exactly as
+# `compare` does; stdout is split as described above.
+compare_help() {
+  local label="$1"
+  shift
+
+  local py_rc go_rc
+  (cd "$REPO_ROOT" && "$PYTHON" "$REFERENCE" "$@" >"$WORK/py.out" 2>"$WORK/py.err")
+  py_rc=$?
+  (cd "$REPO_ROOT" && "$GO_BIN" "$@" >"$WORK/go.out" 2>"$WORK/go.err")
+  go_rc=$?
+
+  local shared
+  shared="$(wc -c < "$WORK/py.out" | tr -d ' ')"
+  head -c "$shared" "$WORK/go.out" > "$WORK/go.shared"
+  tail -c "+$((shared + 1))" "$WORK/go.out" > "$WORK/go.trailer"
+
+  local problems=()
+  [ "$py_rc" = "$go_rc" ] || problems+=("exit code: python=$py_rc go=$go_rc")
+  cmp -s "$WORK/py.err" "$WORK/go.err" || problems+=("stderr differs")
+  cmp -s "$WORK/py.out" "$WORK/go.shared" \
+    || problems+=("the shared usage block differs")
+  cmp -s "$WORK/help-trailer.expected" "$WORK/go.trailer" \
+    || problems+=("the Go-only --version trailer differs")
+
+  if [ ${#problems[@]} -eq 0 ]; then
+    passed=$((passed + 1))
+    printf '  ok    %s\n' "$label"
+    return 0
+  fi
+
+  failed=$((failed + 1))
+  red "  FAIL  $label"
+  printf '        args: %s\n' "$*"
+  local problem
+  for problem in "${problems[@]}"; do
+    printf '        %s\n' "$problem"
+  done
+  if ! cmp -s "$WORK/py.out" "$WORK/go.shared"; then
+    printf '        --- shared usage block (-python +go) ---\n'
+    diff -u "$WORK/py.out" "$WORK/go.shared" | tail -n +3 | sed 's/^/        /'
+  fi
+  if ! cmp -s "$WORK/help-trailer.expected" "$WORK/go.trailer"; then
+    printf '        --- Go-only trailer (-want +got) ---\n'
+    diff -u "$WORK/help-trailer.expected" "$WORK/go.trailer" | tail -n +3 | sed 's/^/        /'
+  fi
+  if ! cmp -s "$WORK/py.err" "$WORK/go.err"; then
+    printf '        --- stderr (-python +go) ---\n'
+    diff -u "$WORK/py.err" "$WORK/go.err" | tail -n +3 | sed 's/^/        /'
+  fi
+  return 1
+}
+
 echo
 echo "== help =="
-compare "--help"                   --help
-compare "-h"                       -h
-compare "--help wins over a file"  'examples/*.json' --help
-compare "--help wins over a missing file" nope.json -h
+compare_help "--help"                   --help
+compare_help "-h"                       -h
+compare_help "--help wins over a file"  'examples/*.json' --help
+compare_help "--help wins over a missing file" nope.json -h
 # --help wins over --version too, in either order. This is a real COMPARISON and
 # not a Go-side assertion, which is the whole reason it is worth having:
 # `--version` is a Go-only flag (excluded group 5), so the tempting move is to
 # check it only against the port. But the reference has an answer here — its own
 # --help loop pre-empts the argument before anything reads it as a filename — so
-# the two agree byte-for-byte, and a port that let --version win would go red
-# against the oracle rather than against a hand-written expectation that could
-# encode the same mistake twice.
-compare "--help wins over --version"        --help --version
-compare "--help wins over --version (reversed)" --version --help
-compare "-h wins over --version"            --version -h
+# the two agree on the shared block byte-for-byte, and a port that let --version
+# win would go red against the oracle rather than against a hand-written
+# expectation that could encode the same mistake twice. What the port prints
+# here is the usage block plus the trailer — never the version line — so a
+# regression that let the flag win is caught on both halves of the split.
+compare_help "--help wins over --version"        --help --version
+compare_help "--help wins over --version (reversed)" --version --help
+compare_help "-h wins over --version"            --version -h
 
 # --------------------------------------------------------------------------- #
 # 8. OS-level failures
@@ -1767,9 +1889,17 @@ assert_pattern_refusal 'backreference' \
 # 18. the reference is untouched
 # --------------------------------------------------------------------------- #
 #
-# This slice adds only. If the port were "made to pass" by editing the oracle,
-# every comparison above would still be green — so the oracle's integrity is
-# checked explicitly rather than assumed.
+# If the port were "made to pass" by editing the oracle, every comparison above
+# would still be green — so the oracle's integrity is checked explicitly rather
+# than assumed.
+#
+# What this checks is the WORKING TREE, not the history: the reference is not
+# frozen forever, and SPGD-279 edited it deliberately (the shared last line of
+# the usage block, corrected in both implementations in one commit). What is
+# forbidden is an uncommitted local tweak to the oracle while the harness runs,
+# which is the shape a "made to pass" edit actually takes. A committed,
+# reviewed change to the reference leaves this green; an edit made to get out of
+# a red run does not.
 echo
 echo "== the oracle is unmodified =="
 if command -v git >/dev/null 2>&1 && git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
