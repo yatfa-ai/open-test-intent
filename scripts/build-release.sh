@@ -73,6 +73,22 @@
 #     asked to be, and really is free of a runtime the target machine would have
 #     to supply.
 #
+# All three are about IDENTITY, and a binary can satisfy every one of them while
+# being unable to validate a single document. So one more check stands between
+# the staged set and $DIST:
+#
+#   * the native artifact is copied to an installed-layout prefix with no
+#     schemas/ on disk, and made to VALIDATE — the shipped valid fixture must
+#     exit 0, each shipped invalid one must exit 1, and the --source fixtures
+#     must return the reference's codes. `--version` returns above the schema
+#     load (cmd/validate-intent/main.go), so nothing before this asks the
+#     artifact to resolve a schema, parse a document, or honour the exit
+#     contract. See check 4 near the promotion block.
+#
+# That last one, like the first, can only run for the target matching the host.
+# It says so in its own output rather than letting a green summary imply four
+# binaries were exercised when one was.
+#
 # A failure in any of these fails the whole script. There is no "warn and
 # continue" tier — a release you were warned about is a release you shipped.
 #
@@ -104,10 +120,10 @@
 # ----------------------------------------------------
 # Every check above runs on the BUILD HOST and leaves nothing behind. The
 # artifacts then travel — over a network, to a machine that never saw this run —
-# and arrive carrying no evidence any of it happened. Worse, of the three checks
-# only check 3 is decisive, and it can run for the native target alone; for the
-# other three artifacts the strongest identity evidence is check 1, which says
-# of itself that it "can pass without verifying anything".
+# and arrive carrying no evidence any of it happened. Worse, of the three
+# identity checks only check 3 is decisive, and it can run for the native target
+# alone; for the other three artifacts the strongest identity evidence is check
+# 1, which says of itself that it "can pass without verifying anything".
 #
 # So the run records what it actually produced: a SHA256SUMS manifest listing
 # the basename and SHA-256 of each artifact, in the standard coreutils/shasum
@@ -187,6 +203,47 @@ TARGETS=(
   "linux/arm64"
   "darwin/amd64"
   "darwin/arm64"
+)
+
+# The shipped corpus check 4 asserts the staged native artifact against. Same
+# fixtures, same expected codes, as the installed-layout section of
+# tests/cross/run_cross_build.sh (GOOD_FIXTURE / BAD_FIXTURES there) — that
+# harness proves the property about the OTHER producer's unstamped binaries in
+# dist/, which is exactly why it cannot stand in for this one. The lists are
+# restated rather than sourced because that script is a harness with its own
+# exit-code contract, not a library, and running it from here would build a
+# second set of binaries this release has nothing to do with.
+GOOD_FIXTURE="examples/unit-order-total.json"
+BAD_FIXTURES=(
+  "examples/invalid/bad-layer.json"
+  "examples/invalid/missing-required.json"
+  "examples/invalid/short-behavior.json"
+  "examples/invalid/typo-extra-property.json"
+)
+
+# --source is carried too, because it reaches the schema by a different route
+# and would otherwise be a mode the release never exercises: main.go's --source
+# branch only sets a flag, and the LoadSchema() call below it is unconditional,
+# so a schema that embeds but does not COMPILE fails here as surely as in
+# adopter mode.
+#
+# "<want>:<path>", because these do not share one expected code the way
+# BAD_FIXTURES do: examples/sources/ holds both accepted and rejected fixtures,
+# so the code travels with the path rather than with the list. One accepted
+# fixture per extractor the release cares about, plus the rejected one — enough
+# to tell "the mode works" from "the mode always says yes", which a single
+# accepted fixture could not.
+#
+# The codes are hardcoded from the reference implementation's observed answers.
+# Deriving them by shelling out to bin/validate-intent would put python3 on the
+# critical path of a build host this script deliberately keeps to Go — and
+# tests/parity/run_parity.sh already owns the question of whether the two
+# implementations still agree. This asserts that the ARTIFACT answers, not that
+# the port is correct.
+SOURCE_FIXTURES=(
+  "0:examples/sources/order_spec.rb"
+  "0:examples/sources/checkout_service_test.py"
+  "1:examples/sources/invalid/broken_intent_spec.rb"
 )
 
 red()   { printf '\033[31m%s\033[0m\n' "$*"; }
@@ -284,6 +341,9 @@ cleanup() {
   # half-built set rather than leaving it to be mistaken for a release.
   if [ -n "${STAGE:-}" ]; then rm -rf "$STAGE"; fi
   if [ -n "${INSPECT_DIR:-}" ]; then rm -rf "$INSPECT_DIR"; fi
+  # Created much later, by check 4, and only if the run gets that far — hence
+  # the :- guard rather than an unconditional read under `set -u`.
+  if [ -n "${SMOKE_DIR:-}" ]; then rm -rf "$SMOKE_DIR"; fi
   return 0
 }
 trap cleanup EXIT
@@ -307,6 +367,13 @@ SUMS="$INSPECT_DIR/sha256sums"
 HOST_OS="$("$GO" env GOHOSTOS)"
 HOST_ARCH="$("$GO" env GOHOSTARCH)"
 native_verified=0
+# The artifact $native_verified is ABOUT — not a second flag standing beside it.
+# Check 4 needs the path of the one artifact this host can execute, and taking
+# it from the same block that sets the flag is what keeps the two from ever
+# describing different builds. Recomputing "$STAGE/validate-intent-$HOST_OS-..."
+# down there would restate the loop's naming scheme in a second place, where it
+# would go stale silently the first time the scheme changed.
+native_artifact=""
 built=0
 # Named for what it holds rather than `staged`, which is already the scalar the
 # mv-failure branch below uses for the abandoned staging path. Bash would let
@@ -410,6 +477,7 @@ for target in "${TARGETS[@]}"; do
     esac
     dim "  verified by running it: $reported"
     native_verified=1
+    native_artifact="$out"
   fi
 
   # The basename, not $out: the artifact is still in staging and is not the
@@ -425,8 +493,9 @@ done
 # "ok". That is a green report from a run that verified less than it looks like.
 if [ "$native_verified" -ne 1 ]; then
   die "no target matched this host ($HOST_OS/$HOST_ARCH), so no artifact could be
-       RUN to confirm the version stamp actually applied. Add the host's target
-       to TARGETS, or run this on a host one of them matches."
+       RUN — neither to confirm the version stamp actually applied (check 3) nor
+       to confirm any of them validates anything at all (check 4). Add the
+       host's target to TARGETS, or run this on a host one of them matches."
 fi
 
 # --- the manifest: what this run produced, recorded so it can leave the host - #
@@ -464,6 +533,110 @@ case "$sums_rc" in
 esac
 green "  ok    $MANIFEST_NAME ($built entries, re-read and matching)"
 
+# --- check 4: the native artifact validates the shipped corpus, installed ---- #
+#
+# Checks 1-3 are all about SHAPE. They establish that four files exist, that
+# each is the ELF/Mach-O it claims to be, that the version bytes are present,
+# and that one of them prints the right string for --version. Not one of them
+# asks an artifact to validate a document.
+#
+# That gap is reachable, not theoretical. `--version` answers and returns from
+# the argv loop in cmd/validate-intent/main.go well above the LoadSchema() call
+# every real invocation goes through, so check 3 exercises zero schema
+# resolution and zero exit-contract behaviour — as its own comment says.
+# Meanwhile //go:embed succeeds for any file content while CompileSchema is a
+# RUNTIME operation (cmd/validate-intent/fileio.go), so a schema that embeds but
+# does not compile produces four artifacts that pass all of checks 1-3 and exit
+# 2 on every real invocation. The digest pin in schema_test.go that would catch
+# it is a `go test`, and this script runs none.
+#
+# So: before anything is promoted, the artifact that travels is made to answer.
+#
+# From an INSTALLED layout, which is the second half of the point. The schema is
+# looked for beside the executable (SchemaPath: the parent of the binary's own
+# directory), and the embedded copy is used only when nothing is there. Running
+# from the repo — or from $STAGE, which sits under <repo>/dist/ — would find the
+# real schemas/ and the embedded fallback would never be exercised. The prefix
+# is therefore built in a fresh temp dir and the absence is ASSERTED, because if
+# a schemas/ somehow existed beside it every assertion below would pass for the
+# wrong reason and this section would quietly stop testing what it names.
+#
+# The honesty constraint, restated because it is the whole reason check 4 is
+# scoped the way it is: only the artifact matching $HOST_OS/$HOST_ARCH can be
+# executed here, the same limitation check 3 documents. The other three are
+# verified as SHAPE and nothing more, and the output below says so. A summary
+# line implying all four were exercised would be precisely the defect this
+# section removes, one level up.
+SMOKE_DIR="$(mktemp -d)" || die "could not create a working directory for check 4.
+       The artifacts are built and digested, but nothing has asked one of them
+       to validate a document. 'Could not smoke-test' is not a pass."
+SMOKE_PREFIX="$SMOKE_DIR/prefix"
+mkdir -p "$SMOKE_PREFIX/bin" || die "could not create the installed prefix under $SMOKE_DIR"
+
+# A COPY, not the staged file: the artifact has to sit somewhere with no
+# schemas/ above it, and $STAGE does not qualify. Copying also means nothing in
+# this section can touch the bytes the manifest was just written for.
+cp "$native_artifact" "$SMOKE_PREFIX/bin/validate-intent" \
+  || die "could not install $(basename "$native_artifact") into $SMOKE_PREFIX/bin"
+chmod 755 "$SMOKE_PREFIX/bin/validate-intent" \
+  || die "could not make $SMOKE_PREFIX/bin/validate-intent executable"
+
+if [ -e "$SMOKE_PREFIX/schemas" ]; then
+  die "$SMOKE_PREFIX/schemas exists, so a pass below would prove nothing about
+       the embedded schema — the artifact would have read that one. This is the
+       property a downloaded binary actually depends on, so it is asserted
+       rather than assumed."
+fi
+
+# cwd moves outside the checkout ONCE, here, and is checked; fixtures are then
+# passed as absolute paths. Doing it per call as `(cd "$SMOKE_DIR" && binary)`
+# would let a failed cd short-circuit to exit status 1 — which the invalid-corpus
+# assertions would read as a legitimate "invalid" verdict from a binary that
+# never ran. A 1 from somewhere other than the validator is exactly the
+# substitution this section exists to rule out.
+#
+# Everything the promotion below touches ($DIST, $STAGE, $MANIFEST, $REPO_ROOT)
+# is already absolute, but cwd is restored afterwards anyway rather than left
+# inside a directory the EXIT trap deletes.
+cd "$SMOKE_DIR" || die "could not enter $SMOKE_DIR, so the staged artifact could not
+       be exercised from outside the checkout. Nothing was checked here."
+
+# $rc is the validator's own status and nothing else's: the `|| rc=$?` guard
+# exists only because `set -e` would otherwise abort the run on the very exit
+# code this section is trying to observe.
+smoke_expect() {
+  local want="$1" label="$2"
+  shift 2
+  local rc=0
+  "$SMOKE_PREFIX/bin/validate-intent" "$@" >"$SMOKE_DIR/out" 2>"$SMOKE_DIR/err" || rc=$?
+  if [ "$rc" != "$want" ]; then
+    sed 's/^/        /' "$SMOKE_DIR/err" >&2
+    die "installed layout: $label exited $rc, want $want.
+       The artifact for $HOST_OS/$HOST_ARCH is the right shape and reports the
+       right version, and it does not do its job. Nothing has been promoted."
+  fi
+  dim "  ok    installed layout: $label exits $rc"
+}
+
+dim "smoke-testing $(basename "$native_artifact") against the shipped corpus ..."
+smoke_expect 0 "$GOOD_FIXTURE" "$REPO_ROOT/$GOOD_FIXTURE"
+
+for fixture in "${BAD_FIXTURES[@]}"; do
+  smoke_expect 1 "$fixture" "$REPO_ROOT/$fixture"
+done
+
+for entry in "${SOURCE_FIXTURES[@]}"; do
+  want="${entry%%:*}"
+  fixture="${entry#*:}"
+  smoke_expect "$want" "--source $fixture" --source "$REPO_ROOT/$fixture"
+done
+
+cd "$REPO_ROOT" || die "could not return to $REPO_ROOT after the smoke test"
+
+green "  ok    $(basename "$native_artifact") validated the shipped corpus from a prefix with no schemas/"
+dim "        it is the only one of $built this host can execute; the other $((built - 1)) are"
+dim "        verified as shape and version only — nothing has run them."
+
 # --- promote: the staged set becomes the release, in one move --------------- #
 #
 # Only reached when every target built and every check above passed, which is
@@ -485,6 +658,8 @@ STAGE=""   # promoted — it IS $DIST now, and the EXIT trap must not remove it
 
 echo
 green "$built artifacts in $DIST, all reporting ${VERSION}${DIRTY}"
+dim "behaviourally verified: $(basename "$native_artifact") only — the $((built - 1)) cross-compiled"
+dim "targets cannot be run on this $HOST_OS/$HOST_ARCH host and were checked for shape alone."
 dim "verify a downloaded artifact against $MANIFEST_NAME with your own platform's tool:"
 dim "  cd <dir holding both> && sha256sum -c $MANIFEST_NAME   # or: shasum -a 256 -c $MANIFEST_NAME"
 ls -l "$DIST"
