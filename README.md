@@ -333,6 +333,29 @@ No toolchain, or no artifact this host can execute, exits `2` and says what went
 never a pass. The script builds and verifies only: publishing, tagging and release-asset
 upload are deliberately not here, for the reason `.agents/README.md` gives.
 
+### Verifying a downloaded artifact
+
+`scripts/build-release.sh <semver>` produces the four stamped release binaries in
+`dist/release/` alongside a **`SHA256SUMS`** manifest listing each one by basename. All of the
+release script's other checks run on the build host and leave nothing behind; the manifest is
+what carries an artifact's identity off it. Keep it beside the binary you downloaded and verify
+with your own platform's tool — it is the standard coreutils/shasum format, so no knowledge of
+this repository is required:
+
+```sh
+sha256sum -c SHA256SUMS        # GNU coreutils, e.g. Linux
+shasum -a 256 -c SHA256SUMS    # BSD/macOS
+```
+
+The digests themselves are computed with Go's `crypto/sha256`, not with a host tool: `sha256sum`
+is GNU coreutils and is absent from a stock macOS build host, which is one of only two host
+families the release script can run on. The manifest is written into the staging directory and
+**re-read and verified there before promotion**, so a release exists only if its own manifest
+matched — a manifest generated and never checked would be the vacuous green this project keeps
+having to name. It is an integrity and identity record, not a signature: the same run produced
+both, so it does not defend against an attacker who could replace both. Signing and provenance
+are a separate mechanism and are not claimed.
+
 ## Versioning
 
 Current: **v1**. Breaking changes (renamed/removed fields, narrowed enums) bump to `v2` under a new
