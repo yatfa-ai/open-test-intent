@@ -65,11 +65,22 @@
 #   3. `specguard-lint: checked N spec file(s)` — gem only, LEADING line.
 #   4. `specguard-lint: checked N @intent annotations, M malformed[; K file(s)
 #      could not be read]` — gem only, TRAILING line. There are TWO of these
-#      lines and both go to stdout (stderr is empty); a normaliser that stripped
-#      only the trailing one would diff on the leading one every single case.
+#      lines and both go to stdout; a normaliser that stripped only the
+#      trailing one would diff on the leading one every single case.
 #
 # What is left after those four rules is every byte of every FAIL block, in
 # order, plus the exit code. Those must be identical.
+#
+# A FIFTH rule, added by SPGD-247, is not one of these and lives on the other
+# stream. Since that slice every `specguard-lint` run writes exactly one line
+# to STDERR naming the implementation that produced its verdicts, so "the gem
+# is silent on stderr" — asserted all over this file, and true when it was
+# written — now means "silent apart from that line". The rule that separates
+# the two is split_gem_stderr, and unlike the four above it is paired with a
+# requirement that what it removed was THERE: a deletion nobody checks is how a
+# gem that stopped printing the line would pass the check that exists to read
+# it. See "The THIRD leg", where the same line is load-bearing rather than
+# incidental.
 #
 # WHY THIS IS NOT VACUOUS
 # -----------------------
@@ -292,9 +303,31 @@
 # SPECGUARD_VALIDATE_INTENT pointing at the port, against `specguard-lint` with
 # it unset. That is the slice the roadmap's final clause actually needs — "the
 # Ruby gem invoking it for linting" — and the claim it makes is stronger than
-# anything above, because there is nothing to normalise away: the leading
-# selection line, the trailing summary line, every FAIL block, stderr and the
-# exit code must be IDENTICAL, byte for byte, with no rules applied at all.
+# anything above: on STDOUT there is nothing to normalise away, so the leading
+# selection line, the trailing summary line, every FAIL block and the exit code
+# must be IDENTICAL, byte for byte, with no rules applied at all.
+#
+# STDERR carries the one exception, and it is an exception by design rather
+# than a difference tolerated. This paragraph used to include stderr in the
+# byte-for-byte claim, and SPGD-247 is what changed it: the gem now writes
+# exactly one line per run naming the implementation that produced its
+# verdicts, precisely BECAUSE the rest of this section is true. Two backends
+# whose every other byte agrees are two backends a reader cannot tell apart
+# from the output, and "which validator did this CI job run" is not a question
+# a linter may leave unanswerable.
+#
+# So the claim splits rather than weakens, and the second half is an
+# inequality:
+#
+#   * everything on stderr EXCEPT the provenance line must still be identical
+#     byte for byte — in practice empty, and asserted as empty;
+#   * the provenance lines themselves must DIFFER, and both must be present.
+#     Two arms printing the same line, or neither printing one, is a failure
+#     here even though both compare equal.
+#
+# That is the whole of the fifth rule (see split_gem_stderr, below the other
+# four). It is stated here rather than left to the call sites because it is the
+# only place in this file where "these two bytes differ" is the passing answer.
 #
 # That strength is exactly why it needs its own anti-vacuity guard, and it is a
 # different one from the counts above. A gem checkout that predates
@@ -571,6 +604,90 @@ normalize_ruby() {
   sed -e '/^specguard-lint: checked /d'
 }
 
+# --------------------------------------------------------------------------- #
+# the gem's provenance line — the fifth rule, and the only one on STDERR
+# --------------------------------------------------------------------------- #
+#
+# Since SPGD-247 every `specguard-lint` run writes exactly one line to stderr
+# naming the implementation that produced its verdicts:
+#
+#     specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is unset)
+#     specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is set but blank, which means off)
+#     specguard-lint: validated by validate-intent 1.4.0 (go1.22.12 linux/amd64) at /path (SPECGUARD_VALIDATE_INTENT)
+#     specguard-lint: validated by the binary at /path (SPECGUARD_VALIDATE_INTENT), which could not report its identity
+#
+# It exists because until it did, a report produced by the port and a report
+# produced by the gem's own Linter were the same bytes — the question this whole
+# file exists to answer was unanswerable from a run's own output. So it is not
+# noise to be filtered on the way to the real comparison; it is the one line
+# section 8 most wants to read.
+#
+# Two consequences, and they pull in OPPOSITE directions, which is why this is
+# two functions rather than one deletion:
+#
+#   * every "the gem is silent on stderr" assertion in this file was written
+#     when silence was total. Silence now means "nothing BEYOND this line", so
+#     those assertions compare `_rest` against /dev/null — and additionally
+#     require the line to BE there. Deleting a line and not checking it was
+#     deleted is how a rule that matched everything would go unnoticed; worse
+#     here, because a gem that stopped printing the line would then pass the
+#     very check that exists to observe it.
+#   * section 8's cross-backend comparison inverts. Everywhere else the two
+#     backends must produce identical bytes; the provenance line is the single
+#     thing that must DIFFER, because it is the one place the two runs are
+#     supposed to be distinguishable. See the header's THIRD-leg note.
+#
+# The prefix is deliberately the common `validated ` stem rather than any of
+# the four full sentences: the wordings are the gem's to change, but a line
+# that no longer starts this way is not a provenance line at all, and the
+# "exactly one" checks below turn that into a failure rather than a silent
+# reclassification into `_rest`.
+PROVENANCE_RE='^specguard-lint: validated '
+
+# split_gem_stderr <err-file> — writes <err-file>.rest and <err-file>.prov.
+# Both always exist afterwards, empty if the corresponding half is.
+split_gem_stderr() {
+  local err="$1"
+  grep -v "$PROVENANCE_RE" "$err" > "$err.rest" 2>/dev/null || true
+  grep    "$PROVENANCE_RE" "$err" > "$err.prov" 2>/dev/null || true
+}
+
+# check_gem_stderr <err-file> <who> — the replacement for `cmp -s /dev/null`.
+# Appends to the caller's `problems` array (bash's dynamic scoping; every call
+# site declares or owns one).
+check_gem_stderr() {
+  local err="$1" who="$2" lines
+  split_gem_stderr "$err"
+  lines="$(wc -l < "$err.prov")"
+  [ "$lines" -eq 1 ] \
+    || problems+=("$who wrote $lines provenance lines to stderr, expected exactly 1 (SPGD-247)")
+  cmp -s /dev/null "$err.rest" \
+    && return 0
+  problems+=("$who wrote to stderr beyond its provenance line")
+  return 0
+}
+
+# check_backend_stderr <rb-err> <rbgo-err> — the replacement for the
+# cross-backend `cmp -s`. The remainder must match byte for byte; the
+# provenance lines must NOT, and must both be present.
+check_backend_stderr() {
+  local rb="$1" go="$2"
+  split_gem_stderr "$rb"
+  split_gem_stderr "$go"
+  cmp -s "$rb.rest" "$go.rest" || problems+=("stderr differs beyond the provenance line")
+  [ -s "$rb.prov" ] || problems+=("the Ruby path printed no provenance line")
+  [ -s "$go.prov" ] || problems+=("the Go backend printed no provenance line")
+  # The inversion, and the reason this is not just a filtered cmp: if the two
+  # arms ever printed the SAME provenance line, the run would once again be
+  # unable to say which validator answered — the exact hole SPGD-247 closed.
+  # An empty .prov on both sides lands here too, so "the gem stopped printing
+  # it" cannot pass as agreement.
+  if cmp -s "$rb.prov" "$go.prov"; then
+    problems+=("both backends printed the SAME provenance line — the run cannot say which validator answered")
+  fi
+  return 0
+}
+
 # run_go <label-safe-name> [args...] — writes $WORK/<name>.go.{out,err,rc}
 run_go() {
   local name="$1"
@@ -689,7 +806,7 @@ compare() {
 
   [ "$go_rc" = "$rb_rc" ] || problems+=("exit code: go=$go_rc ruby=$rb_rc")
   cmp -s "$WORK/$name.go.norm" "$WORK/$name.rb.norm" || problems+=("findings differ")
-  cmp -s /dev/null "$WORK/$name.rb.err" || problems+=("the gem wrote to stderr, which no shared case should")
+  check_gem_stderr "$WORK/$name.rb.err" "the gem"
   cmp -s /dev/null "$WORK/$name.go.err" || problems+=("the port wrote to stderr, which no shared case should")
 
   # The half the normalisation deleted.
@@ -720,9 +837,9 @@ compare() {
     printf '        --- findings (-go +ruby), after normalisation ---\n'
     diff -u "$WORK/$name.go.norm" "$WORK/$name.rb.norm" | tail -n +3 | sed 's/^/        /'
   fi
-  if [ -s "$WORK/$name.rb.err" ]; then
-    printf '        --- the gem'"'"'s stderr ---\n'
-    sed 's/^/        /' "$WORK/$name.rb.err"
+  if [ -s "$WORK/$name.rb.err.rest" ]; then
+    printf '        --- the gem'"'"'s stderr, beyond its provenance line ---\n'
+    sed 's/^/        /' "$WORK/$name.rb.err.rest"
   fi
   if [ -s "$WORK/$name.go.err" ]; then
     printf '        --- the port'"'"'s stderr ---\n'
@@ -732,10 +849,15 @@ compare() {
 }
 
 # compare_backends <label> [files...] — the SAME gem, twice, with and without
-# its Go backend. No normalisation: this pair has no ratified differences to
-# remove, so every byte of stdout, every byte of stderr and the exit code must
-# be identical. Anything that survives here survives because it is genuinely the
+# its Go backend. No normalisation of stdout: this pair has no ratified
+# differences to remove, so every byte of stdout and the exit code must be
+# identical. Anything that survives here survives because it is genuinely the
 # same, not because a rule deleted it.
+#
+# Stderr is the one exception, and it is an exception in BOTH directions: the
+# provenance line SPGD-247 added is required to differ (it is the only place a
+# run says which of these two validators answered), and everything else on
+# stderr is still required to match byte for byte. See check_backend_stderr.
 compare_backends() {
   local label="$1"
   shift
@@ -759,7 +881,7 @@ compare_backends() {
 
   [ "$rb_rc" = "$go_rc" ] || problems+=("exit code: ruby=$rb_rc backend=$go_rc")
   cmp -s "$WORK/$name.rb.out" "$WORK/$name.rbgo.out" || problems+=("stdout differs")
-  cmp -s "$WORK/$name.rb.err" "$WORK/$name.rbgo.err" || problems+=("stderr differs")
+  check_backend_stderr "$WORK/$name.rb.err" "$WORK/$name.rbgo.err"
 
   # Non-vacuity, the same argument the counts make for the Go-vs-Ruby leg: two
   # runs that both died before printing anything compare equal. The summary
@@ -792,9 +914,13 @@ compare_backends() {
     printf '        --- stdout (-ruby +backend) ---\n'
     diff -u "$WORK/$name.rb.out" "$WORK/$name.rbgo.out" | tail -n +3 | sed 's/^/        /'
   fi
-  if ! cmp -s "$WORK/$name.rb.err" "$WORK/$name.rbgo.err"; then
-    printf '        --- stderr (-ruby +backend) ---\n'
-    diff -u "$WORK/$name.rb.err" "$WORK/$name.rbgo.err" | tail -n +3 | sed 's/^/        /'
+  if ! cmp -s "$WORK/$name.rb.err.rest" "$WORK/$name.rbgo.err.rest"; then
+    printf '        --- stderr beyond the provenance line (-ruby +backend) ---\n'
+    diff -u "$WORK/$name.rb.err.rest" "$WORK/$name.rbgo.err.rest" | tail -n +3 | sed 's/^/        /'
+  fi
+  if cmp -s "$WORK/$name.rb.err.prov" "$WORK/$name.rbgo.err.prov"; then
+    printf '        --- the provenance lines, which must differ ---\n'
+    sed 's/^/        /' "$WORK/$name.rb.err.prov"
   fi
   return 1
 }
@@ -870,6 +996,71 @@ if cmp -s "$WORK/probe.rb.norm" "$WORK/probe.expected"; then
 else
   fail_case "rules 3-4 deleted or kept the wrong lines" \
     "$(diff -u "$WORK/probe.expected" "$WORK/probe.rb.norm" | tail -n +3)"
+fi
+
+# The fifth rule — the stderr split — gets the same treatment, and needs it
+# more than the four above. It is the only rule whose job is to make an
+# assertion about EMPTINESS survive a stream that is no longer empty, so a
+# too-greedy pattern would not merely delete the wrong lines: it would restore
+# `cmp -s /dev/null` to passing on stderr that should have failed the run.
+printf 'specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is unset)\nwarning: something else entirely\n' \
+  > "$WORK/probe.rb.err"
+split_gem_stderr "$WORK/probe.rb.err"
+printf 'warning: something else entirely\n' > "$WORK/probe.rest.expected"
+printf 'specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is unset)\n' > "$WORK/probe.prov.expected"
+if cmp -s "$WORK/probe.rb.err.rest" "$WORK/probe.rest.expected" \
+   && cmp -s "$WORK/probe.rb.err.prov" "$WORK/probe.prov.expected"; then
+  pass_case "rule 5 splits the provenance line off stderr and keeps every other byte"
+else
+  fail_case "rule 5 split stderr wrongly" \
+    "$(diff -u "$WORK/probe.rest.expected" "$WORK/probe.rb.err.rest" | tail -n +3)" \
+    "$(diff -u "$WORK/probe.prov.expected" "$WORK/probe.rb.err.prov" | tail -n +3)"
+fi
+
+# ...and the two checks built on it must be able to FAIL, which is the half a
+# filtering rule most easily loses. A gem that stopped printing the line, and
+# two backends that printed the same one, are both "stderr compares equal" —
+# the shape this file's header spends its length warning about.
+probe_report=()
+probe_check() {
+  local problems=()
+  "$@"
+  probe_report=("${problems[@]}")
+}
+
+printf 'specguard-lint: validated in Ruby (SPECGUARD_VALIDATE_INTENT is unset)\n' > "$WORK/probe.silent.err"
+probe_check check_gem_stderr "$WORK/probe.silent.err" "the gem"
+if [ ${#probe_report[@]} -eq 0 ]; then
+  pass_case "rule 5's check accepts a run whose only stderr is its provenance line"
+else
+  fail_case "rule 5's check rejected a correct run" "${probe_report[@]}"
+fi
+
+: > "$WORK/probe.noprov.err"
+probe_check check_gem_stderr "$WORK/probe.noprov.err" "the gem"
+if [ ${#probe_report[@]} -eq 0 ]; then
+  fail_case "a gem that printed NO provenance line passed the silence check" \
+    "totally empty stderr must fail now — the line is required, not merely tolerated"
+else
+  pass_case "a gem that stopped printing its provenance line is a failure, not silence"
+fi
+
+cp "$WORK/probe.silent.err" "$WORK/probe.same.err"
+probe_check check_backend_stderr "$WORK/probe.silent.err" "$WORK/probe.same.err"
+if [ ${#probe_report[@]} -eq 0 ]; then
+  fail_case "two backends printing the SAME provenance line compared equal" \
+    "the one line that must differ between the arms was allowed to match"
+else
+  pass_case "two backends printing the same provenance line is a failure"
+fi
+
+printf 'specguard-lint: validated by validate-intent 0.0.0 (go1.22 linux/amd64) at /tmp/x (SPECGUARD_VALIDATE_INTENT)\n' \
+  > "$WORK/probe.backend.err"
+probe_check check_backend_stderr "$WORK/probe.silent.err" "$WORK/probe.backend.err"
+if [ ${#probe_report[@]} -eq 0 ]; then
+  pass_case "two backends naming themselves differently, silent otherwise, compare equal"
+else
+  fail_case "the cross-backend stderr check rejected a correct pair" "${probe_report[@]}"
 fi
 
 # The counts recovered from the deleted halves must agree with each other on a
@@ -1160,7 +1351,7 @@ fi
 [ "$(go_counts "$WORK/parsefail.go.out")" = "3 2 0" ] \
   || problems+=("the port's counts should be 3 annotations, 2 malformed, 0 unread — got [$(go_counts "$WORK/parsefail.go.out")]")
 cmp -s /dev/null "$WORK/parsefail.go.err" || problems+=("the port wrote to stderr; findings belong on stdout")
-cmp -s /dev/null "$WORK/parsefail.rb.err" || problems+=("the gem wrote to stderr; findings belong on stdout")
+check_gem_stderr "$WORK/parsefail.rb.err" "the gem"
 
 if [ ${#problems[@]} -eq 0 ]; then
   annotations_compared=$((annotations_compared + 3))
@@ -1286,7 +1477,7 @@ fi
 [ "$(go_counts "$WORK/acceptkind.go.out")" = "8 7 0" ] \
   || problems+=("the port's counts should be [8 7 0] — got [$(go_counts "$WORK/acceptkind.go.out")]")
 cmp -s /dev/null "$WORK/acceptkind.go.err" || problems+=("the port wrote to stderr; findings belong on stdout")
-cmp -s /dev/null "$WORK/acceptkind.rb.err" || problems+=("the gem wrote to stderr; findings belong on stdout")
+check_gem_stderr "$WORK/acceptkind.rb.err" "the gem"
 
 if [ ${#problems[@]} -eq 0 ]; then
   annotations_compared=$((annotations_compared + 8))
@@ -1356,7 +1547,7 @@ fi
 [ "$(go_counts "$WORK/acceptverdict.go.out")" = "4 0 0" ] \
   || problems+=("the port's counts should be [4 0 0] — got [$(go_counts "$WORK/acceptverdict.go.out")]")
 cmp -s /dev/null "$WORK/acceptverdict.go.err" || problems+=("the port wrote to stderr")
-cmp -s /dev/null "$WORK/acceptverdict.rb.err" || problems+=("the gem wrote to stderr; findings belong on stdout")
+check_gem_stderr "$WORK/acceptverdict.rb.err" "the gem"
 
 if [ ${#problems[@]} -eq 0 ]; then
   annotations_compared=$((annotations_compared + 4))
@@ -1403,7 +1594,7 @@ problems=()
 [ "$(grep -c '^FAIL  ' "$WORK/utf8.go.out")" = "1" ] || problems+=("the port reported more than the one read failure")
 [ "$(grep -c '^FAIL  ' "$WORK/utf8.rb.out")" = "1" ] || problems+=("the gem reported more than the one read failure")
 cmp -s /dev/null "$WORK/utf8.go.err" || problems+=("the port wrote to stderr; the reference puts read failures on stdout")
-cmp -s /dev/null "$WORK/utf8.rb.err" || problems+=("the gem wrote to stderr; findings belong on stdout (CLI#report_results)")
+check_gem_stderr "$WORK/utf8.rb.err" "the gem"
 # The gem must also not count an unread file as an annotation it inspected.
 if rb_c="$(ruby_counts "$WORK/utf8.rb.out")"; then
   [ "$rb_c" = "0 0 1" ] || problems+=("the gem's summary should be 0 annotations, 0 malformed, 1 unread — got [$rb_c]")
@@ -1448,16 +1639,19 @@ cmp -s /dev/null "$WORK/missing.go.out" \
   || problems+=("the port wrote to stdout; its no-match diagnostic belongs on stderr")
 grep -q "^FAIL  $MISSING — could not read file: " "$WORK/missing.rb.out" \
   || problems+=("the gem no longer writes 'FAIL <path> — could not read file: ...' to stdout")
-cmp -s /dev/null "$WORK/missing.rb.err" \
-  || problems+=("the gem wrote to stderr; findings belong on stdout (CLI#report_results)")
+check_gem_stderr "$WORK/missing.rb.err" "the gem"
 if rb_c="$(ruby_counts "$WORK/missing.rb.out")"; then
   [ "$rb_c" = "0 0 1" ] || problems+=("the gem's summary should be 0 annotations, 0 malformed, 1 unread — got [$rb_c]")
 else
   problems+=("the gem printed no summary line")
 fi
 # If the two ever converge, this ratification is the thing that is now wrong.
+# The gem's provenance line is set aside first: it is not part of this ratified
+# difference, and leaving it in would wedge the tripwire permanently shut —
+# the port has no such line and never will, so the comparison could not fire
+# again however identical the two tools became.
 if cmp -s "$WORK/missing.go.out" "$WORK/missing.rb.out" \
-   && cmp -s "$WORK/missing.go.err" "$WORK/missing.rb.err"; then
+   && cmp -s "$WORK/missing.go.err" "$WORK/missing.rb.err.rest"; then
   problems+=("the two agree byte-for-byte now — RETIRE this ratification (header, ratified difference (b))")
 fi
 
@@ -1697,8 +1891,8 @@ backend_read_difference() {
     || problems+=("the Ruby path reported more than the one read failure")
   [ "$(count_matching "$WORK/$name.rbgo.out" '^FAIL  ')" = "1" ] \
     || problems+=("the Go backend reported more than the one read failure")
-  cmp -s /dev/null "$WORK/$name.rb.err" || problems+=("the Ruby path wrote to stderr; findings belong on stdout")
-  cmp -s /dev/null "$WORK/$name.rbgo.err" || problems+=("the Go backend wrote to stderr; findings belong on stdout")
+  check_gem_stderr "$WORK/$name.rb.err"   "the Ruby path"
+  check_gem_stderr "$WORK/$name.rbgo.err" "the Go backend"
   # The counts are where "same classification" stops being a claim about prose.
   # An unread file contributes no annotation on either side (CLI#summary_line),
   # and the backend's `read`/`no-match` findings have to land in the same clause.
@@ -1824,8 +2018,8 @@ if bp_go_c="$(ruby_counts "$WORK/backendparse.rbgo.out")"; then
 else
   problems+=("the Go backend printed no summary line")
 fi
-cmp -s "$WORK/backendparse.rb.err" "$WORK/backendparse.rbgo.err" || problems+=("stderr differs")
-cmp -s /dev/null "$WORK/backendparse.rbgo.err" || problems+=("the Go backend wrote to stderr; findings belong on stdout")
+check_backend_stderr "$WORK/backendparse.rb.err" "$WORK/backendparse.rbgo.err"
+check_gem_stderr "$WORK/backendparse.rbgo.err" "the Go backend"
 
 if [ ${#problems[@]} -eq 0 ]; then
   backend_annotations_compared=$((backend_annotations_compared + 3))
@@ -1896,8 +2090,8 @@ bak_go_c="$(ruby_counts "$WORK/backendacceptkind.rbgo.out")" || bak_go_c="<none>
 [ "$bak_go_c" = "8 7 0" ] || problems+=("the Go backend's summary should be [8 7 0] — got [$bak_go_c]")
 cmp -s "$WORK/backendacceptkind.rb.out" "$WORK/backendacceptkind.rbgo.out" \
   && problems+=("the two agree byte-for-byte now — RETIRE entry (v) and let 8a's loop pick \$ACCEPT_KIND up")
-cmp -s /dev/null "$WORK/backendacceptkind.rbgo.err" || problems+=("the Go backend wrote to stderr; findings belong on stdout")
-cmp -s "$WORK/backendacceptkind.rb.err" "$WORK/backendacceptkind.rbgo.err" || problems+=("stderr differs")
+check_backend_stderr "$WORK/backendacceptkind.rb.err" "$WORK/backendacceptkind.rbgo.err"
+check_gem_stderr "$WORK/backendacceptkind.rbgo.err" "the Go backend"
 # The pass-through half: the backend's lines must be EXACTLY the port's, so this
 # is the port's classification reproduced rather than a third behaviour.
 cmp -s "$WORK/acceptkind.go.fails" "$WORK/backendacceptkind.rbgo.fails" \
@@ -1946,8 +2140,8 @@ bav_go_c="$(ruby_counts "$WORK/backendacceptverdict.rbgo.out")" || bav_go_c="<no
 [ "$bav_go_c" = "4 0 0" ] || problems+=("the Go backend's summary should be [4 0 0] — got [$bav_go_c]")
 [ "$(head -n 1 "$WORK/backendacceptverdict.rb.out")" = "$(head -n 1 "$WORK/backendacceptverdict.rbgo.out")" ] \
   || problems+=("the two backends disagree about the SELECTION as well, which is not part of this ratification")
-cmp -s /dev/null "$WORK/backendacceptverdict.rbgo.err" || problems+=("the Go backend wrote to stderr")
-cmp -s "$WORK/backendacceptverdict.rb.err" "$WORK/backendacceptverdict.rbgo.err" || problems+=("stderr differs")
+check_backend_stderr "$WORK/backendacceptverdict.rb.err" "$WORK/backendacceptverdict.rbgo.err"
+check_gem_stderr "$WORK/backendacceptverdict.rbgo.err" "the Go backend"
 
 if [ ${#problems[@]} -eq 0 ]; then
   backend_annotations_compared=$((backend_annotations_compared + 4))
@@ -1981,8 +2175,7 @@ grep -v "^FAIL  $MISSING — " "$WORK/backendmixed.rb.out"   > "$WORK/backendmix
 grep -v "^FAIL  $MISSING — " "$WORK/backendmixed.rbgo.out" > "$WORK/backendmixed.rbgo.norm"
 cmp -s "$WORK/backendmixed.rb.norm" "$WORK/backendmixed.rbgo.norm" \
   || problems+=("the good file's report differs once the unreadable path's own line is set aside")
-cmp -s "$WORK/backendmixed.rb.err" "$WORK/backendmixed.rbgo.err" \
-  || problems+=("stderr differs")
+check_backend_stderr "$WORK/backendmixed.rb.err" "$WORK/backendmixed.rbgo.err"
 
 if [ ${#problems[@]} -eq 0 ]; then
   backend_annotations_compared=$((backend_annotations_compared + 7))
