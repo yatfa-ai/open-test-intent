@@ -251,8 +251,47 @@ by comparing nothing to nothing.
 It is a separate script because it must stay runnable **without a Go toolchain**, where
 `run_parity.sh` (which rebuilds the port first) cannot. Point it at a gem checkout with
 `SPECGUARD_RSPEC=/path/to/specguard-rspec`; without one it exits 2 and says nothing was
-compared, rather than passing. Two read-failure differences between the gem and the port
-are ratified rather than fixed, with the reasons and the assertions in the script's header.
+compared, rather than passing. Four differences between the gem and the port are ratified
+rather than fixed — with the reasons and the assertions in the script's header.
+
+Three of them are wording: two read failures and one parse diagnostic, each a case of the
+gem declining to re-port a CPython error string. The fourth is not a wording difference at
+all, and it is the one that explains the third: the two tools parse with two different JSON
+parsers, and **those parsers do not accept the same language**. CPython's is strictly the
+more permissive — it takes `NaN`/`Infinity`/`-Infinity`, a lone high surrogate escape, and
+nesting past Ruby's `max_nesting: 100`. That list is exhaustive and was derived by sweeping
+89,108 documents (this repo's own `pyjson_fuzz_test.go` corpus, plus every one of the 65,536
+single `\uXXXX` escapes) through both parsers, not by collecting fixtures one at a time.
+
+Its section 8 compares a third pair: the gem against **itself**, once on its Ruby path and
+once with `SPECGUARD_VALIDATE_INTENT` pointing at this binary — the gem's opt-in Go backend.
+For every payload both parsers accept, everything structural is required to be identical byte
+for byte: the selection line, the summary line, which annotation failed and where, stderr and
+the exit code. **Six differences are enumerated**, and each is asserted to *still* differ, so
+closing one retires the entry instead of leaving it to rot.
+
+Three of the six are read failures — the gem cannot name an errno the binary never gave it.
+The fourth is a payload that survives normalisation and still is not JSON: it gets **CPython's**
+parser diagnostic through the backend and **Ruby's** through the Ruby path. That is an ordinary
+typo in an `@intent`, not an exotic input, so it is the difference a user flipping the variable
+on will actually see.
+
+The fifth and sixth are the acceptance-set difference from inside the gem, and neither is about
+prose. On a payload only CPython parses, the backend does not word the failure differently — it
+does not have the same failure. It reports a **schema** violation where the Ruby path reports a
+**parse** failure; and where such a payload is otherwise schema-valid, the backend finds nothing
+wrong and **exits 0 where the Ruby path exits 1**. That last case is the only known input on
+which flipping the variable changes whether the run passes.
+
+Both of those went unenumerated for a review cycle each, for the same reason twice: the corpus
+was grown from guesses about inputs rather than from the generator of divergence. Section 4b
+built the first payload the normalizer cannot rescue; section 4c sweeps the acceptance set and
+pins its boundary, including the members that do **not** diverge (a lone *low* surrogate is fine
+on both).
+
+A gem checkout predating that backend ignores the variable rather than failing on it, which
+would compare the Ruby path against itself and report perfect agreement — so the preflight
+probes for the refusal first and exits 2 when it does not come.
 
 ```sh
 go test ./...                # unit coverage for the Python-emulation layer,
