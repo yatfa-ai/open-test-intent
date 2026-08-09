@@ -24,9 +24,35 @@ SpecGuard platform.
 
 ## How to validate
 
-The repo ships a zero-dependency validator (`bin/validate-intent` — Python 3 standard library only,
-nothing to install) that checks an annotation against `schemas/open-test-intent.v1.json`, either as
-parsed JSON or straight out of your test source.
+Two implementations of the same validator, held to each other byte for byte. Pick by what the
+machine you are running on already has:
+
+- **`bin/validate-intent`** — the reference implementation, Python 3 standard library only. On a
+  host that already has `python3` there is nothing to install. That qualifier is the whole of it:
+  a `node:alpine`, `golang` or `scratch` image has no `python3` at all, so on those this script is
+  not a zero-install path but an impossible one.
+- **`validate-intent`** — the Go port, a single static binary with no runtime to install anywhere.
+  One line acquires and verifies it, needing neither a clone of this repository nor a Go toolchain
+  — the installer itself is fetched over the network and piped, so there is nothing to check out
+  first:
+
+  ```sh
+  curl -fsSL https://host/owner/repo/raw/v1.4.0/scripts/install.sh | bash -s -- --from https://host/owner/repo/releases/download/v1.4.0
+  ```
+
+  Pipe it into **`bash`**, not `sh`: arriving on stdin is the one case the script cannot re-exec
+  itself out of. On a host that *does* have this repository, the same script runs from the
+  checkout — `scripts/install.sh --from dist/release --prefix /usr/local/bin`. Both URLs above
+  name a **published release, which this repository deliberately does not produce**: it builds
+  and verifies release assets, but tagging them and uploading them is out of its scope.
+
+  See [Installing a built artifact, and verifying it](#installing-a-built-artifact-and-verifying-it)
+  for what is checked before anything lands, and [The Go port](#the-go-port) for the mode matrix
+  and what is genuinely still open.
+
+Either one checks an annotation against `schemas/open-test-intent.v1.json`, either as parsed JSON
+or straight out of your test source. The commands below invoke the Python script; the binary takes
+the same arguments and prints the same bytes.
 
 ```sh
 # Self-test the in-repo fixtures (no arguments): every examples/*.json must pass
@@ -164,11 +190,11 @@ Note that `./bin/validate-intent` (self-test mode) and this suite check differen
 the self-test verifies the **fixtures** still match their expected outcome, while the
 suite verifies the **validator logic** — run both.
 
-## The Go port (in progress)
+## The Go port
 
-`cmd/validate-intent` is a Go port of the same validator, on its way to a single static
-binary adopters can drop in without a Python 3 runtime. Python remains the reference
-implementation; the Go build is held to it byte for byte.
+`cmd/validate-intent` is a Go port of the same validator: a single static binary adopters can drop
+in without a Python 3 runtime. Python remains the reference implementation; the Go build is held to
+it byte for byte.
 
 **Implemented so far:** adopter (`FILE...`) mode, `-h`/`--help`, self-test mode,
 `--source`, `--source --json`, recursive `**` globs, stdin (`-`), and `--json` for
@@ -177,8 +203,22 @@ adopter (`FILE...`) mode.
 **Not yet:** nothing.
 
 The mode matrix is complete — every surface the reference exposes is implemented
-rather than refused. What is left is packaging: cross-compiled release binaries and
-the wrapper gem, neither of which is a behaviour of this binary.
+rather than refused. Packaging shipped with it: `scripts/build-release.sh` cross-compiles the four
+stamped artifacts and `scripts/install.sh` puts one on a host and checks it against the manifest
+before it lands, both described below and both calibrated under `tests/cross/`.
+
+Two things are open, and neither is a behaviour of this binary. **Publishing** — tagging a version
+and uploading the assets — is deliberately not in this repository: `scripts/install.sh` ("What this
+does NOT do: publish, tag, or upload anything") and `tests/cross/run_cross_build.sh` ("What this
+deliberately does not do") each record it in their own headers, `.agents/README.md` makes
+`.github/workflows/` human-owned here, and the release chapter below says the same. That is why the
+one-line install above takes a release-asset base URL somebody else published. **The wrapper gem**
+exists and is **opt-in** — not absent, and not finished: `specguard-rspec`'s
+`lib/specguard/rspec/validator_backend.rb` shells out to this binary when
+`SPECGUARD_VALIDATE_INTENT` names one, and stays off by default because, in its own words, "there
+is no release to depend on" — so the hand-rolled Ruby validator it is meant to replace is still in
+place beside it. Both are downstream of the same published release rather than of a missing
+capability here.
 
 What still *refuses* with exit `2` and a diagnostic naming itself, rather than answering,
 is the schema's `pattern` keyword, and two environment settings this port cannot
