@@ -862,7 +862,7 @@ compare_tree "** mixed with a no-match"   'spec/**/*.json' 'nope/**/*.json'
 
 # _expand_files is mode-agnostic (bin/validate-intent:457-464), so `**` is not
 # an adopter-mode feature: --source globs through the very same expander. These
-# are the README's own quickstart lines (README.md:63, 69, 73), and the second
+# are the README's own quickstart lines (README.md:72, 78, 82), and the second
 # one is where the symlink matters most — capture_spec.rb is reported twice,
 # once by its real path and once through spec/linked.
 compare_tree "** under --source"          --source 'spec/**/*_spec.rb'

@@ -2148,11 +2148,20 @@ func TestTheReadmeDoesNotCallShippedPackagingUnfinished(t *testing.T) {
 	// 2. The "what is left" sentence. Pairing rather than string matching: the
 	// subject may be described in any words, and so may the fact that it shipped;
 	// what may not co-occur is the subject and a still-to-come marker.
+	//
+	// Every marker is a still-to-come CONSTRUCTION, never a bare stem. "remains"
+	// on its own used to be in this list, and it would have fired on "the
+	// cross-compiled binaries remain reproducible across hosts" — a true sentence
+	// about a shipped capability, failed by a guard whose whole purpose is to
+	// catch the section calling that capability unfinished. A false failure here
+	// teaches the next reader to delete the test, so the stems are anchored to the
+	// sense that makes them a claim about outstanding work.
 	subjects := []string{"cross-compil", "cross compil", "release binaries", "release binary"}
 	markers := []string{
 		"what is left", "what's left", "what remains", "what is missing",
 		"is left", "are left", "still to", "yet to", "not yet", "still missing",
-		"remains", "remaining", "outstanding", "unfinished", "to come",
+		"remains to", "remain to", "remains open", "remain open",
+		"remaining work", "outstanding", "unfinished", "to come",
 	}
 	for _, sentence := range readmeSentences(body) {
 		lower := strings.ToLower(sentence)

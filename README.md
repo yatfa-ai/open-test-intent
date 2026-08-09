@@ -32,14 +32,23 @@ machine you are running on already has:
   a `node:alpine`, `golang` or `scratch` image has no `python3` at all, so on those this script is
   not a zero-install path but an impossible one.
 - **`validate-intent`** — the Go port, a single static binary with no runtime to install anywhere.
-  One line acquires and verifies it, needing neither a clone of this repository nor a Go toolchain:
+  One line acquires and verifies it, needing neither a clone of this repository nor a Go toolchain
+  — the installer itself is fetched over the network and piped, so there is nothing to check out
+  first:
 
   ```sh
-  scripts/install.sh --from <release-asset-base-url> --prefix /usr/local/bin
+  curl -fsSL https://host/owner/repo/raw/v1.4.0/scripts/install.sh | bash -s -- --from https://host/owner/repo/releases/download/v1.4.0
   ```
 
+  Pipe it into **`bash`**, not `sh`: arriving on stdin is the one case the script cannot re-exec
+  itself out of. On a host that *does* have this repository, the same script runs from the
+  checkout — `scripts/install.sh --from dist/release --prefix /usr/local/bin`. Both URLs above
+  name a **published release, which this repository deliberately does not produce**: it builds
+  and verifies release assets, but tagging them and uploading them is out of its scope.
+
   See [Installing a built artifact, and verifying it](#installing-a-built-artifact-and-verifying-it)
-  for what that checks before anything lands, and [The Go port](#the-go-port) for the mode matrix.
+  for what is checked before anything lands, and [The Go port](#the-go-port) for the mode matrix
+  and what is genuinely still open.
 
 Either one checks an annotation against `schemas/open-test-intent.v1.json`, either as parsed JSON
 or straight out of your test source. The commands below invoke the Python script; the binary takes
