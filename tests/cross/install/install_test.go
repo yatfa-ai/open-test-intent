@@ -55,6 +55,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1842,4 +1843,237 @@ func TestAgainstARealReleaseBuild(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dist, hostArtifact())); err != nil {
 		t.Errorf("the release directory has no %s, so install.sh and build-release.sh disagree about artifact naming: %v", hostArtifact(), err)
 	}
+}
+
+// TestReleaseGateRefusesAThinnedEmbed is the non-vacuousness proof for check 4's
+// bare self-test, and the only place scripts/build-release.sh is executed in its
+// REFUSING direction.
+//
+// TestAgainstARealReleaseBuild above runs the same script in the passing
+// direction, so `go test ./...` already goes green whenever a release promotes.
+// That is precisely the shape the check exists to distrust. Check 4's eight
+// fixture-fed assertions each hand the artifact an absolute path out of the
+// checkout, so every one of them reads the BUILD HOST'S DISK and not one can see
+// what was compiled into the binary: before the bare run was added, an artifact
+// whose embedded corpus had been thinned passed all eight, was digested into
+// SHA256SUMS, and was promoted. An assertion that has never been observed to
+// fail is not distinguishable from one that cannot, and this ticket exists
+// because that property was argued rather than executed at the producer.
+//
+// So the defect is built. A staged copy of the tree gets its //go:embed
+// directive narrowed to a SUBSET of examples/, and the real script is run over
+// it. What makes this the right mutation is that the resulting artifact is not
+// broken in any way an exit status can see: it compiles, it reports its version,
+// it validates every fixture handed to it, and its self-test exits 0 while
+// reporting a smaller — and greener-reading — number. Only the tally separates
+// it from a good release.
+//
+// The mutation is on the EMBED alone; examples/ on disk is left whole.
+// Deleting the fixtures would break the disk-fed assertions above as well, and
+// the run would then die for a reason with nothing to do with the embed — this
+// test would pass while proving none of what it claims.
+//
+// Skipped under -short for its neighbour's reason: it cross-compiles the four
+// release targets.
+func TestReleaseGateRefusesAThinnedEmbed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("cross-compiles the four release targets; run without -short")
+	}
+	requireSupportedHost(t)
+
+	// Read back out of the script rather than restated, so this test asserts
+	// agreement with the gate instead of holding a third copy of a literal
+	// tests/parity/run_parity.sh already pins. It also means a check 4 that
+	// stopped requiring a tally at all fails here by name, rather than leaving
+	// this test quietly comparing against a string nothing emits.
+	fullTally := pinnedSelfTestTally(t)
+
+	tree := stageTreeForBuild(t, repoRoot(t))
+	thinTheEmbeddedCorpus(t, filepath.Join(tree, "corpus.go"))
+
+	dist := filepath.Join(t.TempDir(), "release")
+	build := exec.Command(filepath.Join(tree, "scripts", "build-release.sh"), "1.4.0")
+	build.Dir = tree
+	build.Env = append(os.Environ(),
+		"DIST="+dist,
+		"GO="+filepath.Join(runtime.GOROOT(), "bin", "go"),
+	)
+	out, err := build.CombinedOutput()
+	output := string(out)
+
+	if err == nil {
+		t.Fatalf("scripts/build-release.sh promoted a release built from a thinned embed. Either the mutation never reached the artifact or the gate did not refuse it; both mean the corpus a downloaded binary carries is unchecked here:\n%s", output)
+	}
+
+	// Non-vacuousness, established before the refusal is credited to anything.
+	// A compile error, a missing tool or a broken staging copy all exit non-zero
+	// too, and would tell us nothing about check 4. The artifact has to have been
+	// BUILT, run BARE, and counted LOWER for there to have been a defect present
+	// to refuse — and a smaller tally in the output is the one observation that
+	// says all three happened.
+	tallies := regexp.MustCompile(`\d+/\d+ fixtures matched expectation\.`).FindAllString(output, -1)
+	thinned := ""
+	for _, tally := range tallies {
+		if tally != fullTally {
+			thinned = tally
+			break
+		}
+	}
+	if thinned == "" {
+		t.Fatalf("the build was refused without ever reporting a tally short of %q, so the thinned embed is not what the gate saw and this test observed some other failure (exit %v):\n%s", fullTally, err, output)
+	}
+
+	// WHICH assertion refused it matters just as much. Dying on the bare run's
+	// exit STATUS, or anywhere earlier, would mean this artifact was caught by
+	// something that could already see it — and the case the tally is for, exit 0
+	// with a smaller count, would still be untested.
+	if !strings.Contains(output, "the bare self-test exited 0 without reporting") {
+		t.Errorf("the artifact reported %q and the build was refused, but not at check 4's tally assertion: something else failed first, so the tally is not what this run proved:\n%s", thinned, output)
+	}
+
+	// The self-test's own stdout has to reach the operator. Its per-fixture lines
+	// are the only thing that names what the binary actually checked, and on a
+	// thinned corpus the diagnosis is in which names are ABSENT — a tally alone
+	// tells whoever reads it that something was lost but never what.
+	if !strings.Contains(output, "PASS  examples/") {
+		t.Errorf("the refusal names a tally but carries none of the self-test's own output, so nobody reading it can tell which fixtures the embed dropped:\n%s", output)
+	}
+
+	// Nothing promoted, which is the whole point of refusing. $DIST is not merely
+	// left empty on this path, it is never created: the script stages into a
+	// sibling directory and promotes by renaming that into place, so a build that
+	// dies before the promotion block leaves no release directory at all.
+	if _, statErr := os.Stat(dist); !errors.Is(statErr, os.ErrNotExist) {
+		entries, _ := os.ReadDir(dist)
+		t.Errorf("%s exists after a refused build (%d entries), so a release was promoted from an artifact that cannot self-test the corpus it ships", dist, len(entries))
+	}
+}
+
+// pinnedSelfTestTally reads the full-corpus tally out of scripts/build-release.sh
+// — the exact string check 4 requires the staged artifact to report.
+func pinnedSelfTestTally(t *testing.T) string {
+	t.Helper()
+
+	script, err := os.ReadFile(filepath.Join(repoRoot(t), "scripts", "build-release.sh"))
+	if err != nil {
+		t.Fatalf("reading scripts/build-release.sh: %v", err)
+	}
+	const marker = `SELFTEST_TALLY="`
+	i := strings.Index(string(script), marker)
+	if i < 0 {
+		t.Fatalf("scripts/build-release.sh holds no SELFTEST_TALLY assignment, so check 4 has stopped pinning a tally — which is the very regression this test is here for. Re-point it rather than deleting it.")
+	}
+	tally, _, ok := strings.Cut(string(script)[i+len(marker):], `"`)
+	if !ok || tally == "" {
+		t.Fatalf("could not read the SELFTEST_TALLY value out of scripts/build-release.sh")
+	}
+	return tally
+}
+
+// thinTheEmbeddedCorpus rewrites a staged corpus.go so the binary built from it
+// carries a SUBSET of examples/ while the tree on disk stays whole.
+//
+// The subset is chosen so all four of the self-test's globs still match
+// something. runSelfTest refuses an EMPTY set outright and exits 1 — a real
+// defect, but one the bare run's exit status already catches, and not the one
+// this test is for. Dropping three of the four examples/invalid/*.json leaves
+// every glob populated, so the artifact exits 0 and simply counts lower, with
+// its ability to REJECT very nearly unexercised.
+func thinTheEmbeddedCorpus(t *testing.T, corpus string) {
+	t.Helper()
+
+	const whole = "//go:embed all:examples\n"
+	const thinned = "//go:embed examples/*.json\n" +
+		"//go:embed all:examples/sources\n" +
+		"//go:embed examples/invalid/missing-required.json\n"
+
+	info, err := os.Stat(corpus)
+	if err != nil {
+		t.Fatalf("the staged tree has no corpus.go: %v", err)
+	}
+	data, err := os.ReadFile(corpus)
+	if err != nil {
+		t.Fatalf("reading the staged corpus.go: %v", err)
+	}
+	// The mutation must be known to have APPLIED. A directive that has been
+	// respelled leaves this test building an unmodified tree and asserting a
+	// refusal that could never come — a falsifier reporting on a defect it did
+	// not manage to introduce.
+	if n := strings.Count(string(data), whole); n != 1 {
+		t.Fatalf("corpus.go holds %d copies of %q, want exactly 1: this test thins the embed by rewriting that directive and can no longer find the one it means to change", n, strings.TrimSpace(whole))
+	}
+	if err := os.WriteFile(corpus, []byte(strings.Replace(string(data), whole, thinned, 1)), info.Mode().Perm()); err != nil {
+		t.Fatalf("rewriting the staged corpus.go: %v", err)
+	}
+}
+
+// stageTreeForBuild copies the repository into a temporary directory, so a build
+// from a deliberately broken tree cannot touch the checkout the suite is running
+// from. The mutation above is the reason this is a copy and not an in-place edit
+// with a deferred restore: a test that mutates the tree it runs in leaves the
+// repository broken when it is interrupted.
+//
+// .git and dist/ are the only omissions. The first because the staged tree is
+// built, not committed — the toolchain simply records no vcs stamp, which
+// version.go's tier fallback already handles — and the second because it is
+// build output that can be large, and $DIST is overridden to a temporary
+// directory anyway.
+func stageTreeForBuild(t *testing.T, root string) string {
+	t.Helper()
+
+	staged := filepath.Join(t.TempDir(), "tree")
+	omit := map[string]bool{".git": true, "dist": true}
+
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return os.MkdirAll(staged, 0o755)
+		}
+		if omit[rel] {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(staged, rel)
+		switch {
+		case entry.IsDir():
+			return os.MkdirAll(target, info.Mode().Perm())
+		case info.Mode()&os.ModeSymlink != 0:
+			// Reproduced as a link rather than followed: tests/parity carries one
+			// deliberately, and resolving it would stage a tree that differs from
+			// the one being copied.
+			dest, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(dest, target)
+		case info.Mode().IsRegular():
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			// Permissions carried over, because scripts/build-release.sh is
+			// executed by path and a copy without its executable bit would fail
+			// for a reason that has nothing to do with what is under test.
+			return os.WriteFile(target, data, info.Mode().Perm())
+		default:
+			return nil
+		}
+	})
+	if err != nil {
+		t.Fatalf("staging a copy of the repository to build a mutated tree from: %v", err)
+	}
+	return staged
 }

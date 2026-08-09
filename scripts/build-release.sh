@@ -74,18 +74,26 @@
 #     to supply.
 #
 # All three are about IDENTITY, and a binary can satisfy every one of them while
-# being unable to validate a single document. So one more check stands between
-# the staged set and $DIST:
+# being unable to validate a single document. So two more checks stand between
+# the staged set and $DIST, both inside check 4:
 #
 #   * the native artifact is copied to an installed-layout prefix with no
-#     schemas/ on disk, and made to VALIDATE — the shipped valid fixture must
-#     exit 0, each shipped invalid one must exit 1, and the --source fixtures
-#     must return the reference's codes. `--version` returns above the schema
-#     load (cmd/validate-intent/main.go), so nothing before this asks the
-#     artifact to resolve a schema, parse a document, or honour the exit
-#     contract. See check 4 near the promotion block.
+#     schemas/ and no examples/ on disk, and made to VALIDATE — the shipped
+#     valid fixture must exit 0, each shipped invalid one must exit 1, and the
+#     --source fixtures must return the reference's codes. `--version` returns
+#     above the schema load (cmd/validate-intent/main.go), so nothing before
+#     this asks the artifact to resolve a schema, parse a document, or honour
+#     the exit contract. See check 4 near the promotion block;
 #
-# That last one, like the first, can only run for the target matching the host.
+#   * and that same artifact is run BARE, with no path argument, where it
+#     self-tests the fixture corpus COMPILED INTO IT (corpus.go). Every
+#     assertion above hands it an absolute path out of $REPO_ROOT, so every one
+#     of them reads the build host's disk and none can see a broken embed. It
+#     must exit 0 AND report the full corpus tally — a corpus thinned rather
+#     than emptied exits 0 as well, reporting a smaller and greener-reading
+#     number, which is exactly what exit status cannot distinguish.
+#
+# Those last two, like the first, can only run for the target matching the host.
 # It says so in its own output rather than letting a green summary imply four
 # binaries were exercised when one was.
 #
@@ -561,6 +569,14 @@ green "  ok    $MANIFEST_NAME ($built entries, re-read and matching)"
 # a schemas/ somehow existed beside it every assertion below would pass for the
 # wrong reason and this section would quietly stop testing what it names.
 #
+# The corpus is that same story one asset over. `validate-intent` with no
+# arguments self-tests the fixtures compiled into it (corpus.go), but only when
+# there is no examples/ tree beside the executable: newFixtureSource
+# (cmd/validate-intent/selftest.go) takes the embedded branch on ErrNotExist and
+# on nothing else, so a stray examples/ would send the bare run below straight
+# back to reading a disk. Identical exposure, identical remedy — the two
+# absences are asserted together.
+#
 # The honesty constraint, restated because it is the whole reason check 4 is
 # scoped the way it is: only the artifact matching $HOST_OS/$HOST_ARCH can be
 # executed here, the same limitation check 3 documents. The other three are
@@ -586,6 +602,13 @@ if [ -e "$SMOKE_PREFIX/schemas" ]; then
        the embedded schema — the artifact would have read that one. This is the
        property a downloaded binary actually depends on, so it is asserted
        rather than assumed."
+fi
+
+if [ -e "$SMOKE_PREFIX/examples" ]; then
+  die "$SMOKE_PREFIX/examples exists, so the bare self-test below would prove
+       nothing about the embedded corpus — the artifact would have read that
+       tree. This is the property a downloaded binary actually depends on, so it
+       is asserted rather than assumed."
 fi
 
 # The same reasoning, applied to the other assumption this section rests on.
@@ -622,6 +645,25 @@ done
 cd "$SMOKE_DIR" || die "could not enter $SMOKE_DIR, so the staged artifact could not
        be exercised from outside the checkout. Nothing was checked here."
 
+# The diagnostic every failure below prints before it dies, factored out because
+# there is now more than one caller and every part of it is load-bearing: the
+# eight-space indent puts the artifact's own words under the die message rather
+# than beside it, and `|| true` so that a failure of sed itself cannot exit the
+# script under set -e and take the diagnostic with it — the die is the point.
+#
+# WHICH streams matter differs by caller, so they are named at the call site. A
+# fixture-fed run says why on stderr; the bare self-test says it on stdout, one
+# line per fixture, and those lines are the only thing that names the fixture
+# that did not match. Empty files are skipped so a caller can ask for both
+# without printing a blank block.
+smoke_diagnose() {
+  local stream
+  for stream in "$@"; do
+    [ -s "$SMOKE_DIR/$stream" ] || continue
+    sed 's/^/        /' "$SMOKE_DIR/$stream" >&2 || true
+  done
+}
+
 # $rc is the validator's own status and nothing else's: the `|| rc=$?` guard
 # exists only because `set -e` would otherwise abort the run on the very exit
 # code this section is trying to observe.
@@ -631,9 +673,7 @@ smoke_expect() {
   local rc=0
   "$SMOKE_PREFIX/bin/validate-intent" "$@" >"$SMOKE_DIR/out" 2>"$SMOKE_DIR/err" || rc=$?
   if [ "$rc" != "$want" ]; then
-    # `|| true` so that a failure of sed itself cannot exit the script under
-    # set -e and take the diagnostic below with it: the die is the point.
-    sed 's/^/        /' "$SMOKE_DIR/err" >&2 || true
+    smoke_diagnose err
     die "installed layout: $label exited $rc, want $want.
        The artifact for $HOST_OS/$HOST_ARCH is the right shape and reports the
        right version, and it does not do its job. Nothing has been promoted."
@@ -654,9 +694,51 @@ for entry in "${SOURCE_FIXTURES[@]}"; do
   smoke_expect "$want" "--source $fixture" --source "$REPO_ROOT/$fixture"
 done
 
+# The bare run — no path argument, so the artifact self-tests the corpus it
+# CARRIES rather than one handed to it. With no examples/ beside the executable
+# (asserted above) newFixtureSource takes the embedded branch, which makes this
+# the only assertion in this script that reads the embed at all: every call
+# above passes an absolute path out of $REPO_ROOT and therefore reads the build
+# host's checkout, and every one of them passes unchanged for an artifact whose
+# compiled-in corpus is broken.
+#
+# Exit 0 is NOT the assertion, and this is the whole reason the tally is here.
+# runSelfTest's empty-set guard (cmd/validate-intent/selftest.go) catches an
+# embed narrowed until one of the four globs matches nothing — that exits 1. A
+# corpus merely THINNED leaves all four sets populated: it exits 0 and reports a
+# smaller number, and losing examples/invalid/ turns 12/12 into a
+# greener-reading 8/8 with the validator's ability to REJECT now wholly
+# unexercised (cmd/validate-intent/selftest_embed_test.go:222 names that case).
+# Exit status is precisely the signal that cannot see it.
+#
+# The expectation is a literal, and the same one tests/parity/run_parity.sh
+# already pins for this binary. Deriving it by counting the checkout would
+# compare the embed against the tree the embed was made from, which agree by
+# construction in exactly the runs where the answer matters.
+SELFTEST_TALLY="12/12 fixtures matched expectation."
+selftest_rc=0
+"$SMOKE_PREFIX/bin/validate-intent" >"$SMOKE_DIR/out" 2>"$SMOKE_DIR/err" || selftest_rc=$?
+if [ "$selftest_rc" != 0 ]; then
+  smoke_diagnose out err
+  die "installed layout: the bare self-test exited $selftest_rc, want 0.
+       The artifact validates the fixtures handed to it and cannot validate the
+       ones it ships with, so a downloaded copy has nothing to self-test against
+       (its output is above). Nothing has been promoted."
+fi
+if ! grep -qF -- "$SELFTEST_TALLY" "$SMOKE_DIR/out"; then
+  smoke_diagnose out err
+  die "installed layout: the bare self-test exited 0 without reporting
+       '$SELFTEST_TALLY'.
+       It ran, and it did not check the whole shipped corpus: a thinned embed
+       still exits 0 and reports a smaller, greener-reading tally (its output is
+       above). Nothing has been promoted."
+fi
+dim "  ok    installed layout: bare self-test exits 0, ${SELFTEST_TALLY%.}"
+
 cd "$REPO_ROOT" || die "could not return to $REPO_ROOT after the smoke test"
 
-green "  ok    $(basename "$native_artifact") validated the shipped corpus from a prefix with no schemas/"
+green "  ok    $(basename "$native_artifact") validated the shipped corpus from a prefix with neither"
+green "        schemas/ nor examples/, and self-tested its own embedded copy: ${SELFTEST_TALLY%.}"
 dim "        it is the only one of $built this host can execute; the other $((built - 1)) are"
 dim "        verified as shape and version only — nothing has run them."
 
