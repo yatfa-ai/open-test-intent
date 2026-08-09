@@ -2077,3 +2077,150 @@ func stageTreeForBuild(t *testing.T, root string) string {
 	}
 	return staged
 }
+
+// TestTheReadmeDoesNotCallShippedPackagingUnfinished pins README.md's Go-port
+// status claim against the tree that README ships in.
+//
+// WHY IT LIVES HERE
+// =================
+//
+// This is the same shape as TestTheFourTargetListsAgree above: a claim written
+// in one file about what another file contains, where nothing executes the
+// claim, so only an agreement check keeps it honest. The two shipped scripts it
+// reads are the ones this package already exists to calibrate, and `go test
+// ./...` is a command README.md itself designates as part of the gate — so this
+// is the placement that actually runs.
+//
+// WHY IT IS NEEDED
+// ================
+//
+// README.md is this repo's only adoption surface, and its prose is the one part
+// of it that nothing checks. tests/parity/run_parity.sh executes the README's
+// quickstart INVOCATIONS against both implementations, which is why the mode
+// list stays true; the framing sentences around them are read by no test at
+// all. That is how the section came to carry "(in progress)" and to name
+// "cross-compiled release binaries" as what was left to do — twenty hours after
+// scripts/build-release.sh was committed, and eight after scripts/install.sh.
+// Both were sitting in the tree, tested by this very package, while the README
+// told adopters they did not exist.
+//
+// WHAT IT ASSERTS, AND WHAT IT DELIBERATELY DOES NOT
+// ==================================================
+//
+// The condition is TREE STATE, not prose: the README may say packaging is
+// outstanding exactly when packaging is outstanding. So the check is gated on
+// the two scripts EXISTING, and skips when they do not — at which point the
+// claim would be accurate and there is nothing here to catch.
+//
+// It does not diff the prose against a golden string. The section is expected
+// to be rewritten, and a test that broke on ordinary rewording would be deleted
+// the first time someone improved a sentence. What it forbids is the specific
+// pairing that was false: naming the release binaries and marking them as
+// still-to-come IN THE SAME SENTENCE. Saying they shipped, in any words, passes.
+func TestTheReadmeDoesNotCallShippedPackagingUnfinished(t *testing.T) {
+	root := repoRoot(t)
+
+	// The gate. These are the two things the stale sentence named as outstanding,
+	// so their presence is what makes the claim false — and their absence is what
+	// would make it true again.
+	for _, rel := range []string{"scripts/build-release.sh", "scripts/install.sh"} {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
+			t.Skipf("%s is not in this tree, so a README calling release packaging outstanding would be accurate and there is nothing to check: %v", rel, err)
+		}
+	}
+
+	raw, err := os.ReadFile(filepath.Join(root, "README.md"))
+	if err != nil {
+		t.Fatalf("could not read README.md: %v", err)
+	}
+	heading, body := goPortSection(t, string(raw))
+
+	// 1. The heading. A chapter titled "in progress" is a status claim about the
+	// whole port, read before any of the qualifying prose below it.
+	for _, phrase := range []string{"in progress", "in-progress", "wip", "unfinished", "incomplete", "not finished"} {
+		if strings.Contains(strings.ToLower(heading), phrase) {
+			t.Errorf("README.md's Go-port heading is %q, but scripts/build-release.sh and scripts/install.sh are both in this tree and calibrated by this package.\n"+
+				"The heading says %q about a port whose packaging shipped. Drop the qualifier, or delete the scripts.", heading, phrase)
+			break
+		}
+	}
+
+	// 2. The "what is left" sentence. Pairing rather than string matching: the
+	// subject may be described in any words, and so may the fact that it shipped;
+	// what may not co-occur is the subject and a still-to-come marker.
+	subjects := []string{"cross-compil", "cross compil", "release binaries", "release binary"}
+	markers := []string{
+		"what is left", "what's left", "what remains", "what is missing",
+		"is left", "are left", "still to", "yet to", "not yet", "still missing",
+		"remains", "remaining", "outstanding", "unfinished", "to come",
+	}
+	for _, sentence := range readmeSentences(body) {
+		lower := strings.ToLower(sentence)
+		if !containsAny(lower, subjects) {
+			continue
+		}
+		marker, ok := firstMatch(lower, markers)
+		if !ok {
+			continue
+		}
+		t.Errorf("README.md's Go-port section still names release binaries as outstanding work:\n  %q\n"+
+			"It pairs the subject with %q, but scripts/build-release.sh produces the cross-compiled artifacts and scripts/install.sh installs and verifies them — both are in this tree, and tests/cross/install exercises them.\n"+
+			"Say what is ACTUALLY outstanding (publishing the assets, which .agents/README.md keeps out of this repo), or remove the scripts.", sentence, marker)
+	}
+}
+
+// goPortSection returns the Go-port chapter's heading line and its body, up to
+// the next `## ` heading. It fails rather than skips when the chapter is absent:
+// a guard that quietly found nothing to read is the vacuous green this repo
+// keeps having to name.
+func goPortSection(t *testing.T, readme string) (heading, body string) {
+	t.Helper()
+	lines := strings.Split(readme, "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.HasPrefix(line, "## ") && strings.Contains(strings.ToLower(line), "go port") {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("README.md has no `## ...Go port...` heading, so this guard read nothing. If the chapter was renamed, re-point this test at its new title rather than deleting it.")
+	}
+	end := len(lines)
+	for i := start + 1; i < len(lines); i++ {
+		if strings.HasPrefix(lines[i], "## ") {
+			end = i
+			break
+		}
+	}
+	return lines[start], strings.Join(lines[start+1:end], "\n")
+}
+
+// readmeSentences splits prose into sentences. A blank line ends a sentence as
+// surely as a period does, and the periods inside `build-release.sh` do not —
+// hence the split on ". " rather than on ".".
+func readmeSentences(body string) []string {
+	text := strings.ReplaceAll(body, "\n\n", ".\n")
+	text = strings.Join(strings.Fields(text), " ")
+	var out []string
+	for _, s := range strings.Split(text, ". ") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func containsAny(haystack string, needles []string) bool {
+	_, ok := firstMatch(haystack, needles)
+	return ok
+}
+
+func firstMatch(haystack string, needles []string) (string, bool) {
+	for _, n := range needles {
+		if strings.Contains(haystack, n) {
+			return n, true
+		}
+	}
+	return "", false
+}
