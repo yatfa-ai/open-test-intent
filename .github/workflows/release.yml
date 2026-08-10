@@ -1,0 +1,81 @@
+# Release open-test-intent. Triggered manually from the Actions UI ("Run
+# workflow" button) — no tags, no push triggers. Click → bump patch version →
+# cross-compile the four release targets → publish a GitHub Release with the
+# artifacts and their SHA256SUMS manifest.
+#
+# Mirrors warden's release strategy (one-click workflow_dispatch, patch bump by
+# script/bump-version.sh, github-actions[bot] commit, assets attached to the
+# vX.Y.Z tag). Two differences, both from this being a Go repo:
+#   - no build matrix. scripts/build-release.sh cross-compiles all four targets
+#     from one runner with CGO_ENABLED=0, so there is nothing to fan out.
+#   - no `prod` branch. Nothing here deploys to a cluster; the release IS the
+#     tag plus its uploaded artifacts, which scripts/install.sh consumes.
+#
+# The version reaching the binaries is the one bump-version.sh just wrote:
+# build-release.sh stamps it via -ldflags -X and then REFUSES to promote a build
+# whose `--version` does not report it, so a drifted stamp fails the release
+# rather than shipping a binary that lies about itself.
+#
+# Required repo secrets: none beyond the auto-provided GITHUB_TOKEN.
+name: Release (Bump Version & Publish Binaries)
+
+on:
+  workflow_dispatch:        # one-click from Actions UI; no inputs needed
+
+permissions:
+  contents: write           # bump commit + vX.Y.Z tag + GitHub Release
+
+jobs:
+  release:
+    name: Bump, build and publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0      # full history for the rebase-and-push, and tags
+                              # so bump-version.sh's tag-reuse check is real
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Configure Git
+        run: |
+          git config --global user.name  "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump version (commit + tag + push)
+        id: bump
+        run: |
+          chmod +x script/bump-version.sh
+          ./script/bump-version.sh
+
+      # Cross-compiles the four targets into dist/release/ with the version
+      # stamped in, then runs its own verification: the native artifact must
+      # execute, report exactly this version, validate the shipped fixtures from
+      # an installed layout with no schemas/ on disk, and pass its compiled-in
+      # self-test. Anything short of that exits non-zero and no release is cut.
+      - name: Build release artifacts
+        run: ./scripts/build-release.sh "${{ steps.bump.outputs.version }}"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.bump.outputs.tag }}" \
+            --title "${{ steps.bump.outputs.tag }}" \
+            --notes "Cross-compiled \`validate-intent\` binaries for linux/darwin on amd64/arm64, plus the \`SHA256SUMS\` manifest describing them.
+
+          Install the artifact for your host:
+
+          \`\`\`bash
+          curl -fsSL https://github.com/${{ github.repository }}/raw/${{ steps.bump.outputs.tag }}/scripts/install.sh \\
+            | bash -s -- --from https://github.com/${{ github.repository }}/releases/download/${{ steps.bump.outputs.tag }}
+          \`\`\`
+
+          Each binary is static (\`CGO_ENABLED=0\`) and carries the schema compiled in, so it runs on \`scratch\`, \`alpine\` and \`distroless\` with no Go toolchain and no \`schemas/\` directory beside it." \
+            dist/release/*
