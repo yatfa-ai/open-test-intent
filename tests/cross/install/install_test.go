@@ -849,6 +849,215 @@ exit 1
 	requireNothingInstalled(t, prefix, map[string]string{})
 }
 
+// --- what the self-test read ------------------------------------------------
+
+// selfTestEmbeddedClaim is the sentence install.sh prints when it is in a
+// position to say the copy compiled into the binary is what ran.
+//
+// It is spelled once, here, because both halves of the test below turn on this
+// exact claim — the bare-parent case REQUIRES it, the examples-beside-the-prefix
+// case FORBIDS it — and two copies of the string could drift into a pair no
+// implementation has to satisfy at the same time, which is the shape of a test
+// that cannot fail.
+const selfTestEmbeddedClaim = "embedded fixture corpus"
+
+// selfTestReport returns the block install.sh prints about the bare self-test:
+// the line naming it plus every continuation line, up to the blank line that
+// ends the section.
+//
+// The assertions below are on THAT block rather than on the whole output,
+// because the prefix path appears in the install line and the wiring line too.
+// "the output mentions the probe root" is therefore satisfied by an installer
+// that never probed anything — the vacuous version of this test, and one that
+// would pass today against the unconditional line this test exists to replace.
+func selfTestReport(t *testing.T, output string) string {
+	t.Helper()
+	lines := strings.Split(output, "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.Contains(line, "self-tested") {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("install.sh exited 0 without reporting the bare self-test at all:\n%s", output)
+	}
+	end := start + 1
+	for end < len(lines) && strings.TrimSpace(lines[end]) != "" {
+		end++
+	}
+	return strings.Join(lines[start:end], "\n")
+}
+
+// TestTheSelfTestLineNamesTheCorpusThatRunActuallyRead is the non-vacuousness
+// proof for the WORDING of the check TestAnArtifactThatPassesVersionAndFailsIts
+// SelfTestIsRefused proves the existence of.
+//
+// That check runs the artifact bare and requires exit 0. install.sh then said,
+// unconditionally, that the binary had self-tested its EMBEDDED fixture corpus —
+// a claim about which corpus was read, made without reading anything.
+//
+// It can be false. cmd/validate-intent/selftest.go's RepoRoot() and
+// cmd/validate-intent/fileio.go's SchemaPath() are both dirname(dirname(exe)),
+// and newFixtureSource takes the embedded branch on fs.ErrNotExist and on
+// nothing else — an examples/ tree at that root WINS. The binary under test runs
+// from inside the prefix, so the root is the prefix's PARENT, and this
+// repository's own layout (bin/ beside examples/ and schemas/) is the triggering
+// one: `--prefix <checkout>/bin` is a supported, ordinary invocation that sends
+// the self-test straight back to reading a disk while the line reported the
+// compiled-in copy.
+//
+// Both directions are asserted, because either alone is satisfied by a constant.
+// An installer that always claims the embedded corpus passes the bare-parent
+// case; one that never claims it passes the examples case. Only the pair
+// requires a probe. The schemas-only case is here because the schema half has
+// the identical exposure through the identical root, and it is the one case
+// where the corpus claim stays TRUE while something else was substituted — an
+// implementation that collapsed the two absences into a single flag would report
+// a disk-read schema as an all-embedded run, and pass every other case here.
+//
+// What is deliberately NOT asserted is a refusal. scripts/build-release.sh dies
+// on these same two paths, and it owns its prefix; this script does not. Every
+// case below requires exit 0 AND an installed, executable binary, so an
+// implementation that borrowed build-release.sh's `die` fails here rather than
+// silently regressing a working install into a hard error.
+func TestTheSelfTestLineNamesTheCorpusThatRunActuallyRead(t *testing.T) {
+	requireSupportedHost(t)
+
+	// The prefix is a SUBDIRECTORY of the temp dir, not the temp dir itself,
+	// because the root the binary resolves from is the prefix's parent — the
+	// trees have to go somewhere this subtest controls exclusively, and a
+	// t.TempDir() shared with sibling subtests is not that. It is named bin/
+	// because that is the layout an adopter has when this fires: a checkout.
+	install := func(t *testing.T, trees ...string) (result, string, string) {
+		t.Helper()
+		parent := t.TempDir()
+		for _, tree := range trees {
+			if err := os.MkdirAll(filepath.Join(parent, tree), 0o755); err != nil {
+				t.Fatalf("seeding %s beside the prefix: %v", tree, err)
+			}
+			// Seeded with a file, because a checkout's trees have contents and
+			// an empty directory is the one shape an implementation reaching for
+			// a glob instead of a stat could treat as an absence.
+			if err := os.WriteFile(filepath.Join(parent, tree, "seeded.json"), []byte("{}\n"), 0o644); err != nil {
+				t.Fatalf("seeding %s beside the prefix: %v", tree, err)
+			}
+		}
+
+		// Resolved the way install.sh resolves it (`cd && pwd -P`) rather than
+		// restated from t.TempDir()'s spelling: /tmp is a symlink on some hosts,
+		// and the path the script prints is the physical one.
+		resolvedParent, err := filepath.EvalSymlinks(parent)
+		if err != nil {
+			t.Fatalf("resolving the probe root the way install.sh does: %v", err)
+		}
+
+		prefix := filepath.Join(parent, "bin")
+		got := run(t, "--from", stageSource(t, sourceOptions{}), "--prefix", prefix)
+		if got.code != 0 {
+			t.Fatalf("installing into %s exited %d, want 0 — the probe informs the wording and must never refuse:\n%s",
+				prefix, got.code, got.output)
+		}
+		// The half of criterion 3 an exit code alone does not carry: a
+		// repo-shaped prefix is still a WORKING install.
+		installed := filepath.Join(prefix, installedName)
+		info, err := os.Stat(installed)
+		if err != nil {
+			t.Fatalf("install.sh exited 0 but installed nothing at %s: %v\n%s", installed, err, got.output)
+		}
+		if info.Mode()&0o111 == 0 {
+			t.Errorf("%s was installed without an executable bit (mode %v)", installed, info.Mode())
+		}
+		return got, resolvedParent, prefix
+	}
+
+	cases := []struct {
+		name string
+		// trees seeded in the prefix's parent, i.e. at the root the installed
+		// binary resolves its schema and its fixtures from.
+		trees []string
+		// whether the compiled-in corpus is what that run can have read.
+		wantEmbeddedCorpusClaim bool
+		// substrings the self-test report must carry when something at that root
+		// could have been substituted, so the negative assertion above is paired
+		// with a positive one: the line has to say what WAS read, not merely
+		// stop saying what was not.
+		mustName []string
+	}{
+		{
+			name:                    "a bare parent, so nothing could have been substituted",
+			wantEmbeddedCorpusClaim: true,
+		},
+		{
+			name:                    "an examples/ tree beside the prefix",
+			trees:                   []string{"examples"},
+			wantEmbeddedCorpusClaim: false,
+			mustName:                []string{"examples"},
+		},
+		{
+			name:  "a schemas/ tree beside the prefix",
+			trees: []string{"schemas"},
+			// The corpus really was the embedded one here — only the schema had
+			// a substitute available — so the claim stays, and the report has to
+			// name the tree anyway.
+			wantEmbeddedCorpusClaim: true,
+			mustName:                []string{"schemas"},
+		},
+		{
+			name:                    "both trees beside the prefix, as a checkout has",
+			trees:                   []string{"schemas", "examples"},
+			wantEmbeddedCorpusClaim: false,
+			mustName:                []string{"schemas", "examples"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, probeRoot, _ := install(t, tc.trees...)
+			report := selfTestReport(t, got.output)
+
+			// Guard, not decoration: every seeded case is a claim about a tree
+			// being THERE and the bare case is a claim about both being absent.
+			// If the fixture did not take, the assertions below pass or fail for
+			// reasons that have nothing to do with install.sh.
+			for _, tree := range []string{"schemas", "examples"} {
+				_, err := os.Stat(filepath.Join(probeRoot, tree))
+				seeded := false
+				for _, t2 := range tc.trees {
+					if t2 == tree {
+						seeded = true
+					}
+				}
+				if seeded && err != nil {
+					t.Fatalf("the fixture did not put a %s/ at %s: %v", tree, probeRoot, err)
+				}
+				if !seeded && !errors.Is(err, fs.ErrNotExist) {
+					t.Fatalf("%s/ exists at %s but this case is about its absence (%v)", tree, probeRoot, err)
+				}
+			}
+
+			if claimed := strings.Contains(report, selfTestEmbeddedClaim); claimed != tc.wantEmbeddedCorpusClaim {
+				if tc.wantEmbeddedCorpusClaim {
+					t.Errorf("nothing beside the prefix could have supplied fixtures, but the self-test report does not say the compiled-in corpus is what ran:\n%s", report)
+				} else {
+					t.Errorf("an examples/ tree at %s is what that run read, and the self-test report still claims %q:\n%s",
+						probeRoot, selfTestEmbeddedClaim, report)
+				}
+			}
+
+			for _, want := range tc.mustName {
+				if !strings.Contains(report, want) {
+					t.Errorf("a %s/ tree at %s was available to that run and the self-test report never mentions it:\n%s", want, probeRoot, report)
+				}
+			}
+			if len(tc.mustName) > 0 && !strings.Contains(report, probeRoot) {
+				t.Errorf("the self-test report names no path, so a reader cannot tell WHICH tree was read:\n%s", report)
+			}
+		})
+	}
+}
+
 // --- could not check: exit 2 ------------------------------------------------
 
 // TestCouldNotCheckIsAlwaysTwoAndNeverAnInstall pins the half of the contract

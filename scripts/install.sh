@@ -121,10 +121,17 @@
 # is embedded on the same absent/present rule as the schema, so a bare
 # invocation on a host with no checkout runs all twelve fixtures out of the
 # binary. That is now run, from the prefix, and it is a real end-to-end pass —
-# schema loaded (embedded, since there is no schemas/ beside an installed
-# binary), fixtures expanded, JSON validated, source annotations extracted,
-# normalized and validated, and every verdict compared against its expectation.
-# It is the same command --help's first line tells an adopter to run.
+# schema loaded, fixtures expanded, JSON validated, source annotations
+# extracted, normalized and validated, and every verdict compared against its
+# expectation. It is the same command --help's first line tells an adopter to
+# run.
+#
+# WHICH schema and WHICH fixtures is a separate question, and one this script
+# used to answer without asking: both are resolved from the parent of the
+# directory holding the executable, and the compiled-in copies are reached only
+# when nothing is there. See "What the self-test read" below — the run is a real
+# end-to-end pass either way, but only one of the two ways exercises the
+# embedded copies, and the outcome now picks the words rather than being assumed.
 #
 # A non-zero result is exit 1, not 2: the artifact was verified, executed, and
 # EXAMINED — it ran the check and did not pass it. That is "found wrong" in the
@@ -141,16 +148,46 @@
 # neither of those can: it asks the question on the adopter's host, of the
 # artifact that is about to be installed there.
 #
+# What the self-test read, and why that is now printed rather than assumed
+# ------------------------------------------------------------------------
+# The bare run proves the binary validates. It does not, on its own, say which
+# corpus it validated — and this script used to print a line claiming the
+# embedded one unconditionally.
+#
+# It cannot know that without looking. cmd/validate-intent/selftest.go's
+# RepoRoot() and cmd/validate-intent/fileio.go's SchemaPath() are the same
+# dirname(dirname(exe)), and newFixtureSource takes the embedded branch on
+# ErrNotExist and on nothing else — so a real examples/ tree at that root WINS,
+# and a real schemas/ there wins for the schema half identically. The binary
+# under test runs from inside $PREFIX, so that root is the PARENT of $PREFIX,
+# and `--prefix <checkout>/bin` in a repository shaped like this one puts both
+# trees exactly there. The self-test then passes by reading a disk.
+#
+# So the parent is probed just before the success line is printed, and the
+# outcome picks the wording. The two absences are independent and are reported
+# independently: the embedded CORPUS is claimed only when no examples/ there
+# could have supplied fixtures, and a schemas/ there is named even on a run
+# whose corpus really was the compiled-in one, because the schema is the half it
+# substituted for. What the probe does NOT do is refuse. scripts/build-release.sh:600-612 dies on these same two paths and is
+# right to — it builds a fresh mktemp prefix for the sole purpose of proving the
+# embedded copies work, so a tree there is its own bug. This script does not own
+# $PREFIX: the adopter chose it, installing into a checkout's bin/ is a
+# legitimate thing to want, and dying there would turn a working install into a
+# hard error to protect the accuracy of a sentence. The exit status is identical
+# on both branches and the three codes below are untouched — the probe informs
+# the message and nothing else.
+#
 # tests/cross/run_cross_build.sh:298-319 keeps its own version of this claim and
-# should stay: it asserts the installed prefix has no schemas/ on disk before
-# running a fixture through the installed binary, which is a stronger statement
-# about WHY the run passed than this script is in a position to make.
+# should stay. It still says something neither branch here can: it CONSTRUCTS a
+# prefix with no schemas/ on disk and then requires the run to pass, so a
+# fallback that stopped working is a failure there. This script reports which
+# branch fired; that harness requires a particular one to.
 #
 #
 # Exit codes — the house rule, unchanged
 # --------------------------------------
 #   0  installed, the installed binary reported its version, and it self-tested
-#      its own fixture corpus clean
+#      clean (the success line names the corpus that run actually read)
 #   1  examined and found WRONG — the digest did not match, the binary did not
 #      run, or it ran and failed its own self-test
 #   2  COULD NOT CHECK — no bash to run this script under, no such source, no
@@ -372,7 +409,9 @@ a PREFIX in the environment is deliberately ignored.
 Installs the artifact matching this host, after verifying it against the
 SHA256SUMS row that describes it, then runs \`validate-intent --version\` from
 the prefix to prove the installed binary works and a bare \`validate-intent\` to
-prove it validates its own embedded fixture corpus.
+prove it validates. That self-test reads the schema and fixtures compiled into
+the binary, unless a schemas/ or examples/ tree sits beside the prefix, in which
+case the binary reads that instead; the success line says which it was.
 
 Exit 0 installed and verified; 1 examined and found wrong; 2 could not check
 (no source, no manifest row, no digest tool, an unsupported host) or checked out
@@ -809,7 +848,53 @@ if ! selftest_output="$("$PENDING")"; then
        correctly on this host. Nothing has been installed."
 fi
 
-green "  ok    $INSTALL_NAME self-tested its embedded fixture corpus"
+# --- say what that self-test actually read ----------------------------------- #
+#
+# See "What the self-test read" in the header. The binary resolves both its
+# schema and its fixtures from dirname(dirname(exe)); $PENDING sits inside
+# $PREFIX, so that root is the parent of $PREFIX. A tree there WINS over the
+# compiled-in copy, so the parent is probed and the outcome picks the wording.
+# Nothing here refuses: every branch below is the success path, and the exit
+# status is the same 0 in all four.
+#
+# Parameter expansion rather than `dirname`, so this adds no tool to the set a
+# host must have — tests/cross/install/install_test.go's restricted-PATH cases
+# pin that set, and a new external command here would quietly turn each of them
+# into a test about a missing dirname. $PREFIX has already been through
+# `cd && pwd -P` above, so it is absolute and carries no trailing slash; the one
+# spelling that strips to nothing is a prefix sitting directly under /, whose
+# parent is / itself.
+probe_root="${PREFIX%/*}"
+[ -n "$probe_root" ] || probe_root="/"
+
+# `-e` and not `-d`, matching the rule the binary actually applies: the embedded
+# branch is taken on fs.ErrNotExist and on NOTHING else, so a plain file or a
+# broken directory sitting on the name is still a thing that is there, and it
+# keeps the on-disk path. Reporting it as an absence here would put this line
+# back to guessing.
+have_schemas=""
+have_examples=""
+if [ -e "$probe_root/schemas" ]; then have_schemas=yes; fi
+if [ -e "$probe_root/examples" ]; then have_examples=yes; fi
+
+if [ -z "$have_schemas$have_examples" ]; then
+  # Nothing at that root could have supplied a substitute, so the compiled-in
+  # copies are what ran. This is the line as it has always read, now earned.
+  green "  ok    $INSTALL_NAME self-tested its embedded fixture corpus"
+else
+  if [ -z "$have_examples" ]; then
+    green "  ok    $INSTALL_NAME self-tested its embedded fixture corpus, against the schema"
+    green "        in $probe_root/schemas rather than the one compiled into it"
+  elif [ -z "$have_schemas" ]; then
+    green "  ok    $INSTALL_NAME self-tested clean against the fixture tree in"
+    green "        $probe_root/examples, not the corpus compiled into it"
+  else
+    green "  ok    $INSTALL_NAME self-tested clean against the schemas/ and examples/ trees"
+    green "        in $probe_root, not the copies compiled into it"
+  fi
+  dim "        that root is the parent of the prefix, which is where $INSTALL_NAME looks"
+  dim "        first, so what this run proves is what is named above."
+fi
 
 # --- the final move ---------------------------------------------------------- #
 #
