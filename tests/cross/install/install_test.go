@@ -849,6 +849,285 @@ exit 1
 	requireNothingInstalled(t, prefix, map[string]string{})
 }
 
+// --- what the self-test read ------------------------------------------------
+
+// selfTestEmbeddedClaim is the sentence install.sh prints when it is in a
+// position to say the copy compiled into the binary is what ran.
+//
+// It is spelled once, here, because both halves of the test below turn on this
+// exact claim — the bare-parent case REQUIRES it, the examples-beside-the-prefix
+// case FORBIDS it — and two copies of the string could drift into a pair no
+// implementation has to satisfy at the same time, which is the shape of a test
+// that cannot fail.
+const selfTestEmbeddedClaim = "embedded fixture corpus"
+
+// schemaFileName is the one filename under schemas/ that the binary's schema
+// half actually opens — cmd/validate-intent/fileio.go:130-137 builds
+// root/schemas/open-test-intent.v1.json, and loadSchemaFrom (fileio.go:262-273)
+// substitutes the compiled-in copy when reading THAT FILE returns
+// fs.ErrNotExist. The directory is never stat'd.
+//
+// It is a named constant because the difference between this and the directory
+// holding it is the whole point of two of the cases below: a schemas/ tree that
+// does not contain this file is a run that read the EMBEDDED schema, and an
+// install.sh probing the directory reports that run backwards.
+const schemaFileName = "open-test-intent.v1.json"
+
+// selfTestReport returns the block install.sh prints about the bare self-test:
+// the line naming it plus every continuation line, up to the blank line that
+// ends the section.
+//
+// The assertions below are on THAT block rather than on the whole output,
+// because the prefix path appears in the install line and the wiring line too.
+// "the output mentions the probe root" is therefore satisfied by an installer
+// that never probed anything — the vacuous version of this test, and one that
+// would pass today against the unconditional line this test exists to replace.
+func selfTestReport(t *testing.T, output string) string {
+	t.Helper()
+	lines := strings.Split(output, "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.Contains(line, "self-tested") {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("install.sh exited 0 without reporting the bare self-test at all:\n%s", output)
+	}
+	end := start + 1
+	for end < len(lines) && strings.TrimSpace(lines[end]) != "" {
+		end++
+	}
+	return strings.Join(lines[start:end], "\n")
+}
+
+// TestTheSelfTestLineNamesTheCorpusThatRunActuallyRead is the non-vacuousness
+// proof for the WORDING of the check TestAnArtifactThatPassesVersionAndFailsIts
+// SelfTestIsRefused proves the existence of.
+//
+// That check runs the artifact bare and requires exit 0. install.sh then said,
+// unconditionally, that the binary had self-tested its EMBEDDED fixture corpus —
+// a claim about which corpus was read, made without reading anything.
+//
+// It can be false. cmd/validate-intent/selftest.go's RepoRoot() and
+// cmd/validate-intent/fileio.go's SchemaPath() are both dirname(dirname(exe)),
+// and newFixtureSource takes the embedded branch on fs.ErrNotExist and on
+// nothing else — an examples/ tree at that root WINS. The binary under test runs
+// from inside the prefix, so the root is the prefix's PARENT, and this
+// repository's own layout (bin/ beside examples/ and schemas/) is the triggering
+// one: `--prefix <checkout>/bin` is a supported, ordinary invocation that sends
+// the self-test straight back to reading a disk while the line reported the
+// compiled-in copy.
+//
+// Both directions are asserted, because either alone is satisfied by a constant.
+// An installer that always claims the embedded corpus passes the bare-parent
+// case; one that never claims it passes the examples case. Only the pair
+// requires a probe.
+//
+// The schema half is asserted separately from the corpus half, and at the path
+// its own rule keys on, because the two rules are NOT the same question through
+// the same root. newFixtureSource stats the examples/ DIRECTORY; loadSchemaFrom
+// reads the FILE schemas/open-test-intent.v1.json and falls back on THAT being
+// absent. So a schemas/ directory holding some other project's JSON is a run
+// that read the compiled-in schema, and the case for it below is the one that
+// falsifies a probe of the directory — which is a real implementation, not a
+// hypothetical one: it is what the first pass at this shipped, and it announced
+// a schema file that did not exist.
+//
+// What is deliberately NOT asserted is a refusal. scripts/build-release.sh dies
+// on these same two paths, and it owns its prefix; this script does not. Every
+// case below requires exit 0 AND an installed, executable binary, so an
+// implementation that borrowed build-release.sh's `die` fails here rather than
+// silently regressing a working install into a hard error.
+//
+// REACH, stated because the fixture makes it easy to overread: stageSource
+// installs workingArtifactBody, a shell stub, so these cases pin what install.sh
+// SAYS, never what the binary DID. The seeded files exist to be stat'd by the
+// script, not validated by anything. That the sentences below correspond to the
+// binary's real behaviour is established elsewhere — by the rules cited above
+// and by cmd/validate-intent/selftest_embed_test.go in-process — and the
+// expectation table here is written in terms of those rules so the two can be
+// compared by reading. A real binary would additionally require these fixtures
+// to be VALID, which is a stronger fixture than this harness needs or has.
+func TestTheSelfTestLineNamesTheCorpusThatRunActuallyRead(t *testing.T) {
+	requireSupportedHost(t)
+
+	// The prefix is a SUBDIRECTORY of the temp dir, not the temp dir itself,
+	// because the root the binary resolves from is the prefix's parent — the
+	// trees have to go somewhere this subtest controls exclusively, and a
+	// t.TempDir() shared with sibling subtests is not that. It is named bin/
+	// because that is the layout an adopter has when this fires: a checkout.
+	install := func(t *testing.T, seed ...string) (result, string, string) {
+		t.Helper()
+		parent := t.TempDir()
+		for _, rel := range seed {
+			// Seeded as FILES at exact paths, not as trees, because the two
+			// halves key on different depths and a helper that only knew how to
+			// make a directory could not express the case that matters: a
+			// schemas/ that exists without the schema in it.
+			path := filepath.Join(parent, filepath.FromSlash(rel))
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatalf("seeding %s beside the prefix: %v", rel, err)
+			}
+			if err := os.WriteFile(path, []byte("{}\n"), 0o644); err != nil {
+				t.Fatalf("seeding %s beside the prefix: %v", rel, err)
+			}
+		}
+
+		// Resolved the way install.sh resolves it (`cd && pwd -P`) rather than
+		// restated from t.TempDir()'s spelling: /tmp is a symlink on some hosts,
+		// and the path the script prints is the physical one.
+		resolvedParent, err := filepath.EvalSymlinks(parent)
+		if err != nil {
+			t.Fatalf("resolving the probe root the way install.sh does: %v", err)
+		}
+
+		prefix := filepath.Join(parent, "bin")
+		got := run(t, "--from", stageSource(t, sourceOptions{}), "--prefix", prefix)
+		if got.code != 0 {
+			t.Fatalf("installing into %s exited %d, want 0 — the probe informs the wording and must never refuse:\n%s",
+				prefix, got.code, got.output)
+		}
+		// The half of criterion 3 an exit code alone does not carry: a
+		// repo-shaped prefix is still a WORKING install.
+		installed := filepath.Join(prefix, installedName)
+		info, err := os.Stat(installed)
+		if err != nil {
+			t.Fatalf("install.sh exited 0 but installed nothing at %s: %v\n%s", installed, err, got.output)
+		}
+		if info.Mode()&0o111 == 0 {
+			t.Errorf("%s was installed without an executable bit (mode %v)", installed, info.Mode())
+		}
+		return got, resolvedParent, prefix
+	}
+
+	cases := []struct {
+		name string
+		// seed is the set of files created beside the prefix, relative to the
+		// parent — i.e. at the root the installed binary resolves its schema and
+		// its fixtures from.
+		seed []string
+		// corpusFromDisk / schemaFromDisk are what that layout makes the binary
+		// read, worked out from the two rules independently rather than from one
+		// notion of "a tree is there": examples/ is a DIRECTORY stat
+		// (selftest.go:133-140), the schema is a FILE read of
+		// schemas/open-test-intent.v1.json (fileio.go:262-273).
+		corpusFromDisk bool
+		schemaFromDisk bool
+	}{
+		{
+			name: "a bare parent, so neither half could have been substituted",
+		},
+		{
+			name:           "an examples/ tree beside the prefix",
+			seed:           []string{"examples/unit-order-total.json"},
+			corpusFromDisk: true,
+		},
+		{
+			name:           "the schema file beside the prefix",
+			seed:           []string{"schemas/" + schemaFileName},
+			schemaFromDisk: true,
+		},
+		{
+			// The falsifier for a probe of the DIRECTORY. Both halves are
+			// embedded here: the schemas/ exists, the file the binary opens does
+			// not, so os.ReadFile returns fs.ErrNotExist and the compiled-in
+			// schema is what answered. A `schemas/` holding other JSON is an
+			// ordinary thing for a prefix's parent to have — a project's own
+			// schemas, /usr/local/schemas, a partial checkout — and naming it
+			// here would tell an adopter the embedded copy went unexercised on
+			// the one run that exercised it.
+			name: "a schemas/ tree that does not hold the schema the binary opens",
+			seed: []string{"schemas/some-other-project.json"},
+		},
+		{
+			name:           "both, as a checkout has",
+			seed:           []string{"examples/unit-order-total.json", "schemas/" + schemaFileName},
+			corpusFromDisk: true,
+			schemaFromDisk: true,
+		},
+		{
+			// The halves are independent in BOTH directions, so the mixed case
+			// that is not simply "one of each" is worth pinning too: fixtures off
+			// disk while the schema is still the compiled-in one.
+			name:           "an examples/ tree, and a schemas/ without the schema",
+			seed:           []string{"examples/unit-order-total.json", "schemas/some-other-project.json"},
+			corpusFromDisk: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, probeRoot, _ := install(t, tc.seed...)
+			report := selfTestReport(t, got.output)
+
+			// The paths the binary's own two rules resolve. Everything below is
+			// stated in terms of these rather than of tc.seed, so the guard and
+			// the assertions are asking the same question the binary asks.
+			examplesDir := filepath.Join(probeRoot, "examples")
+			schemaFile := filepath.Join(probeRoot, "schemas", schemaFileName)
+
+			// Guard, not decoration: every case is a claim about what is and is
+			// not at that root. If the fixture did not take, the assertions below
+			// pass or fail for reasons that have nothing to do with install.sh.
+			for _, probe := range []struct {
+				path     string
+				wantHere bool
+			}{
+				{examplesDir, tc.corpusFromDisk},
+				{schemaFile, tc.schemaFromDisk},
+			} {
+				_, err := os.Stat(probe.path)
+				if probe.wantHere && err != nil {
+					t.Fatalf("the fixture did not put anything at %s, but this case is about it being read: %v", probe.path, err)
+				}
+				if !probe.wantHere && !errors.Is(err, fs.ErrNotExist) {
+					t.Fatalf("%s exists but this case is about its absence (%v)", probe.path, err)
+				}
+			}
+
+			// --- the corpus half ---
+			claimedEmbedded := strings.Contains(report, selfTestEmbeddedClaim)
+			if claimedEmbedded == tc.corpusFromDisk {
+				if tc.corpusFromDisk {
+					t.Errorf("the fixture tree at %s is what that run read, and the self-test report still claims %q:\n%s",
+						examplesDir, selfTestEmbeddedClaim, report)
+				} else {
+					t.Errorf("nothing at %s could have supplied fixtures, but the self-test report does not say the compiled-in corpus is what ran:\n%s",
+						probeRoot, report)
+				}
+			}
+			if named := strings.Contains(report, examplesDir); named != tc.corpusFromDisk {
+				if tc.corpusFromDisk {
+					t.Errorf("a fixture tree at %s was what that run read and the self-test report never names it:\n%s", examplesDir, report)
+				} else {
+					t.Errorf("the self-test report names %s, but nothing is there and the compiled-in corpus is what ran:\n%s", examplesDir, report)
+				}
+			}
+
+			// --- the schema half, asserted at the FILE, not the directory ---
+			//
+			// The negative is the one that matters and the one the directory
+			// probe fails: it is checked against the schemas/ directory rather
+			// than the file, so an implementation that names the tree it found is
+			// caught even though the file it implies was never there.
+			schemaDir := filepath.Join(probeRoot, "schemas")
+			if named := strings.Contains(report, schemaDir); named != tc.schemaFromDisk {
+				if tc.schemaFromDisk {
+					t.Errorf("the schema at %s is what that run read and the self-test report never names it:\n%s", schemaFile, report)
+				} else {
+					t.Errorf("the self-test report points at %s, but there is no %s there — that run read the schema compiled into the binary, and this says it did not:\n%s",
+						schemaDir, schemaFileName, report)
+				}
+			}
+			if tc.schemaFromDisk && !strings.Contains(report, schemaFile) {
+				t.Errorf("the self-test report names the schemas/ tree but not %s, so it does not say which file was read:\n%s", schemaFile, report)
+			}
+		})
+	}
+}
+
 // --- could not check: exit 2 ------------------------------------------------
 
 // TestCouldNotCheckIsAlwaysTwoAndNeverAnInstall pins the half of the contract
