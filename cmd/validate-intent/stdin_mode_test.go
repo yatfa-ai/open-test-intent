@@ -86,13 +86,14 @@ func repoSchema(t *testing.T) *Schema {
 	return schema
 }
 
-// TestRunStdinJSON_documentShape pins the four emission properties that a
+// TestRunStdinJSON_documentShape pins the five emission properties that a
 // JSON-equality assertion cannot see, because every one of them parses to the
 // same document as its wrong answer:
 //
 //	key order        positional, not alphabetical
 //	"errors": []     never null, even on a passing finding
 //	"line" / "kind"  null, not 0 and not ""
+//	"intent"         present in stdin mode too, not only under --source
 //	trailing newline exactly one
 func TestRunStdinJSON_documentShape(t *testing.T) {
 	t.Setenv("PYTHONIOENCODING", "")
@@ -119,7 +120,7 @@ func TestRunStdinJSON_documentShape(t *testing.T) {
 		`"schema"`, `"mode"`, `"ok"`, `"summary"`,
 		`"files"`, `"annotations"`, `"failed"`,
 		`"findings"`,
-		`"file"`, `"line"`, `"ok"`, `"kind"`, `"errors"`,
+		`"file"`, `"line"`, `"ok"`, `"kind"`, `"errors"`, `"intent"`,
 	}
 	cursor := 0
 	for _, key := range wantOrder {

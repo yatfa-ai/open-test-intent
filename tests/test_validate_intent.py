@@ -465,7 +465,7 @@ class NonUtf8InputTest(unittest.TestCase):
         with open(path, "wb") as handle:
             handle.write(self.LATIN1_JSON)
 
-        valid, errors, parse_error, kind = check_file(path, self.schema)
+        valid, errors, parse_error, kind, instance = check_file(path, self.schema)
 
         self.assertFalse(valid)
         self.assertEqual(errors, [])
@@ -473,6 +473,8 @@ class NonUtf8InputTest(unittest.TestCase):
         self.assertIn("could not read/parse JSON", parse_error)
         # Non-UTF-8 is a *read* failure: the bytes never became a document.
         self.assertEqual(kind, "read")
+        # ...so there is nothing to carry. The bytes never reached the parser.
+        self.assertIsNone(instance)
 
     def test_run_stdin_reports_a_parse_error_instead_of_raising(self):
         stdin = io.TextIOWrapper(io.BytesIO(self.LATIN1_JSON), encoding="utf-8")
@@ -523,6 +525,11 @@ class JsonOutputTest(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.root = self._tmp.name
+        # The same schema the run under test loads, so
+        # `test_the_carried_intent_is_the_value_the_verdict_was_reached_on` can
+        # re-derive a verdict from a carried payload and compare it with the one
+        # the document reported.
+        self.schema = validate_intent.load_schema()
 
     def _write(self, name, content):
         path = os.path.join(self.root, name)
@@ -577,7 +584,7 @@ class JsonOutputTest(unittest.TestCase):
 
     def test_every_finding_has_the_same_keys_in_every_mode(self):
         # A consumer must never have to branch on which mode produced a finding.
-        keys = {"file", "line", "ok", "kind", "errors"}
+        keys = {"file", "line", "ok", "kind", "errors", "intent"}
         runs = [
             (["--json", "--source", self.BROKEN], None),
             (["--json", self.VALID_JSON], None),
@@ -601,6 +608,110 @@ class JsonOutputTest(unittest.TestCase):
             self.assertTrue(finding["ok"])
             self.assertIsNone(finding["kind"])
             self.assertEqual(finding["errors"], [])
+
+    # -- the `intent` key: what the payload PARSED TO ---------------------- #
+    #
+    # A finding used to say whether a payload was valid and never what it was.
+    # That left the only in-process record of the decoded value on the floor at
+    # `check_source_file`, so any consumer wanting the annotation itself had to
+    # re-parse the payload with a second parser — and a second parser that
+    # disagrees with this one is not a hypothetical: `test_a_payload_this_tool_
+    # accepts_is_carried_verbatim` below is a shipped annotation that CPython
+    # accepts and Ruby's JSON refuses.
+
+    def test_a_passing_source_finding_carries_what_the_payload_parsed_to(self):
+        document = self._document(["--json", "--source", self.VALID_SOURCE])
+        self.assertTrue(document["findings"])
+        for finding in document["findings"]:
+            self.assertIsInstance(finding["intent"], dict)
+            # Not a re-render of the raw payload: the protocol's permissive
+            # syntax (unquoted keys, single quotes) is gone by the time it gets
+            # here, which is the whole reason a consumer wants this field.
+            self.assertEqual(
+                set(finding["intent"]), {"entity", "action", "behavior", "layer"}
+            )
+
+    def test_a_schema_rejected_annotation_still_carries_what_it_parsed_to(self):
+        # `ok` already answers "is this good". This field answers "what does
+        # this say", and a payload the schema rejected did parse — blanking it
+        # would answer the first question twice and the second one never.
+        path = self._write(
+            "short_spec.rb",
+            '# @intent: { entity: "Order", action: "checkout", behavior: "x", layer: "unit" }\n',
+        )
+        document = self._document(["--json", "--source", path])
+        finding = document["findings"][0]
+        self.assertEqual(finding["kind"], "schema")
+        self.assertFalse(finding["ok"])
+        self.assertEqual(finding["intent"]["behavior"], "x")
+
+    def test_a_finding_with_no_payload_carries_a_null_intent(self):
+        # Every way there is nothing to report, in one place: extraction and
+        # schema failures from the shipped broken fixture, a parse failure, a
+        # read failure, and a pattern that matched nothing. `intent` is null for
+        # all of them and never absent — an absent key would make a consumer
+        # branch on the mode that produced the finding.
+        unparseable = self._write("bad_payload_spec.rb", "# @intent: { entity: Order }\n")
+        no_match = os.path.join(self.root, "*.nope")
+        runs = [
+            (["--json", "--source", unparseable], "parse"),
+            (["--json", no_match], "no-match"),
+            (["--json", "-"], "parse"),
+        ]
+        for argv, kind in runs:
+            with self.subTest(argv=argv):
+                stdin = "{not json at all" if argv[-1] == "-" else None
+                document = self._document(argv, stdin=stdin)
+                finding = document["findings"][0]
+                self.assertEqual(finding["kind"], kind)
+                self.assertIn("intent", finding)
+                self.assertIsNone(finding["intent"])
+
+        extraction = self._document(["--json", "--source", self.BROKEN])
+        by_line = {f["line"]: f for f in extraction["findings"]}
+        self.assertEqual(by_line[28]["kind"], "extraction")
+        self.assertIsNone(by_line[28]["intent"])
+
+    def test_adopter_and_stdin_modes_carry_the_decoded_document(self):
+        # The key exists in EVERY mode, not just the one that motivated it.
+        adopter = self._document(["--json", self.VALID_JSON])
+        self.assertIsInstance(adopter["findings"][0]["intent"], dict)
+
+        stdin = self._document(["--json", "-"], stdin=self.ANNOTATION)
+        self.assertEqual(stdin["findings"][0]["intent"], json.loads(self.ANNOTATION))
+
+    def test_a_payload_this_tool_accepts_is_carried_verbatim(self):
+        # The motivating case (SPGD-340). `\ud800` is a lone surrogate: CPython
+        # decodes it and keeps it, so this annotation is VALID here and this
+        # tool exits 0 over it — while Ruby's JSON.parse raises "incomplete
+        # surrogate pair" on the same bytes. A consumer that trusted this
+        # verdict and then re-parsed the payload itself would get a different
+        # answer than the one it was told to trust. Carrying the value is what
+        # removes the second parser from the picture.
+        payload = '{ "entity": "\\ud800Or", "action": "create", ' \
+                  '"behavior": "creates the record and returns 201", "layer": "unit" }'
+        path = self._write("surrogate_spec.rb", "# @intent: %s\n" % payload)
+
+        document = self._document(["--json", "--source", path])
+        self.assertEqual(self.document_exit_code, 0)
+        self.assertTrue(document["findings"][0]["ok"])
+        self.assertEqual(document["findings"][0]["intent"]["entity"], "\ud800Or")
+
+    def test_the_carried_intent_is_the_value_the_verdict_was_reached_on(self):
+        # The property that makes the field worth having: for every finding that
+        # carries one, re-validating the CARRIED value reproduces the reported
+        # verdict. A field that merely looked plausible — the raw payload text,
+        # or a value from a different annotation on the same line — would pass
+        # every assertion above and fail this one.
+        for source in (self.VALID_SOURCE, self.BROKEN):
+            document = self._document(["--json", "--source", source])
+            for finding in document["findings"]:
+                if finding["intent"] is None:
+                    continue
+                with self.subTest(source=source, line=finding["line"]):
+                    errors = validate(finding["intent"], self.schema)
+                    self.assertEqual(bool(errors), not finding["ok"])
+                    self.assertEqual(errors, finding["errors"] if errors else [])
 
     # -- source mode ------------------------------------------------------- #
 

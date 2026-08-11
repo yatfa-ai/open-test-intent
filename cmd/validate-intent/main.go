@@ -451,7 +451,7 @@ func schemaLoadError(source SchemaSource, err error) string {
 // validate the given path(s)/glob(s) as valid intent JSON.
 func RunAdopter(patterns []string, schema *Schema) int {
 	checkOne := func(path string) bool {
-		valid, errs, parseError, _ := CheckFile(path, schema)
+		valid, errs, parseError, _, _ := CheckFile(path, schema)
 		if parseError != "" {
 			pyPrintf("FAIL  %s — %s\n", path, parseError)
 			return true

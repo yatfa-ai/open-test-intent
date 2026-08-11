@@ -366,6 +366,14 @@ type SourceFinding struct {
 	Errors  []string
 	Problem string
 	Kind    string
+	// Intent is what the payload PARSED TO, and is nil for an annotation that
+	// never parsed (KindExtraction, KindParse). It is carried for the same
+	// reason Kind is — this is the only place it exists, and the alternative
+	// for a consumer that needs it is to re-parse the payload with a second
+	// parser that then disagrees with this one about what the annotation says.
+	// A SCHEMA-REJECTED annotation still carries it: the payload did parse, and
+	// Valid already reports the verdict.
+	Intent Value
 }
 
 // CheckSourceFile is the port of `check_source_file` (bin/validate-intent:421-454).
@@ -413,7 +421,7 @@ func CheckSourceText(text string, schema *Schema) []SourceFinding {
 			continue
 		}
 		errs := schema.Validate(instance)
-		finding := SourceFinding{Line: site.Line, Valid: len(errs) == 0, Errors: errs}
+		finding := SourceFinding{Line: site.Line, Valid: len(errs) == 0, Errors: errs, Intent: instance}
 		if len(errs) > 0 {
 			finding.Kind = KindSchema
 		}

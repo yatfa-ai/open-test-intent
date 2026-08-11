@@ -18,10 +18,14 @@ import (
 
 // CheckFile is the port of `check_file` (bin/validate-intent:219-247).
 //
-// The 4-tuple shape is kept deliberately. `kind` is unused by adopter text mode
+// The 5-tuple shape is kept deliberately. `kind` is unused by adopter text mode
 // — it renders a parse failure and a read failure as the same prose — but a
-// consumer of the later --json slice needs to tell them apart, and once the
-// result has been flattened to text the distinction is gone for good.
+// consumer of the --json slice needs to tell them apart, and once the result has
+// been flattened to text the distinction is gone for good. `instance` is there
+// for the same reason one step further on: it is the decoded document, it exists
+// only here, and the --json renderer reports it. Recovering it downstream would
+// mean parsing the same bytes a second time with a second parser, which is the
+// divergence the `intent` key was added to close rather than to relocate.
 //
 // The read is separated from the verdict (CheckJSONBytes below) for exactly one
 // caller: a self-test running on a host with no checkout, whose fixture bytes
@@ -29,10 +33,10 @@ import (
 // the verdict half rather than writing a second one is what makes an embedded
 // run and an in-checkout run produce the same answer by construction — see
 // fixtureSource in selftest.go.
-func CheckFile(path string, schema *Schema) (valid bool, errs []string, parseError string, kind string) {
+func CheckFile(path string, schema *Schema) (valid bool, errs []string, parseError string, kind string, instance Value) {
 	data, err := os.ReadFile(pyFSEncode(path))
 	if err != nil {
-		return false, nil, "could not read/parse JSON: " + pyOSError(err), KindRead
+		return false, nil, "could not read/parse JSON: " + pyOSError(err), KindRead, nil
 	}
 	return CheckJSONBytes(data, schema)
 }
@@ -43,20 +47,20 @@ func CheckFile(path string, schema *Schema) (valid bool, errs []string, parseErr
 // It keeps the read-failure prefix even though it never opens anything, because
 // the undecodable-bytes case below IS a read failure in Python — see the
 // comment on it — and the prose is part of the output contract.
-func CheckJSONBytes(data []byte, schema *Schema) (valid bool, errs []string, parseError string, kind string) {
+func CheckJSONBytes(data []byte, schema *Schema) (valid bool, errs []string, parseError string, kind string, instance Value) {
 	// Python opens with encoding="utf-8", so undecodable bytes raise
 	// UnicodeDecodeError during the read and never reach the parser. Go would
 	// silently substitute U+FFFD instead, turning a read failure into a
 	// successful parse of different text — check explicitly.
 	if !utf8.Valid(data) {
-		return false, nil, "could not read/parse JSON: " + pyUnicodeDecodeError(data), KindRead
+		return false, nil, "could not read/parse JSON: " + pyUnicodeDecodeError(data), KindRead, nil
 	}
 	instance, err := DecodeOrdered(data)
 	if err != nil {
-		return false, nil, "could not read/parse JSON: " + err.Error(), KindParse
+		return false, nil, "could not read/parse JSON: " + err.Error(), KindParse, nil
 	}
 	errs = schema.Validate(instance)
-	return len(errs) == 0, errs, "", ""
+	return len(errs) == 0, errs, "", "", instance
 }
 
 // readSourceText reads a test source file the way check_source_file does

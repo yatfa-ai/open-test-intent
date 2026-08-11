@@ -1703,6 +1703,84 @@ fi
 chmod 644 "$unreadable_src"
 
 # --------------------------------------------------------------------------- #
+# 14b. the carried intent — payload shapes the shipped schema cannot produce
+# --------------------------------------------------------------------------- #
+#
+# Section 14 above compares the whole document, so it already covers the
+# `intent` key — for the ONE payload shape a conforming annotation can have. The
+# shipped schema requires an object of four strings, so every passing finding in
+# the corpus renders the same flat map, and a renderer that got arrays, nested
+# objects, numbers, booleans, empty containers and non-finites all wrong would
+# still be byte-identical on every case above it.
+#
+# That is not a hypothetical gap. `intent` is the first field of this document
+# whose value is an ARBITRARY decoded value rather than a string, an integer or
+# a bool, so it is the first place json.dumps' container rules are reachable at
+# all — and they are the rules a hand-written encoder gets wrong:
+#
+#   empty containers  `{}` and `[]` on ONE line, while a non-empty one indents
+#   int vs float      `1` and `1.0` are different literals, and `1e400` is
+#                     neither: json.dumps spells the overflow `Infinity`, where
+#                     repr() — sitting right next door in PyReprFloat, and the
+#                     natural wrong reach — spells it `inf`
+#   big integers      Python ints do not round; float64 does
+#   key order         document order, not sorted and not Go's map order
+#   escaping          ensure_ascii=True, and <>& left alone
+#
+# The payloads below are INVALID against the shipped schema, and that is what
+# makes them usable here: a finding carries what its payload parsed to whether
+# or not the schema accepted it, so `--json` renders these shapes while the
+# verdict stays a normal schema failure. A harness that could only send
+# CONFORMING payloads could not reach any of these branches — which is the same
+# reason section 9 has to grow a schema to reach the validator's own.
+#
+# --source is used where the payload can be brace-delimited (the extractor
+# captures `{...}`, so a top-level array or scalar is not expressible there) and
+# stdin for the rest. Both modes carry the key, so both are compared.
+echo
+echo "== 14b. the carried intent (payload shapes the schema cannot produce) =="
+
+printf '# @intent: { entity: "Order", nested: { deep: { deeper: [1, 2.0, -0, true, false, null] } } }\n# @intent: { empty_obj: {}, empty_arr: [], mixed: [{}, [], ""] }\n# @intent: { big: 123456789012345678901234567890, float: 0.1, exp: 1e17, tiny: 1e-7 }\n# @intent: { overflow: 1e400, negoverflow: -1e400, underflow: 1e-400 }\n# @intent: { zeta: 1, alpha: 2, mu: 3 }\n' \
+  > "$SRC/carried_shapes_spec.rb"
+compare "--json: nested containers, numbers and key order in the carried intent" \
+  --source "$SRC/carried_shapes_spec.rb" --json
+
+# The escaping rules, inside the carried value rather than inside an error
+# string. Section 14's non-ASCII case exercises them in a MESSAGE the tool
+# wrote; these are bytes the AUTHOR wrote, which is where they actually occur.
+printf '# @intent: { "caf\303\251": "a<b>&c", "emoji": "\360\237\230\200", "ctrl": "tab\\there" }\n' \
+  > "$SRC/carried_escaping_spec.rb"
+compare "--json: non-ASCII, <>& and controls inside the carried intent" \
+  --source "$SRC/carried_escaping_spec.rb" --json
+
+# THE MOTIVATING PAYLOAD (SPGD-340). `\ud800` is a lone surrogate: CPython
+# decodes it, keeps it, and re-emits it as `\ud800` — so this annotation is
+# VALID, this tool exits 0 over it, and the carried value round-trips. Go's
+# standard library will not decode a surrogate at all, so the port carries it as
+# WTF-8 and pyJSONDumpsString spells it back. A consumer that trusted the
+# verdict and then re-parsed the payload with its own parser would get a
+# different answer than the one it was told to trust — which is the entire
+# reason this key exists, and this case is the proof that carrying it removes
+# the second parser rather than relocating the disagreement.
+printf '# @intent: { "entity": "\\ud800Or", "action": "create", "behavior": "creates the record and returns 201", "layer": "unit" }\n' \
+  > "$SRC/carried_surrogate_spec.rb"
+compare "--json: a lone-surrogate payload is carried, not lost" \
+  --source "$SRC/carried_surrogate_spec.rb" --json
+# ...and the same annotation still passes in TEXT mode, so the case above cannot
+# go green by the annotation having quietly become invalid.
+compare "--source: the lone-surrogate annotation is valid" \
+  --source "$SRC/carried_surrogate_spec.rb"
+
+# Top-level shapes --source cannot express. stdin takes one whole document, so
+# an array, a bare scalar and the non-finite literals Python's parser accepts
+# are only reachable here.
+for shape in '[]' '{}' 'null' 'true' '0' '-0' '1.0' '1e400' '-1e400' 'NaN' 'Infinity' '-Infinity' \
+             '123456789012345678901234567890' '"a<b>&c caf\303\251"' '[[[[1]]]]' '[{"a":[]},{"b":{}}]'; do
+  printf '%b' "$shape" > "$WORK/carried_stdin.json"
+  compare_stdin "--json stdin: carried intent for $shape" "$WORK/carried_stdin.json" - --json
+done
+
+# --------------------------------------------------------------------------- #
 # 15. the self-test's empty-fixture-set guard
 # --------------------------------------------------------------------------- #
 #

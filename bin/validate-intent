@@ -219,7 +219,7 @@ def validate(instance, schema, path=""):
 def check_file(filepath, schema):
     """Validate a single JSON file.
 
-    Returns ``(valid, errors, parse_error, kind)``:
+    Returns ``(valid, errors, parse_error, kind, instance)``:
       * ``parse_error`` is a string when the file could not be read or parsed
         (``valid`` is then ``False`` and ``errors`` empty), and ``kind`` says
         which of the two it was: ``KIND_PARSE`` for a file that opened and
@@ -229,6 +229,16 @@ def check_file(filepath, schema):
         the first, an operator the second.
       * otherwise ``valid`` reflects the schema outcome, ``errors`` lists the
         violations and ``kind`` is ``None``.
+      * ``instance`` is the DECODED DOCUMENT, or ``None`` where nothing decoded.
+        It is returned rather than dropped because the ``--json`` renderers
+        report *what a payload parsed to* and this is the only place that value
+        exists: recovering it downstream would mean parsing the same bytes a
+        second time with a second parser, which is precisely the divergence the
+        key was added to close. Note that a document whose entire content is
+        ``null`` decodes to ``None`` and is therefore indistinguishable here
+        from "nothing decoded" — a collapse the Go port reproduces exactly, so
+        the two implementations answer the same way rather than one of them
+        being tidier.
 
     The ``parse_error`` message is deliberately identical for both kinds so the
     text renderers stay byte-for-byte unchanged; the distinction travels in
@@ -240,11 +250,11 @@ def check_file(filepath, schema):
     except json.JSONDecodeError as exc:
         # Must precede UnicodeDecodeError: both subclass ValueError, and a
         # decoded-but-malformed document is a parse failure, not a read one.
-        return False, [], "could not read/parse JSON: %s" % exc, KIND_PARSE
+        return False, [], "could not read/parse JSON: %s" % exc, KIND_PARSE, None
     except (OSError, UnicodeDecodeError) as exc:
-        return False, [], "could not read/parse JSON: %s" % exc, KIND_READ
+        return False, [], "could not read/parse JSON: %s" % exc, KIND_READ, None
     errors = validate(instance, schema)
-    return not errors, errors, None, None
+    return not errors, errors, None, None, instance
 
 
 def load_schema():
@@ -423,13 +433,23 @@ def check_source_file(filepath, schema):
 
     Returns ``(findings, read_error)``. ``read_error`` is a string when the file
     could not be read (``findings`` is then ``None``). Otherwise ``findings`` is
-    a list of ``(line_no, valid, errors, problem, kind)`` — one entry per
-    annotation found, in source order; an empty list means the file carries none.
+    a list of ``(line_no, valid, errors, problem, kind, instance)`` — one entry
+    per annotation found, in source order; an empty list means the file carries
+    none.
 
     ``kind`` names *how* the annotation failed and is ``None`` when it passed. It
     is carried here rather than reconstructed by the caller because a failed
     extraction and an unparseable payload both land in ``problem``, so the two
     are indistinguishable downstream once the tuple is flattened to prose.
+
+    ``instance`` is what the payload PARSED TO, and is ``None`` for an
+    annotation that never parsed (``KIND_EXTRACTION``, ``KIND_PARSE``). It is
+    carried for the same reason ``kind`` is — this is the only place it exists,
+    and the alternative for a consumer that needs it is to re-parse the payload
+    with a second parser that then disagrees with this one about what the
+    annotation says. A SCHEMA-REJECTED annotation still carries it: the payload
+    did parse, and ``valid`` already reports the verdict, so blanking it here
+    would answer a different question than the one the field asks.
     """
     try:
         with open(filepath, "r", encoding="utf-8") as handle:
@@ -440,17 +460,19 @@ def check_source_file(filepath, schema):
     findings = []
     for line_no, raw, problem in extract_intents(text):
         if problem:
-            findings.append((line_no, False, [], problem, KIND_EXTRACTION))
+            findings.append((line_no, False, [], problem, KIND_EXTRACTION, None))
             continue
         try:
             instance = json.loads(normalize_payload(raw))
         except ValueError as exc:  # covers json.JSONDecodeError
             findings.append(
-                (line_no, False, [], "could not parse annotation: %s" % exc, KIND_PARSE)
+                (line_no, False, [], "could not parse annotation: %s" % exc, KIND_PARSE, None)
             )
             continue
         errors = validate(instance, schema)
-        findings.append((line_no, not errors, errors, None, KIND_SCHEMA if errors else None))
+        findings.append(
+            (line_no, not errors, errors, None, KIND_SCHEMA if errors else None, instance)
+        )
     return findings, None
 
 
@@ -517,10 +539,20 @@ class _JsonReport:
     implementation that could drift.
 
     Every finding has the same shape regardless of mode:
-    ``{"file", "line", "ok", "kind", "errors"}`` — ``line`` is ``null`` where a
-    finding is not line-scoped (adopter, stdin, no-match), ``kind`` is ``null``
-    on a passing finding, and ``errors`` is always a list of strings so a
-    consumer never has to branch on its type.
+    ``{"file", "line", "ok", "kind", "errors", "intent"}`` — ``line`` is
+    ``null`` where a finding is not line-scoped (adopter, stdin, no-match),
+    ``kind`` is ``null`` on a passing finding, and ``errors`` is always a list
+    of strings so a consumer never has to branch on its type.
+
+    ``intent`` is WHAT THE PAYLOAD PARSED TO, and it is emitted in every mode
+    rather than only in the one that motivated it. This document's whole
+    contract is that a consumer never branches on which mode produced a finding;
+    a key present under ``--source`` and absent elsewhere would make the shape
+    mode-dependent and hand that branch straight back. So it is ``null``
+    wherever there is no payload — read failures, extraction failures, parse
+    failures, no-match — and the decoded value wherever there is one, including
+    on an annotation the SCHEMA rejected: it parsed, and ``ok`` already reports
+    the verdict. The field answers "what does this say", not "is this good".
 
     ``summary.annotations`` counts **annotation sites examined**, and counts
     them the same way in every mode: a site whose payload could not be captured
@@ -536,15 +568,21 @@ class _JsonReport:
         self.annotations = 0
         self.findings = []
 
-    def add(self, filepath, line, ok, kind, errors):
+    def add(self, filepath, line, ok, kind, errors, intent=None):
         """Record one finding. Returns truthy when it failed (the ``check_one``
-        contract of :func:`_run_over_patterns`)."""
+        contract of :func:`_run_over_patterns`).
+
+        ``intent`` defaults to ``None`` for the callers that have no payload to
+        report — :meth:`no_match` and the read-failure arms — so that "no
+        payload" is spelled once here rather than at every such call site.
+        """
         self.findings.append({
             "file": filepath,
             "line": line,
             "ok": bool(ok),
             "kind": kind,
             "errors": list(errors),
+            "intent": intent,
         })
         return not ok
 
@@ -599,7 +637,7 @@ def _self_test_source_fixture(filepath, schema, expect_valid):
         return False
 
     matched = True
-    for line_no, valid, errors, problem, _kind in findings:
+    for line_no, valid, errors, problem, _kind, _intent in findings:
         where = "%s:%d" % (rel, line_no)
         if valid == expect_valid:
             if expect_valid:
@@ -668,7 +706,7 @@ def run_self_test(schema):
     for filepath in valid_files:
         checked += 1
         rel = os.path.relpath(filepath, REPO_ROOT)
-        valid, errors, parse_error, _kind = check_file(filepath, schema)
+        valid, errors, parse_error, _kind, _instance = check_file(filepath, schema)
         if parse_error:
             print("FAIL  %s — unexpectedly invalid (%s)" % (rel, parse_error))
             mismatches += 1
@@ -684,7 +722,7 @@ def run_self_test(schema):
     for filepath in invalid_files:
         checked += 1
         rel = os.path.relpath(filepath, REPO_ROOT)
-        valid, _errors, parse_error, _kind = check_file(filepath, schema)
+        valid, _errors, parse_error, _kind, _instance = check_file(filepath, schema)
         if parse_error:
             # Malformed JSON is a rejection too — but flag it so it's visible.
             print("PASS  %s (correctly rejected — %s)" % (rel, parse_error))
@@ -713,7 +751,7 @@ def run_self_test(schema):
 def run_adopter(patterns, schema):
     """Validate the given path(s)/glob(s) as valid intent JSON."""
     def check_one(filepath):
-        valid, errors, parse_error, _kind = check_file(filepath, schema)
+        valid, errors, parse_error, _kind, _instance = check_file(filepath, schema)
         if parse_error:
             print("FAIL  %s — %s" % (filepath, parse_error))
             return True
@@ -741,13 +779,13 @@ def run_adopter_json(patterns, schema):
 
     def check_one(filepath):
         report.files += 1
-        valid, errors, parse_error, kind = check_file(filepath, schema)
+        valid, errors, parse_error, kind, instance = check_file(filepath, schema)
         if parse_error:
             if kind != KIND_READ:
                 report.annotations += 1
             return report.add(filepath, None, False, kind, [parse_error])
         report.annotations += 1
-        return report.add(filepath, None, valid, None if valid else KIND_SCHEMA, errors)
+        return report.add(filepath, None, valid, None if valid else KIND_SCHEMA, errors, instance)
 
     return report.emit(_run_over_patterns(patterns, check_one, report.no_match))
 
@@ -768,7 +806,7 @@ def run_source(patterns, schema):
             print("----  %s — no @intent annotations" % filepath)
             return False
         failed = False
-        for line_no, valid, errors, problem, _kind in findings:
+        for line_no, valid, errors, problem, _kind, _intent in findings:
             where = "%s:%d" % (filepath, line_no)
             if valid:
                 print("PASS  %s" % where)
@@ -798,12 +836,12 @@ def run_source_json(patterns, schema):
         if read_error:
             return report.add(filepath, None, False, KIND_READ, [read_error])
         failed = False
-        for line_no, valid, errors, problem, kind in findings:
+        for line_no, valid, errors, problem, kind, instance in findings:
             report.annotations += 1
             # `problem` and `errors` are the same thing to a consumer: why this
             # annotation failed. `kind` is what tells them apart, so both are
             # normalized into the one `errors` list.
-            if report.add(filepath, line_no, valid, kind, [problem] if problem else errors):
+            if report.add(filepath, line_no, valid, kind, [problem] if problem else errors, instance):
                 failed = True
         return failed
 
@@ -862,7 +900,7 @@ def run_stdin_json(schema):
         report.add("-", None, False, KIND_PARSE, ["could not read/parse JSON: %s" % exc])
         return report.emit(1)
     errors = validate(instance, schema)
-    report.add("-", None, not errors, KIND_SCHEMA if errors else None, errors)
+    report.add("-", None, not errors, KIND_SCHEMA if errors else None, errors, instance)
     return report.emit(1 if errors else 0)
 
 
