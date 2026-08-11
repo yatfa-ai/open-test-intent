@@ -12,6 +12,35 @@
 # to match. Artifacts, and a SHA256SUMS manifest describing them, land in
 # dist/release/.
 #
+# BEFORE YOU PUBLISH WHAT THIS BUILDS: the gem ships first (SPGD-340)
+# ------------------------------------------------------------------------------
+# Since `--json` findings began carrying `intent` — what the payload PARSED to —
+# these binaries emit a report that not every version of specguard-rspec can
+# read. Publishing this repo AHEAD of the gem regresses `specguard-lint` for
+# anyone who has both.
+#
+# The document now inherits the PAYLOAD's parser domain, and the two parsers do
+# not accept the same language. CPython (and this port after it) takes
+# non-finite literals, unbounded nesting and lone high surrogates; Ruby's takes
+# none of the three. A gem without SPGD-340's parse options and surrogate
+# recovery cannot read a document carrying one, so it reports the validator as
+# broken rather than the annotation as malformed. Measured on those payload
+# classes, backend on, `--json`:
+#
+#   old gem + new binary   exit 2, NO document   <- the regression
+#   old gem + old binary   exit 1, valid document
+#   new gem + old binary   exit 1, valid document, "intent": null
+#   new gem + new binary   exit 1, valid document, "intent": populated
+#
+# Note which way round it is safe. A NEW gem reading an OLD binary is fine: the
+# key is simply absent, `intent` is null, and that is the same answer the gem
+# gave before the key existed. The constraint is one-directional — ship the gem
+# first, or ship both together. Never this repo alone.
+#
+# An ordinary annotation is unaffected in every combination; the break needs a
+# payload from one of those classes. That is precisely why this is written here
+# rather than left to a release smoke test, which will not have one.
+#
 # Not dist/ itself, which is where tests/cross/run_cross_build.sh puts the
 # UNSTAMPED builds it verifies — and under exactly the same filenames. Sharing
 # the directory would let a cross-build run silently replace a release artifact
