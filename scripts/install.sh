@@ -155,33 +155,58 @@
 # embedded one unconditionally.
 #
 # It cannot know that without looking. cmd/validate-intent/selftest.go's
-# RepoRoot() and cmd/validate-intent/fileio.go's SchemaPath() are the same
-# dirname(dirname(exe)), and newFixtureSource takes the embedded branch on
-# ErrNotExist and on nothing else — so a real examples/ tree at that root WINS,
-# and a real schemas/ there wins for the schema half identically. The binary
-# under test runs from inside $PREFIX, so that root is the PARENT of $PREFIX,
-# and `--prefix <checkout>/bin` in a repository shaped like this one puts both
-# trees exactly there. The self-test then passes by reading a disk.
+# RepoRoot() and cmd/validate-intent/fileio.go's SchemaPath() resolve from the
+# same dirname(dirname(exe)), and each prefers what it finds there over the copy
+# compiled into it. The binary under test runs from inside $PREFIX, so that root
+# is the PARENT of $PREFIX, and `--prefix <checkout>/bin` in a repository shaped
+# like this one puts both trees exactly there. The self-test then passes by
+# reading a disk.
 #
-# So the parent is probed just before the success line is printed, and the
-# outcome picks the wording. The two absences are independent and are reported
-# independently: the embedded CORPUS is claimed only when no examples/ there
-# could have supplied fixtures, and a schemas/ there is named even on a run
-# whose corpus really was the compiled-in one, because the schema is the half it
-# substituted for. What the probe does NOT do is refuse. scripts/build-release.sh:600-612 dies on these same two paths and is
-# right to — it builds a fresh mktemp prefix for the sole purpose of proving the
-# embedded copies work, so a tree there is its own bug. This script does not own
-# $PREFIX: the adopter chose it, installing into a checkout's bin/ is a
-# legitimate thing to want, and dying there would turn a working install into a
-# hard error to protect the accuracy of a sentence. The exit status is identical
-# on both branches and the three codes below are untouched — the probe informs
-# the message and nothing else.
+# The two halves share a root and NOT a question, which is the detail worth
+# spelling out because collapsing them is the easy mistake:
+#
+#   - fixtures — newFixtureSource (selftest.go:133-140) stats root/examples, the
+#     DIRECTORY, and takes the embedded branch on fs.ErrNotExist and on nothing
+#     else. So the tree is the thing to ask about.
+#   - schema — loadSchemaFrom (fileio.go:262-273) os.ReadFile's the FILE
+#     root/schemas/open-test-intent.v1.json, built by SchemaPath()
+#     (fileio.go:130-137), and substitutes the embedded copy on fs.ErrNotExist
+#     OF THAT FILE. The directory is never stat'd. A schemas/ holding anything
+#     else — another project's JSON schemas, a partial checkout — is a run that
+#     read the compiled-in schema, so asking about the directory here would
+#     announce a disk read that did not happen.
+#
+# So the parent is probed just before the success line is printed, each half at
+# the path its own rule keys on, and the outcome picks the wording. The two
+# absences are independent and are reported independently: the embedded CORPUS
+# is claimed only when no examples/ there could have supplied fixtures, and a
+# schema file there is named even on a run whose corpus really was the
+# compiled-in one, because the schema is the half it substituted for.
+#
+# What the probe does NOT do is refuse. scripts/build-release.sh:600-612 dies on
+# these same two paths and is right to — it builds a fresh mktemp prefix for the
+# sole purpose of proving the embedded copies work, so a tree there is its own
+# bug. This script does not own $PREFIX: the adopter chose it, installing into a
+# checkout's bin/ is a legitimate thing to want, and dying there would turn a
+# working install into a hard error to protect the accuracy of a sentence. The
+# exit status is identical on both branches and the three codes below are
+# untouched — the probe informs the message and nothing else.
 #
 # tests/cross/run_cross_build.sh:298-319 keeps its own version of this claim and
 # should stay. It still says something neither branch here can: it CONSTRUCTS a
 # prefix with no schemas/ on disk and then requires the run to pass, so a
 # fallback that stopped working is a failure there. This script reports which
 # branch fired; that harness requires a particular one to.
+#
+# That harness probes the schemas/ DIRECTORY where this script probes the file
+# under it, and both are correct, for the reason the difference is easy to get
+# backwards: it asserts an ABSENCE and dies on it, so the coarser question is a
+# safe over-approximation — it refuses a superset of the layouts that could have
+# fed the binary a schema, and never lets one through. A POSITIVE claim inverts
+# that. Over-approximating there is how a directory with no schema in it gets
+# reported as the schema that was read. The same probe is conservative in one
+# direction and wrong in the other; which one it is depends entirely on whether
+# the answer gates a refusal or fills in a sentence.
 #
 #
 # Exit codes — the house rule, unchanged
@@ -410,8 +435,9 @@ Installs the artifact matching this host, after verifying it against the
 SHA256SUMS row that describes it, then runs \`validate-intent --version\` from
 the prefix to prove the installed binary works and a bare \`validate-intent\` to
 prove it validates. That self-test reads the schema and fixtures compiled into
-the binary, unless a schemas/ or examples/ tree sits beside the prefix, in which
-case the binary reads that instead; the success line says which it was.
+the binary, unless an examples/ tree or a schemas/open-test-intent.v1.json sits
+beside the prefix, in which case the binary reads that instead; the success line
+says which it was.
 
 Exit 0 installed and verified; 1 examined and found wrong; 2 could not check
 (no source, no manifest row, no digest tool, an unsupported host) or checked out
@@ -867,30 +893,46 @@ fi
 probe_root="${PREFIX%/*}"
 [ -n "$probe_root" ] || probe_root="/"
 
-# `-e` and not `-d`, matching the rule the binary actually applies: the embedded
-# branch is taken on fs.ErrNotExist and on NOTHING else, so a plain file or a
-# broken directory sitting on the name is still a thing that is there, and it
-# keeps the on-disk path. Reporting it as an absence here would put this line
-# back to guessing.
-have_schemas=""
+# `-e` and not `-d`, matching the rule each half of the binary actually applies:
+# the embedded branch is taken on fs.ErrNotExist and on NOTHING else, so a plain
+# file or a broken directory sitting on the name is still a thing that is there,
+# and it keeps the on-disk path. Reporting it as an absence here would put this
+# line back to guessing.
+#
+# The two paths are NOT parallel, and that asymmetry is the whole of what this
+# probe has to get right. The fixture rule stats the examples/ DIRECTORY, so the
+# directory is what is asked about. The schema rule reads the FILE
+# schemas/open-test-intent.v1.json and falls back on that file being absent, so
+# the FILE is what is asked about — a schemas/ directory holding anything else is
+# a run that read the compiled-in schema, and probing the directory would name a
+# file that does not exist. See the header for why the mirror-image probe in
+# tests/cross/run_cross_build.sh is right to be coarser than this one.
+#
+# The filename is spelled here rather than derived because nothing on this host
+# can be asked for it: the path is built in Go, at fileio.go:130-137, and this
+# script has only the compiled artifact. It is pinned by the schemas-beside-the-
+# prefix cases in tests/cross/install/install_test.go, which seed a real one.
+have_schema=""
 have_examples=""
-if [ -e "$probe_root/schemas" ]; then have_schemas=yes; fi
+if [ -e "$probe_root/schemas/open-test-intent.v1.json" ]; then have_schema=yes; fi
 if [ -e "$probe_root/examples" ]; then have_examples=yes; fi
 
-if [ -z "$have_schemas$have_examples" ]; then
+if [ -z "$have_schema$have_examples" ]; then
   # Nothing at that root could have supplied a substitute, so the compiled-in
   # copies are what ran. This is the line as it has always read, now earned.
   green "  ok    $INSTALL_NAME self-tested its embedded fixture corpus"
 else
   if [ -z "$have_examples" ]; then
     green "  ok    $INSTALL_NAME self-tested its embedded fixture corpus, against the schema"
-    green "        in $probe_root/schemas rather than the one compiled into it"
-  elif [ -z "$have_schemas" ]; then
+    green "        in $probe_root/schemas/open-test-intent.v1.json rather than the one"
+    green "        compiled into it"
+  elif [ -z "$have_schema" ]; then
     green "  ok    $INSTALL_NAME self-tested clean against the fixture tree in"
     green "        $probe_root/examples, not the corpus compiled into it"
   else
-    green "  ok    $INSTALL_NAME self-tested clean against the schemas/ and examples/ trees"
-    green "        in $probe_root, not the copies compiled into it"
+    green "  ok    $INSTALL_NAME self-tested clean against the fixture tree in"
+    green "        $probe_root/examples and the schema in"
+    green "        $probe_root/schemas/open-test-intent.v1.json, not the copies compiled into it"
   fi
   dim "        that root is the parent of the prefix, which is where $INSTALL_NAME looks"
   dim "        first, so what this run proves is what is named above."
