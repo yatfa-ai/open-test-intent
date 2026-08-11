@@ -217,7 +217,7 @@ func (s fixtureSource) expandEmbedded(pattern string) []string {
 // checkJSON is CheckFile addressed by a path relative to root.
 func (s fixtureSource) checkJSON(rel string, schema *Schema) (valid bool, errs []string, parseError string) {
 	if s.corpus == nil {
-		valid, errs, parseError, _ = CheckFile(filepath.Join(s.root, rel), schema)
+		valid, errs, parseError, _, _ = CheckFile(filepath.Join(s.root, rel), schema)
 		return valid, errs, parseError
 	}
 	data, err := s.corpus.ReadFile(rel)
@@ -227,7 +227,7 @@ func (s fixtureSource) checkJSON(rel string, schema *Schema) (valid bool, errs [
 		// cannot be read is a self-test that verified nothing.
 		return false, nil, "could not read/parse JSON: " + err.Error()
 	}
-	valid, errs, parseError, _ = CheckJSONBytes(data, schema)
+	valid, errs, parseError, _, _ = CheckJSONBytes(data, schema)
 	return valid, errs, parseError
 }
 

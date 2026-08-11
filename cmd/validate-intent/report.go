@@ -16,6 +16,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -25,9 +26,26 @@ const jsonSchemaID = "open-test-intent.v1.json"
 // JSONFinding is one entry of the document's `findings` array.
 //
 // Every finding has the same shape regardless of mode:
-// {"file", "line", "ok", "kind", "errors"}. `line` is null where a finding is
-// not line-scoped, `kind` is null on a passing finding, and `errors` is ALWAYS a
-// list of strings so a consumer never has to branch on its type.
+// {"file", "line", "ok", "kind", "errors", "intent"}. `line` is null where a
+// finding is not line-scoped, `kind` is null on a passing finding, and `errors`
+// is ALWAYS a list of strings so a consumer never has to branch on its type.
+//
+// `Intent` is WHAT THE PAYLOAD PARSED TO, and it is emitted in every mode
+// rather than only in the one that motivated it. This document's whole contract
+// is that a consumer never branches on which mode produced a finding; a key
+// present under --source and absent elsewhere would make the shape
+// mode-dependent and hand that branch straight back. So it is null wherever
+// there is no payload — read failures, extraction failures, parse failures,
+// no-match — and the decoded value wherever there is one, INCLUDING on an
+// annotation the schema rejected: it parsed, and `ok` already reports the
+// verdict. The field answers "what does this say", not "is this good".
+//
+// A nil Intent renders `null`, which is also what a payload whose entire
+// content is the literal `null` renders as. The two are therefore
+// indistinguishable in the document — and deliberately so, because the
+// reference collapses them the same way (its `instance` is `None` in both
+// cases). A HasIntent flag here would make the port MORE precise than the
+// oracle, which is a parity failure, not an improvement.
 type JSONFinding struct {
 	File    string
 	Line    int  // meaningful only when HasLine
@@ -35,6 +53,7 @@ type JSONFinding struct {
 	OK      bool
 	Kind    string // "" renders `"kind": null`
 	Errors  []string
+	Intent  Value // nil renders `"intent": null`
 }
 
 // JSONReport collects findings for --json and emits the single stdout document.
@@ -144,11 +163,99 @@ func renderFindings(findings []JSONFinding) string {
 		} else {
 			fmt.Fprintf(&b, "      \"kind\": %s,\n", pyJSONDumpsString(f.Kind))
 		}
-		b.WriteString("      \"errors\": " + renderErrors(f.Errors) + "\n")
+		b.WriteString("      \"errors\": " + renderErrors(f.Errors) + ",\n")
+		b.WriteString("      \"intent\": " + renderJSONValue(f.Intent, 6) + "\n")
 		b.WriteString("    }")
 		parts = append(parts, b.String())
 	}
 	return "[\n" + strings.Join(parts, ",\n") + "\n  ]"
+}
+
+// renderJSONValue reproduces json.dumps(value, indent=2) for an arbitrary
+// decoded value, nested at `indent` spaces.
+//
+// `indent` is the column the value's CLOSING delimiter sits at — i.e. the
+// indentation of the line the value starts on — so its members are written at
+// indent+2. A finding's keys are at column 6, which is why the one call site
+// passes 6 and the nested object lands at 8, exactly where renderErrors already
+// puts an error string.
+//
+// This is a THIRD hand-written encoder in this file, and the reasons
+// renderFindings gives for not reaching for encoding/json all apply again with
+// one addition that is specific to arbitrary values: an intent is user text,
+// so it is the one field where a `<`, `>`, `&` or a non-ASCII character is
+// likely rather than theoretical — and those are precisely the four characters
+// encoding/json and json.dumps disagree about. pyJSONDumpsString settles them
+// the reference's way, including the lone surrogate that motivated this whole
+// key (a payload CPython accepts and re-emits as `\ud800`).
+//
+// The empty-container cases are not tidy-up: Python renders an empty list as
+// `[]` and an empty dict as `{}` on ONE line while indenting a non-empty one,
+// so a renderer that always expands emits `[\n\n  ]` where the oracle emits
+// `[]`.
+func renderJSONValue(v Value, indent int) string {
+	switch t := v.(type) {
+	case nil:
+		return "null"
+	case bool:
+		return jsonBool(t)
+	case string:
+		return pyJSONDumpsString(t)
+	case Number:
+		return jsonNumber(t)
+	case []Value:
+		if len(t) == 0 {
+			return "[]"
+		}
+		parts := make([]string, 0, len(t))
+		for _, item := range t {
+			parts = append(parts, indentOf(indent+2)+renderJSONValue(item, indent+2))
+		}
+		return "[\n" + strings.Join(parts, ",\n") + "\n" + indentOf(indent) + "]"
+	case *Object:
+		keys := t.Keys()
+		if len(keys) == 0 {
+			return "{}"
+		}
+		parts := make([]string, 0, len(keys))
+		for _, key := range keys {
+			value, _ := t.Get(key)
+			parts = append(parts, indentOf(indent+2)+pyJSONDumpsString(key)+": "+
+				renderJSONValue(value, indent+2))
+		}
+		return "{\n" + strings.Join(parts, ",\n") + "\n" + indentOf(indent) + "}"
+	}
+	// Unreachable: DecodeOrdered produces exactly the six cases above. Rendering
+	// `null` rather than panicking keeps a hypothetical seventh from taking down
+	// a run, and it is the honest answer — this encoder could not say what the
+	// value was.
+	return "null"
+}
+
+func indentOf(n int) string {
+	return strings.Repeat(" ", n)
+}
+
+// jsonNumber renders a decoded number the way json.dumps does, which is NOT the
+// way repr does: the non-finite values Python's parser accepts (`NaN`,
+// `Infinity`, `-Infinity`, and any literal that overflows to infinity such as
+// `1e400`) come back out with those spellings, where PyReprFloat — correctly,
+// for its own callers — gives `nan`, `inf` and `-inf`. Every finite value is
+// float.__repr__/int.__repr__, which is what json.dumps uses, so PyReprFloat
+// serves the rest unchanged.
+func jsonNumber(n Number) string {
+	if n.IsInt && n.Int != nil {
+		return n.Int.String()
+	}
+	switch {
+	case math.IsInf(n.Float, 1):
+		return "Infinity"
+	case math.IsInf(n.Float, -1):
+		return "-Infinity"
+	case math.IsNaN(n.Float):
+		return "NaN"
+	}
+	return PyReprFloat(n.Float)
 }
 
 func renderErrors(errs []string) string {
@@ -196,7 +303,7 @@ func RunAdopterJSON(patterns []string, schema *Schema) int {
 
 	checkOne := func(path string) bool {
 		report.Files++
-		valid, errs, parseError, kind := CheckFile(path, schema)
+		valid, errs, parseError, kind, instance := CheckFile(path, schema)
 		if parseError != "" {
 			if kind != KindRead {
 				report.Annotations++
@@ -213,7 +320,9 @@ func RunAdopterJSON(patterns []string, schema *Schema) int {
 			// would read as a failure a consumer then has to second-guess.
 			findingKind = ""
 		}
-		return report.Add(JSONFinding{File: path, OK: valid, Kind: findingKind, Errors: errs})
+		return report.Add(JSONFinding{
+			File: path, OK: valid, Kind: findingKind, Errors: errs, Intent: instance,
+		})
 	}
 
 	return report.Emit(runOverPatterns(patterns, checkOne, report.NoMatch))
@@ -253,6 +362,7 @@ func RunSourceJSON(patterns []string, schema *Schema) int {
 			if report.Add(JSONFinding{
 				File: path, Line: finding.Line, HasLine: true,
 				OK: finding.Valid, Kind: finding.Kind, Errors: errs,
+				Intent: finding.Intent,
 			}) {
 				failed = true
 			}

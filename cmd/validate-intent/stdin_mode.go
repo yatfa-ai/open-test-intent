@@ -127,7 +127,7 @@ func RunStdinJSON(schema *Schema) int {
 	if len(errs) > 0 {
 		kind = KindSchema
 	}
-	report.Add(JSONFinding{File: "-", OK: len(errs) == 0, Kind: kind, Errors: errs})
+	report.Add(JSONFinding{File: "-", OK: len(errs) == 0, Kind: kind, Errors: errs, Intent: instance})
 	if len(errs) > 0 {
 		return report.Emit(1)
 	}
