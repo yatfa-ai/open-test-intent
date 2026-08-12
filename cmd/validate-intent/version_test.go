@@ -17,8 +17,7 @@ package main
 //     ignored by the linker, so that check is load-bearing, not ceremony.
 //   * The END-TO-END surface (exit 0, one line on stdout, nothing on stderr,
 //     any argv position) is proven here through run(), and again from a real
-//     installed binary in tests/parity/run_parity.sh section 16b
-//     ("--version — the excluded surface that SUCCEEDS").
+//     installed binary by scripts/install.sh's post-install run.
 
 import (
 	"bytes"
@@ -53,9 +52,8 @@ func TestResolveVersionTiers(t *testing.T) {
 		{"stamped, no revision", "1.4.0", "", false, "1.4.0"},
 		{"stamped from a dirty tree", "1.4.0", revision, true, "1.4.0" + dirtySuffix},
 
-		// Tier 2: a plain `go build` inside a checkout — what
-		// tests/parity/run_parity.sh does, so this path is exercised on every
-		// harness run rather than only here.
+		// Tier 2: a plain `go build` inside a checkout — what every developer
+		// run does, so this path is the common one rather than the exotic one.
 		{"revision only", "", revision, false, revision},
 		{"revision only, dirty", "", revision, true, revision + dirtySuffix},
 
@@ -226,7 +224,6 @@ func TestVersionStringIsUsable(t *testing.T) {
 // whatever it wrote to stdout and stderr.
 //
 // run() writes to os.Stdout/os.Stderr directly (fmt.Println, os.Stdout.Write),
-// because the reference does and byte-for-byte parity is the acceptance test —
 // so capturing means replacing the file descriptors, not injecting a writer.
 // Those are process globals: no test using this may call t.Parallel().
 func captureRun(t *testing.T, argv ...string) (code int, stdout, stderr string) {
@@ -302,10 +299,8 @@ func TestVersionFlagFromAnyPosition(t *testing.T) {
 }
 
 // --help wins over --version in either order, exactly as it wins over
-// everything else. The reference agrees on this crossing (it has no --version,
-// so it reads it as a filename its own --help loop pre-empts), which is why
-// tests/parity/run_parity.sh compares it against the oracle rather than
-// asserting it Go-side.
+// everything else: a caller who asks for both gets the documentation, which is
+// the one that can tell them about the other.
 //
 // What --help prints is the shared usage block plus helpTrailer — the trailer
 // documents the flag, it does not answer it — so the expectation here is the
@@ -334,23 +329,16 @@ func TestHelpWinsOverVersion(t *testing.T) {
 // helpTrailer must never leave the --help path, and `usage` must never absorb
 // it.
 //
-// This is the assertion that keeps the Go-only row from costing parity
-// coverage. `usage` is printed on refusals as well as on --help, and three of
-// those refusals are compared byte-for-byte against the reference in
-// tests/parity/run_parity.sh — `--source` with no FILE, `--json` in self-test
-// mode, and the two crossed. A --version row inside the shared constant would
-// break all of them, and no matched edit to bin/validate-intent could restore
-// them: the reference has no such flag, and documenting one that answers "no
-// file(s) match" would be a worse falsehood than the misleading line SPGD-279
-// removed.
-//
-// The harness would catch that too, but only when a Go toolchain, python3 and
-// the whole corpus are present. This catches it in `go test`, one package wide,
-// which is where the mistake would actually be made.
+// `usage` is printed on refusals as well as on --help — `--source` with no
+// FILE, `--json` in self-test mode, and the two crossed. Those are usage errors
+// on the INPUT MODES: a reader looking at one is being told how to invoke the
+// mode they got wrong, and two flags that report on the binary itself are not
+// an answer to that question. A --version row inside the shared constant would
+// put them on all three.
 func TestTheHelpTrailerNeverLeavesTheHelpPath(t *testing.T) {
 	if strings.Contains(usage, "--version") {
-		t.Error("the shared usage block names --version; it is compared byte-for-byte " +
-			"against a reference that has no such flag")
+		t.Error("the shared usage block names --version; it belongs in helpTrailer, " +
+			"which is printed on the --help path alone")
 	}
 	if !strings.Contains(helpTrailer, "--version") {
 		t.Error("helpTrailer does not name --version — it exists to document exactly that")
@@ -374,8 +362,8 @@ func TestTheHelpTrailerNeverLeavesTheHelpPath(t *testing.T) {
 				t.Errorf("run(%q) did not print the shared usage block on stderr: %q", argv, stderr)
 			}
 			if strings.Contains(stderr, helpTrailer) {
-				t.Errorf("run(%q) printed the Go-only trailer on a refusal path; "+
-					"it breaks the byte-for-byte comparison of this refusal", argv)
+				t.Errorf("run(%q) printed the --help trailer on a refusal path; "+
+					"a usage error is not the place to advertise two other flags", argv)
 			}
 		})
 	}

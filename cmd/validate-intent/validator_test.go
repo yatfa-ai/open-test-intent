@@ -1,12 +1,13 @@
 package main
 
-// Unit coverage for the port's Python-emulation layer.
+// Unit coverage for the pieces the fixture corpus cannot reach.
 //
-// tests/parity/run_parity.sh is the acceptance test — it proves the whole
-// binary against the Python reference. These tests cover the pieces that
-// harness cannot reach with the shipped corpus: number typing (the schema
-// declares no numeric types yet), the glob and path primitives at their edges,
-// and the invariants that keep error *order* deterministic.
+// The self-test over examples/ is the acceptance test: it grades the binary
+// against PROTOCOL.md, the schema and the shipped fixtures. What it CANNOT
+// reach is anything the shipped schema does not declare (number typing, the
+// numeric and array bounds), the path primitives at their edges, and the
+// invariants that keep error ORDER deterministic — because a corpus of four
+// valid and four invalid fixtures exercises none of them. Those are here.
 
 import (
 	"strings"
@@ -24,9 +25,9 @@ func mustSchema(t *testing.T, raw string) *Schema {
 
 func mustDecode(t *testing.T, raw string) Value {
 	t.Helper()
-	value, err := DecodeOrdered([]byte(raw))
+	value, err := DecodeJSON([]byte(raw))
 	if err != nil {
-		t.Fatalf("DecodeOrdered(%s): %v", raw, err)
+		t.Fatalf("DecodeJSON(%s): %v", raw, err)
 	}
 	return value
 }
@@ -59,15 +60,15 @@ func TestObjectOrderTracksTheDocument(t *testing.T) {
 	}
 }
 
-// A repeated key takes the later value but keeps the earlier position, which is
-// what CPython's dict does.
+// A repeated key takes the later value but keeps the earlier position —
+// PROTOCOL.md §1.1, "Duplicate names".
 func TestObjectDuplicateKeyKeepsFirstPosition(t *testing.T) {
 	object := mustDecode(t, `{"a": 1, "b": 2, "a": 3}`).(*Object)
 	if got := strings.Join(object.Keys(), ","); got != "a,b" {
 		t.Errorf("Keys() = %s, want a,b", got)
 	}
 	value, _ := object.Get("a")
-	if got := PyRepr(value); got != "3" {
+	if got := RenderValue(value); got != "3" {
 		t.Errorf(`Get("a") = %s, want 3`, got)
 	}
 }
@@ -105,8 +106,8 @@ func TestNumberTyping(t *testing.T) {
 	if errs := integerSchema.Validate(mustDecode(t, "1.5")); len(errs) != 1 {
 		t.Errorf("1.5 against type integer: %v, want one error", errs)
 	}
-	// bool is a distinct Go type, so it is excluded from integer/number without
-	// the special case the Python reference needs.
+	// bool is a distinct type here, so it is excluded from integer/number for
+	// free — no "and not a boolean" clause to forget.
 	if errs := integerSchema.Validate(mustDecode(t, "true")); len(errs) != 1 {
 		t.Errorf("true against type integer: %v, want one error", errs)
 	}
@@ -114,22 +115,24 @@ func TestNumberTyping(t *testing.T) {
 
 func TestDecodeRejectsTrailingData(t *testing.T) {
 	for _, raw := range []string{`{} {}`, `1 2`, `{"a": 1} trailing`} {
-		if _, err := DecodeOrdered([]byte(raw)); err == nil {
-			t.Errorf("DecodeOrdered(%s) succeeded, want an error", raw)
+		if _, err := DecodeJSON([]byte(raw)); err == nil {
+			t.Errorf("DecodeJSON(%s) succeeded, want an error", raw)
 		}
 	}
 }
 
-// Python's `==` spans the numeric tower: True == 1 and 1 == 1.0.
-func TestPyEqual(t *testing.T) {
+// Enum membership: numbers compare by VALUE, so 1 and 1.0 are the same member,
+// and a boolean is not a number.
+func TestValuesEqual(t *testing.T) {
 	cases := []struct {
 		a, b string
 		want bool
 	}{
 		{`1`, `1.0`, true},
-		{`true`, `1`, true},
-		{`false`, `0`, true},
-		{`true`, `2`, false},
+		{`true`, `true`, true},
+		{`true`, `false`, false},
+		{`true`, `1`, false},
+		{`false`, `0`, false},
 		{`"1"`, `1`, false},
 		{`null`, `null`, true},
 		{`null`, `0`, false},
@@ -138,14 +141,14 @@ func TestPyEqual(t *testing.T) {
 		{`{"a": 1}`, `{"a": 2}`, false},
 	}
 	for _, tc := range cases {
-		if got := pyEqual(mustDecode(t, tc.a), mustDecode(t, tc.b)); got != tc.want {
-			t.Errorf("pyEqual(%s, %s) = %v, want %v", tc.a, tc.b, got, tc.want)
+		if got := valuesEqual(mustDecode(t, tc.a), mustDecode(t, tc.b)); got != tc.want {
+			t.Errorf("valuesEqual(%s, %s) = %v, want %v", tc.a, tc.b, got, tc.want)
 		}
 	}
 }
 
-// fnmatch, at the points Go's own matcher disagrees with Python's.
-func TestFnmatch(t *testing.T) {
+// The matcher, at the points the standard library's own would disagree.
+func TestMatchName(t *testing.T) {
 	backslash := string(rune(92))
 	cases := []struct {
 		name, pattern string
@@ -164,9 +167,9 @@ func TestFnmatch(t *testing.T) {
 		{"", "*", true},
 		{"", "?", false},
 		// fnmatch itself has no opinion about dotfiles — the hidden-file rule
-		// lives in the directory walk, exactly as in Python's glob.
+		// lives in the directory walk, not in the matcher.
 		{".hidden", "*", true},
-		// Character classes: Python spells negation "!", not "^".
+		// Character classes spell negation "!", not "^".
 		{"ab", "a[bc]", true},
 		{"ad", "a[bc]", false},
 		{"ad", "a[!bc]", true},
@@ -190,15 +193,15 @@ func TestFnmatch(t *testing.T) {
 		{"ab", "a" + backslash + "b", false},
 	}
 	for _, tc := range cases {
-		if got := fnmatch(tc.name, tc.pattern); got != tc.want {
-			t.Errorf("fnmatch(%q, %q) = %v, want %v", tc.name, tc.pattern, got, tc.want)
+		if got := matchName(tc.name, tc.pattern); got != tc.want {
+			t.Errorf("matchName(%q, %q) = %v, want %v", tc.name, tc.pattern, got, tc.want)
 		}
 	}
 }
 
-// Golden values taken from Python's os.path.split — the head keeps its trailing
-// separators only when it is nothing but separators.
-func TestPySplit(t *testing.T) {
+// splitPath: the head keeps its trailing separators only when it is nothing but
+// separators.
+func TestSplitPath(t *testing.T) {
 	cases := []struct{ path, head, tail string }{
 		{"examples/x.json", "examples", "x.json"},
 		{"examples//x.json", "examples", "x.json"},
@@ -212,15 +215,15 @@ func TestPySplit(t *testing.T) {
 		{"a//b//c", "a//b", "c"},
 	}
 	for _, tc := range cases {
-		head, tail := pySplit(tc.path)
+		head, tail := splitPath(tc.path)
 		if head != tc.head || tail != tc.tail {
-			t.Errorf("pySplit(%q) = (%q, %q), want (%q, %q)",
+			t.Errorf("splitPath(%q) = (%q, %q), want (%q, %q)",
 				tc.path, head, tail, tc.head, tc.tail)
 		}
 	}
 }
 
-func TestPyJoin(t *testing.T) {
+func TestJoinPath(t *testing.T) {
 	cases := []struct{ a, b, want string }{
 		{"", "x", "x"},
 		{"a", "b", "a/b"},
@@ -230,15 +233,15 @@ func TestPyJoin(t *testing.T) {
 		{"//", "x", "//x"},
 	}
 	for _, tc := range cases {
-		if got := pyJoin(tc.a, tc.b); got != tc.want {
-			t.Errorf("pyJoin(%q, %q) = %q, want %q", tc.a, tc.b, got, tc.want)
+		if got := joinPath(tc.a, tc.b); got != tc.want {
+			t.Errorf("joinPath(%q, %q) = %q, want %q", tc.a, tc.b, got, tc.want)
 		}
 	}
 }
 
-// Only a whole component "**" is recursive in Python; "a**b" is an ordinary
-// wildcard the port handles, so refusing it would be over-broad.
-func TestHasRecursiveComponent(t *testing.T) {
+// Only a WHOLE component "**" is recursive; "a**b" is an ordinary wildcard, so
+// treating it as a descent would silently widen what a pattern matches.
+func TestIsRecursiveComponent(t *testing.T) {
 	cases := []struct {
 		pattern string
 		want    bool
@@ -252,8 +255,8 @@ func TestHasRecursiveComponent(t *testing.T) {
 		{"a**b", false},
 	}
 	for _, tc := range cases {
-		if got := hasRecursiveComponent(tc.pattern); got != tc.want {
-			t.Errorf("hasRecursiveComponent(%q) = %v, want %v", tc.pattern, got, tc.want)
+		if got := isRecursiveComponent(tc.pattern); got != tc.want {
+			t.Errorf("isRecursiveComponent(%q) = %v, want %v", tc.pattern, got, tc.want)
 		}
 	}
 }
@@ -317,76 +320,10 @@ func TestValidateMessages(t *testing.T) {
 	}
 }
 
-// A non-object schema enforces nothing, matching the reference's early return
-// for boolean schemas.
+// A boolean schema (draft-07 allows `true`/`false` in place of an object)
+// enforces nothing.
 func TestValidateIgnoresNonObjectSchema(t *testing.T) {
 	if errs := mustSchema(t, `true`).Validate(mustDecode(t, `{"a": 1}`)); len(errs) != 0 {
 		t.Errorf("boolean schema produced %v, want no errors", errs)
-	}
-}
-
-// TestUEscapeNeedsATrailingCharacter pins CPython's bound on a \uXXXX escape at
-// end-of-document.
-//
-// The C scanner will not decode the escape unless a character FOLLOWS the four
-// hex digits, so an escape that ends the document is `Invalid \uXXXX escape`
-// reported at the 'u' — not `Unterminated string` at the opening quote. The
-// port's bound was one character short and produced the wrong message at the
-// wrong offset, which is a different errors[0] in the --json document.
-//
-// The parity harness sweeps this class against python3 in section 17b
-// ("truncation sweep — every prefix of a \uXXXX-bearing document"); this test
-// states the rule directly so it also fails in `go test`, without an oracle.
-// Every expectation below was measured against CPython 3.13.5.
-func TestUEscapeNeedsATrailingCharacter(t *testing.T) {
-	cases := []struct {
-		doc string
-		msg string
-		pos int
-	}{
-		// the escape ends the document: invalid, at the 'u'
-		{`"\u0041`, `Invalid \uXXXX escape`, 2},
-		// one more character present: it decodes, then the string runs out
-		{`"\u0041x`, "Unterminated string starting at", 0},
-		// the same boundary nested, so the offset is not an artefact of 0
-		{`{"a":"\u0041`, `Invalid \uXXXX escape`, 7},
-		{`[1,"\u0041`, `Invalid \uXXXX escape`, 5},
-		// the LOW half of a surrogate pair carries the bound independently:
-		// the high half decoded fine, the second one has no trailing character
-		{`"\ud800\udc00`, `Invalid \uXXXX escape`, 8},
-		// a high surrogate that does not combine still reaches unterminated
-		{`"\ud800x`, "Unterminated string starting at", 0},
-		// short escapes were already correct; the corrected bound keeps them so
-		{`"\u004`, `Invalid \uXXXX escape`, 2},
-		{`"\u`, `Invalid \uXXXX escape`, 2},
-		// non-hex digits are the other route to the same message and offset
-		{`"\uZZZZ`, `Invalid \uXXXX escape`, 2},
-		// and a complete document must still parse
-		{`"\u0041"`, "", 0},
-	}
-
-	for _, tc := range cases {
-		value, err := DecodeOrderedString(tc.doc)
-		if tc.msg == "" {
-			if err != nil {
-				t.Errorf("DecodeOrderedString(%q): unexpected error %v", tc.doc, err)
-			} else if value != "A" {
-				t.Errorf("DecodeOrderedString(%q) = %#v, want %q", tc.doc, value, "A")
-			}
-			continue
-		}
-		if err == nil {
-			t.Errorf("DecodeOrderedString(%q): want error %q, got value %#v", tc.doc, tc.msg, value)
-			continue
-		}
-		perr, ok := err.(*PyJSONError)
-		if !ok {
-			t.Errorf("DecodeOrderedString(%q): want *PyJSONError, got %T", tc.doc, err)
-			continue
-		}
-		if perr.Msg != tc.msg || perr.Pos != tc.pos {
-			t.Errorf("DecodeOrderedString(%q) = %q @%d, want %q @%d",
-				tc.doc, perr.Msg, perr.Pos, tc.msg, tc.pos)
-		}
 	}
 }

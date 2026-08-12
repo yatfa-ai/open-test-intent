@@ -21,7 +21,7 @@
 # validator_backend.rb names the reason its Go backend cannot be default-on:
 # "There is no release to depend on." Obtaining the binary meant cloning this
 # repository AND installing a Go toolchain, which is strictly more friction than
-# the Python script the port exists to replace.
+# a linter is worth to anyone who only wants to run it.
 #
 # What this does NOT do: publish, tag, or upload anything. Release-asset upload
 # runs on CI with `GITHUB_TOKEN`, and `.agents/README.md` makes
@@ -142,7 +142,7 @@
 # script to the corpus's current size, so adding a fixture would break every
 # install until someone edited a number here — and the count is already asserted
 # where it belongs, against the binary rather than against the installer
-# (tests/parity/run_parity.sh section 16d, and
+# (scripts/build-release.sh check 4, which pins the exact tally, and
 # cmd/validate-intent/selftest_embed_test.go, which compares an embedded run to
 # an in-checkout run byte for byte). What THIS check adds is the one thing
 # neither of those can: it asks the question on the adopter's host, of the
@@ -541,7 +541,7 @@ ARTIFACT="validate-intent-${host_os}-${host_arch}"
 # many minimal Linux images do not have it. Both are checked; neither is
 # assumed; a host with neither is exit 2 and no install.
 #
-# Deliberately NOT falling back to openssl, python3 or a Go helper: each would
+# Deliberately NOT falling back to openssl or a Go helper: each would
 # be a third format to parse for the two platforms README.md already documents,
 # and a verification path that is never exercised is a verification path nobody
 # should trust. A host with neither tool gets a diagnostic naming both.

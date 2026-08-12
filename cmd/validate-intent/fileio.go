@@ -1,24 +1,20 @@
 package main
 
-// File reading, schema loading, and the Python-flavoured error prose that goes
-// with them.
+// File reading and schema loading.
 
 import (
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
-	"syscall"
 	"unicode/utf8"
 
 	opentestintent "github.com/yatfa-ai/open-test-intent"
 )
 
-// CheckFile is the port of `check_file` (bin/validate-intent:219-247).
+// CheckFile reads one path and returns the verdict for it.
 //
-// The 4-tuple shape is kept deliberately. `kind` is unused by adopter text mode
+// The 4-tuple shape is deliberate. `kind` is unused by adopter text mode
 // — it renders a parse failure and a read failure as the same prose — but a
 // consumer of the later --json slice needs to tell them apart, and once the
 // result has been flattened to text the distinction is gone for good.
@@ -30,28 +26,30 @@ import (
 // run and an in-checkout run produce the same answer by construction — see
 // fixtureSource in selftest.go.
 func CheckFile(path string, schema *Schema) (valid bool, errs []string, parseError string, kind string) {
-	data, err := os.ReadFile(pyFSEncode(path))
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return false, nil, "could not read/parse JSON: " + pyOSError(err), KindRead
+		return false, nil, "could not read/parse JSON: " + err.Error(), KindRead
 	}
 	return CheckJSONBytes(data, schema)
 }
 
-// CheckJSONBytes is CheckFile with the read already done: everything the
-// reference does to a document AFTER open() returned.
+// CheckJSONBytes is CheckFile with the read already done: everything that
+// happens to a document after the bytes are in hand.
 //
 // It keeps the read-failure prefix even though it never opens anything, because
-// the undecodable-bytes case below IS a read failure in Python — see the
-// comment on it — and the prose is part of the output contract.
+// the undecodable-bytes case below IS a read failure — the file could not be
+// turned into text, so nothing was ever parsed.
 func CheckJSONBytes(data []byte, schema *Schema) (valid bool, errs []string, parseError string, kind string) {
-	// Python opens with encoding="utf-8", so undecodable bytes raise
-	// UnicodeDecodeError during the read and never reach the parser. Go would
-	// silently substitute U+FFFD instead, turning a read failure into a
-	// successful parse of different text — check explicitly.
+	// PROTOCOL.md §1.1 makes UTF-8 part of the definition of a JSON text, and
+	// forbids repairing input that is not. Checked explicitly because []byte to
+	// string in Go is not a decode: the bytes would flow on and every
+	// undecodable one would surface as U+FFFD at the first place something
+	// iterated characters, turning a read failure into a successful parse of
+	// text the author never wrote.
 	if !utf8.Valid(data) {
-		return false, nil, "could not read/parse JSON: " + pyUnicodeDecodeError(data), KindRead
+		return false, nil, "could not read/parse JSON: " + errNotUTF8, KindRead
 	}
-	instance, err := DecodeOrdered(data)
+	instance, err := DecodeJSON(data)
 	if err != nil {
 		return false, nil, "could not read/parse JSON: " + err.Error(), KindParse
 	}
@@ -59,25 +57,21 @@ func CheckJSONBytes(data []byte, schema *Schema) (valid bool, errs []string, par
 	return len(errs) == 0, errs, "", ""
 }
 
-// readSourceText reads a test source file the way check_source_file does
-// (bin/validate-intent:434-438).
+// readSourceText reads a test source file for --source mode.
 //
-// The error prefix differs from CheckFile's on purpose: the reference says
-// "could not read file: %s" here and "could not read/parse JSON: %s" there, and
-// both strings are part of the output contract.
+// The error prefix differs from CheckFile's on purpose: "could not read file"
+// here, "could not read/parse JSON" there. This mode never parses the file as
+// JSON — only the annotation payloads inside it — so borrowing the other prefix
+// would name a step that did not happen.
 //
-// On Python's universal-newline translation, which this deliberately does NOT
-// implement: open(..., encoding="utf-8") rewrites "\r\n" and a lone "\r" to
-// "\n" before the caller sees the text. That is provably unobservable here —
-// the only consumer is pySplitlines, which already treats "\r\n" as a single
-// terminator and "\r" as a terminator in its own right, so the line sequence is
-// identical either way. Implementing it would be a second thing to keep correct
-// for no change in behaviour; leaving it out silently would be a divergence
-// nobody had checked. It is checked, and it is out.
+// Line endings are left exactly as they are on disk. SplitLines already treats
+// CRLF as one terminator and a lone CR as a terminator in its own right, so
+// normalising them first would change nothing and be a second thing to keep
+// correct.
 func readSourceText(path string) (text string, readError string) {
-	data, err := os.ReadFile(pyFSEncode(path))
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", "could not read file: " + pyOSError(err)
+		return "", "could not read file: " + err.Error()
 	}
 	return decodeSourceText(data)
 }
@@ -87,52 +81,26 @@ func readSourceText(path string) (text string, readError string) {
 // and CheckJSONBytes are split.
 func decodeSourceText(data []byte) (text string, readError string) {
 	if !utf8.Valid(data) {
-		// Python decodes during the read, so undecodable bytes are a *read*
-		// failure and the file never reaches the extractor. Go would silently
-		// substitute U+FFFD and happily scan the result.
-		return "", "could not read file: " + pyUnicodeDecodeError(data)
+		// Undecodable bytes are a READ failure and the file never reaches the
+		// extractor. Scanning them anyway would mean scanning U+FFFD in place
+		// of every one, and reporting annotations from text nobody wrote.
+		return "", "could not read file: " + errNotUTF8
 	}
 	return string(data), ""
 }
 
-// SchemaPath is the port of the SCHEMA_PATH constant
-// (bin/validate-intent:76-77): the repo root is the parent of the directory
-// holding the executable, so a Go binary built into `bin/` resolves the schema
-// to exactly the path the Python script does — which is what lets the
-// "could not load schema" diagnostic be byte-identical too.
+// SchemaPath is where a run LOOKS FOR the schema: <exe>/../schemas/open-test-intent.v1.json.
 //
-// This path is where the schema is LOOKED FOR, which is no longer the same
-// claim as where it is FOUND. See LoadSchema.
-//
-// The executable's own path is bytes like any other, so it is decoded here —
-// os.Executable() returns whatever the kernel holds, which on an install
-// directory whose name is not valid UTF-8 is not a UTF-8 string. Decoding it
-// puts this path in the same space as every other path in the port (see
-// pyfspath.go), which is what the two consumers below need:
-//
-//   - loadSchemaFrom re-encodes it for the syscall, so the file is still
-//     opened. That is the round trip, not a formality.
-//   - pyOSError reprs it for the `[Errno ...]` clause of the "could not load
-//     schema" diagnostic, and PyReprString on a DECODED path produces the
-//     reference's own `\udce9` escapes.
-//
-// What decoding does NOT fix, and the comment here used to claim it did: the
-// other half of that same diagnostic interpolates this string with a bare `%s`
-// (schemaLoadError in main.go), and Go writes a surrogate as its three WTF-8
-// bytes where CPython's stderr — `backslashreplace` by default, and NOT the
-// handler this port models for stdout — writes six ASCII characters. That is a
-// real, measured divergence. It is declared as excluded group 7 in
-// tests/parity/run_parity.sh and pinned, both halves, in its section 16e.
-//
-// (There was never a U+FFFD on this path to fix, either: filepath.Dir does not
-// iterate runes, so an undecoded byte reached the diagnostic intact. It just
-// reached it as one raw byte instead of three.)
+// Deriving it from the executable's own location is what makes a checkout work
+// without configuration — a binary built into bin/ finds the schema beside it.
+// It is where the schema is looked for, which is not the same claim as where it
+// is FOUND: see LoadSchema for the fallback and the rule governing it.
 func SchemaPath() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
-	root := filepath.Dir(filepath.Dir(pyFSDecodeString(exe)))
+	root := filepath.Dir(filepath.Dir(exe))
 	return filepath.Join(root, "schemas", "open-test-intent.v1.json"), nil
 }
 
@@ -174,23 +142,18 @@ type SchemaSource struct {
 	SHA256 string
 }
 
-// LoadSchema is the port of `load_schema` (bin/validate-intent:250-252). It
-// returns the schema's origin alongside the error so the caller can render the
-// reference's diagnostic verbatim.
+// LoadSchema loads the schema this run will enforce. It returns the origin
+// alongside the error so the caller's diagnostic can name the file that failed.
 //
-// It does one thing the reference does not: CompileSchema translates and
-// compiles every `pattern` keyword up front, and refuses the whole schema if
-// any of them cannot be given Python's exact meaning under Go's RE2 engine.
-// That refusal is a Go-only exit 2 — Python would have loaded the schema fine —
-// and it is deliberate. The alternative is a binary that loads happily and then
-// disagrees with the reference about whether a document is valid. See
-// pypattern.go for what is accepted, what is refused, and why.
+// CompileSchema compiles every `pattern` keyword up front and refuses the whole
+// schema if one of them will not compile, rather than letting a pattern fail
+// silently mid-verdict. See schemadoc.go.
 //
 // # The embedded fallback, and why it is a fallback
 //
 // SchemaPath derives its answer from the executable's own location. That is
-// right for a Python script that always lives at <repo>/bin/ and wrong for a
-// distributable binary: installed at /usr/local/bin/validate-intent it computed
+// right in a checkout and wrong for a distributable binary, whose whole purpose
+// is to live somewhere else: installed at /usr/local/bin/validate-intent it computed
 // /usr/local/schemas/open-test-intent.v1.json, found nothing, and exited 2 in
 // every working mode — adopter, --source, self-test, --json. Only --help
 // worked. A released binary that installs cleanly and then fails at everything
@@ -198,17 +161,13 @@ type SchemaSource struct {
 //
 // The obvious fix — embed the schema and stop reading disk — is WRONG here, and
 // the reason is worth stating because it is invisible from this file.
-// tests/parity/run_parity.sh proves the validator keywords the shipped schema
-// does not declare (`pattern`, numeric bounds, `items`) by copying both
-// implementations into a throwaway tree carrying a schema of its choosing. Its
-// compare_root and assert_pattern_refusal cases — the large majority of the
-// suite's schema coverage — work ONLY because the binary reads a schema from
-// beside itself. A pure embed would make it ignore every one of those synthetic
-// schemas while the harness went on reporting green: coverage deleted without a
-// single case going red, which is this project's house defect wearing a new hat.
-// (No count is given on purpose. It moves whenever cases are added, and a
-// stale figure in a comment reads like evidence long after it has stopped
-// being any.)
+// The validator implements keywords the shipped schema does not declare
+// (`pattern`, numeric bounds, `items`), and the only way to exercise them is to
+// point the binary at a schema that DOES declare them — which fileio_schema_test.go
+// does by planting one in a throwaway tree. A pure embed would make the binary
+// ignore every such schema while the tests went on reporting green: coverage
+// deleted without a single case going red, which is this project's house defect
+// wearing a new hat.
 //
 // So disk wins whenever there is a file to win with, and the ABSENT/UNREADABLE
 // distinction carries the whole design:
@@ -255,27 +214,26 @@ func LoadSchema() (*Schema, SchemaSource, error) {
 // anything is done with them, so it is provably the digest of what was decoded
 // and compiled rather than of a second read that could see a different file.
 //
-// `path` arrives DECODED (SchemaPath ran the executable's own path through
-// os.fsdecode), so it is re-encoded here like every other syscall argument —
-// see pyfspath.go. Without that, an install directory whose name is not valid
-// UTF-8 would be named correctly in the diagnostic and then not opened.
+// The error is returned as-is rather than being reworded: os.PathError already
+// names the operation and the path, which is the whole content of a useful
+// "could not load schema" line.
 func loadSchemaFrom(path string) (*Schema, SchemaSource, error) {
-	data, readErr := os.ReadFile(pyFSEncode(path))
+	data, readErr := os.ReadFile(path)
 	if readErr != nil {
 		if !errors.Is(readErr, fs.ErrNotExist) {
 			// Present, but we could not have it. Not our call to substitute.
 			// No bytes, so no digest: see SchemaSource on why that field is
 			// empty here rather than the digest of an empty input.
-			return nil, SchemaSource{Origin: path}, errors.New(pyOSError(readErr))
+			return nil, SchemaSource{Origin: path}, readErr
 		}
 		data = opentestintent.SchemaJSON()
 		path = EmbeddedSchemaLabel
 	}
 	source := SchemaSource{Origin: path, SHA256: opentestintent.SHA256Hex(data)}
 	if !utf8.Valid(data) {
-		return nil, source, errors.New(pyUnicodeDecodeError(data))
+		return nil, source, errors.New(errNotUTF8)
 	}
-	root, err := DecodeOrdered(data)
+	root, err := DecodeJSON(data)
 	if err != nil {
 		return nil, source, err
 	}
@@ -284,39 +242,4 @@ func loadSchemaFrom(path string) (*Schema, SchemaSource, error) {
 		return nil, source, err
 	}
 	return schema, source, nil
-}
-
-// --------------------------------------------------------------------------- //
-// Python exception prose
-// --------------------------------------------------------------------------- //
-
-// pyOSError renders an os error the way str(OSError) does in Python:
-//
-//	[Errno 2] No such file or directory: '/path/to/thing'
-//
-// Go's syscall.Errno carries the same strerror text but lower-cased, and the
-// filename is repr'd rather than bare — both are reproduced here so the
-// "could not load schema" and unreadable-file diagnostics match the reference
-// byte for byte rather than being a documented divergence.
-//
-// The path is DECODED before it is repr'd. os.PathError carries back exactly
-// the bytes the syscall was given, which pyFSEncode had turned back into raw
-// bytes — repr'ing those directly would render `x\udce9.json` as `x\ufffd.json`
-// in the one message whose whole job is to name the file that failed.
-func pyOSError(err error) string {
-	var pathErr *os.PathError
-	var errno syscall.Errno
-	if errors.As(err, &pathErr) && errors.As(err, &errno) {
-		return fmt.Sprintf("[Errno %d] %s: %s",
-			int(errno), capitalizeFirst(errno.Error()),
-			PyReprString(pyFSDecodeString(pathErr.Path)))
-	}
-	return err.Error()
-}
-
-func capitalizeFirst(s string) string {
-	if s == "" {
-		return s
-	}
-	return strings.ToUpper(s[:1]) + s[1:]
 }

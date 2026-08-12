@@ -1,25 +1,22 @@
 package main
 
-// Machine-readable reporting (`--json`) — the port of `_JsonReport`,
-// `run_adopter_json` and `run_source_json` (bin/validate-intent:504-579,
-// 731-753, 785-810).
+// Machine-readable reporting (`--json`).
 //
 // ONE reporter, three modes. The renderers differ only in what they count and
 // what a finding is FOR — stdin has exactly one and no files, adopter one per
 // file, --source one per annotation — and they share this document, this key
-// order and this escaping. Forking a second encoder for a later mode is the
-// failure `_JsonReport`'s own docstring exists to prevent: the two drift, and
-// the drift is invisible to any consumer that parses before comparing.
-//
-// Slice 3 (SPGD-107) added the adopter half below and the stdin half in
-// stdin_mode.go, completing the matrix. Nothing here is refused any more.
+// order and this escaping. Forking a second encoder for a fourth mode is the
+// failure this type exists to prevent: the two drift, and the drift is
+// invisible to any consumer that parses before comparing.
 
 import (
 	"fmt"
 	"strings"
 )
 
-// jsonSchemaID is the reference's JSON_SCHEMA_ID (bin/validate-intent:507).
+// jsonSchemaID names the contract a finding was graded against. It is the
+// document's self-description, not a path: a consumer reads it to know which
+// version of the protocol produced these findings.
 const jsonSchemaID = "open-test-intent.v1.json"
 
 // JSONFinding is one entry of the document's `findings` array.
@@ -71,10 +68,9 @@ func (r *JSONReport) Add(finding JSONFinding) bool {
 // so a stdout-only consumer is never left with a clean pass list and an
 // unexplained non-zero exit.
 //
-// Formatted with %s, not the text path's %r: inside a JSON string a Python
-// repr's quoting is noise a consumer has to strip, and `file` already carries
-// the pattern verbatim. That asymmetry is in the reference
-// (bin/validate-intent:551-558) and is reproduced rather than tidied.
+// The message carries the pattern BARE, where the text path quotes it: inside a
+// JSON string a second layer of quoting is noise a consumer has to strip, and
+// `file` already carries the pattern verbatim.
 func (r *JSONReport) NoMatch(pattern string) {
 	r.Add(JSONFinding{
 		File:   pattern,
@@ -99,8 +95,8 @@ func (r *JSONReport) Emit(exitCode int) int {
 
 	var b strings.Builder
 	b.WriteString("{\n")
-	fmt.Fprintf(&b, "  \"schema\": %s,\n", pyJSONDumpsString(jsonSchemaID))
-	fmt.Fprintf(&b, "  \"mode\": %s,\n", pyJSONDumpsString(r.Mode))
+	fmt.Fprintf(&b, "  \"schema\": %s,\n", EncodeJSONString(jsonSchemaID))
+	fmt.Fprintf(&b, "  \"mode\": %s,\n", EncodeJSONString(r.Mode))
 	fmt.Fprintf(&b, "  \"ok\": %s,\n", jsonBool(exitCode == 0))
 	b.WriteString("  \"summary\": {\n")
 	fmt.Fprintf(&b, "    \"files\": %d,\n", r.Files)
@@ -110,20 +106,18 @@ func (r *JSONReport) Emit(exitCode int) int {
 	b.WriteString("  \"findings\": " + renderFindings(r.Findings) + "\n")
 	b.WriteString("}")
 
-	pyPrintln(b.String())
+	fmt.Println(b.String())
 	return exitCode
 }
 
-// renderFindings reproduces json.dumps(..., indent=2) for the findings array.
+// renderFindings writes the findings array, two-space indented.
 //
-// Written by hand rather than with encoding/json for three reasons, each of
-// which alone would be disqualifying: encoding/json escapes <, > and & and does
-// NOT escape non-ASCII (json.dumps does the exact opposite on both counts — see
-// pyJSONDumpsString); it sorts or reflects rather than preserving the
-// reference's key order; and Python renders an EMPTY list as `[]` on one line
-// while indenting a non-empty one, which no Go marshaller does by default. The
-// em dashes and repr'd quotes that show up in error strings make the escaping
-// difference immediately visible rather than theoretical.
+// Written by hand rather than with encoding/json for two reasons, either of
+// which alone would be disqualifying: encoding/json escapes <, > and & — a
+// legacy of embedding JSON in HTML — which mangles every diagnostic quoting an
+// author's payload; and it reflects or sorts rather than preserving this
+// document's fixed key order, which a consumer diffing two reports depends on.
+// See EncodeJSONString in render.go.
 func renderFindings(findings []JSONFinding) string {
 	if len(findings) == 0 {
 		return "[]"
@@ -132,7 +126,7 @@ func renderFindings(findings []JSONFinding) string {
 	for _, f := range findings {
 		var b strings.Builder
 		b.WriteString("    {\n")
-		fmt.Fprintf(&b, "      \"file\": %s,\n", pyJSONDumpsString(f.File))
+		fmt.Fprintf(&b, "      \"file\": %s,\n", EncodeJSONString(f.File))
 		if f.HasLine {
 			fmt.Fprintf(&b, "      \"line\": %d,\n", f.Line)
 		} else {
@@ -142,7 +136,7 @@ func renderFindings(findings []JSONFinding) string {
 		if f.Kind == "" {
 			b.WriteString("      \"kind\": null,\n")
 		} else {
-			fmt.Fprintf(&b, "      \"kind\": %s,\n", pyJSONDumpsString(f.Kind))
+			fmt.Fprintf(&b, "      \"kind\": %s,\n", EncodeJSONString(f.Kind))
 		}
 		b.WriteString("      \"errors\": " + renderErrors(f.Errors) + "\n")
 		b.WriteString("    }")
@@ -157,7 +151,7 @@ func renderErrors(errs []string) string {
 	}
 	parts := make([]string, 0, len(errs))
 	for _, err := range errs {
-		parts = append(parts, "        "+pyJSONDumpsString(err))
+		parts = append(parts, "        "+EncodeJSONString(err))
 	}
 	return "[\n" + strings.Join(parts, ",\n") + "\n      ]"
 }
@@ -169,14 +163,14 @@ func jsonBool(b bool) string {
 	return "false"
 }
 
-// RunAdopterJSON is the port of `run_adopter_json` (bin/validate-intent:731-753):
-// the --json renderer for adopter mode — one finding per file checked.
+// RunAdopterJSON is the --json renderer for adopter mode — one finding per file
+// checked.
 //
-// THREE DIFFERENT COUNTING RULES share these few lines, and a port that reaches
-// for one counter and reuses it collapses them. Measured on a mixed batch
-// (valid + malformed + schema-failing + unreadable + a non-matching glob), the
-// reference answers `files: 4, annotations: 3, failed: 4` — three different
-// numbers over five arguments:
+// THREE DIFFERENT COUNTING RULES share these few lines, and a rewrite that
+// reaches for one counter and reuses it collapses them. On a mixed batch (valid
+// + malformed + schema-failing + unreadable + a non-matching glob) the answer is
+// `files: 4, annotations: 3, failed: 4` — three different numbers over five
+// arguments:
 //
 //	files       every file the globs matched, readable or not (4).
 //	            The no-match PATTERN is not a file and is not counted.
@@ -219,14 +213,13 @@ func RunAdopterJSON(patterns []string, schema *Schema) int {
 	return report.Emit(runOverPatterns(patterns, checkOne, report.NoMatch))
 }
 
-// RunSourceJSON is the port of `run_source_json` (bin/validate-intent:785-810):
-// the --json renderer for --source mode, one finding per annotation.
+// RunSourceJSON is the --json renderer for --source mode, one finding per
+// annotation.
 //
 // A file carrying NO annotations contributes to summary.files and no findings.
 // Text mode's `----` line is the absence of anything to report, not a result,
 // and emitting it as a finding would inflate the annotation count with rows a
-// consumer then has to filter back out. That asymmetry is deliberate and is
-// pinned by a parity case.
+// consumer then has to filter back out. That asymmetry is deliberate.
 func RunSourceJSON(patterns []string, schema *Schema) int {
 	report := &JSONReport{Mode: "source"}
 

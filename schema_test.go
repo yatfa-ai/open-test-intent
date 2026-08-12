@@ -114,7 +114,7 @@ func TestSchemaSHA256DigestsTheEmbeddedBytes(t *testing.T) {
 	}
 
 	// Lowercase hex of exactly 32 bytes. The version line is parsed as text by
-	// tests/parity/run_parity.sh and by scripts/install.sh's caller, and an
+	// scripts/build-release.sh and by scripts/install.sh's caller, and an
 	// uppercase or truncated rendering would compare unequal against every other
 	// pin of this same contract while naming the same bytes.
 	if len(reported) != 64 {

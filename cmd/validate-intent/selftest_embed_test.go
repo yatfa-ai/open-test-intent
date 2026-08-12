@@ -2,7 +2,7 @@ package main
 
 // The corpus fallback, property by property.
 //
-// tests/parity/run_parity.sh proves the bare self-test now works on a tree with
+// The CLI-level checks prove the bare self-test works on a tree with
 // no examples/ (its section 16d), and scripts/install.sh makes an adopter's
 // install fail when it does not. Neither can say WHICH property broke: both
 // report "exit 1" whether the cause is a lost fixture, a reordered expansion or
@@ -23,7 +23,7 @@ package main
 // a real `_scratch.json` to examples/ would test the dotfile rule beautifully
 // and would also make the corpus thirteen fixtures, so that case is staged
 // against a temporary tree and an fstest.MapFS instead — see
-// TestBothExpansionsApplyThePythonDotfileRule, and examples/.dotfile-canary.json
+// TestBothExpansionsApplyTheDotfileRule, and examples/.dotfile-canary.json
 // for the half the corpus CAN carry.
 
 import (
@@ -87,7 +87,7 @@ var allPatterns = []string{
 // twelve fixtures and one canary, so it sees the rules those names happen to
 // exercise and no others — it is a check that the shipped corpus expands the
 // same way twice, not a statement of the rule.
-// TestBothExpansionsApplyThePythonDotfileRule states the rule, on names staged
+// TestBothExpansionsApplyTheDotfileRule states the rule, on names staged
 // to trip it.
 func TestEmbeddedAndOnDiskExpansionsAgree(t *testing.T) {
 	disk := onDiskSource(t)
@@ -106,7 +106,7 @@ func TestEmbeddedAndOnDiskExpansionsAgree(t *testing.T) {
 	}
 }
 
-// TestBothExpansionsApplyThePythonDotfileRule states that rule directly, on
+// TestBothExpansionsApplyTheDotfileRule states that rule directly, on
 // names chosen to make it fail if either side gets it wrong.
 //
 // TestEmbeddedAndOnDiskExpansionsAgree above compares the two over the REAL
@@ -123,7 +123,7 @@ func TestEmbeddedAndOnDiskExpansionsAgree(t *testing.T) {
 // "drop dotfiles unless the pattern asked for one" are different rules that
 // agree on every pattern the self-test actually uses:
 //
-//   - `*` never matches a leading dot (Python's rule, which is why the corpus's
+//   - `*` never matches a leading dot (glob.go's rule, which is why the corpus's
 //     canary is invisible to `examples/*.json`), and DOES match a leading
 //     underscore, which is not special to any glob — only to go:embed.
 //   - a pattern that itself begins with a dot gets the dotfiles, so the filter
@@ -131,7 +131,7 @@ func TestEmbeddedAndOnDiskExpansionsAgree(t *testing.T) {
 //
 // Without the second case, `allowHidden := false` would pass here. Without the
 // first, `allowHidden := true` would.
-func TestBothExpansionsApplyThePythonDotfileRule(t *testing.T) {
+func TestBothExpansionsApplyTheDotfileRule(t *testing.T) {
 	const (
 		dotted   = "examples/.hidden.json"
 		scored   = "examples/_scratch.json"
@@ -194,9 +194,8 @@ func TestBothExpansionsApplyThePythonDotfileRule(t *testing.T) {
 // relative paths, the same PASS/FAIL ordering, the same trailing line, and the
 // same `checked`-versus-printed-lines disagreement RunSelfTest documents as
 // deliberate. Anything less makes "the release self-tests itself" a claim about
-// a different program than the one the parity harness proved correct.
+// a different program than the one the fixture corpus graded.
 func TestEmbeddedSelfTestIsByteIdenticalToTheCheckout(t *testing.T) {
-	t.Setenv("PYTHONIOENCODING", "")
 	schema := repoSchema(t)
 	disk := onDiskSource(t)
 
@@ -224,7 +223,6 @@ func TestEmbeddedSelfTestIsByteIdenticalToTheCheckout(t *testing.T) {
 // empty set must still be named, and the run must still fail BEFORE checking a
 // single fixture — an incomplete inventory leaves no verdict to report.
 func TestTheEmptyFixtureGuardSurvivesTheFallback(t *testing.T) {
-	t.Setenv("PYTHONIOENCODING", "")
 	schema := repoSchema(t)
 
 	// Everything except examples/invalid/ — the set whose loss reads greenest,
@@ -267,7 +265,6 @@ func TestTheEmptyFixtureGuardSurvivesTheFallback(t *testing.T) {
 // wearing a new hat, and it is the reason the decision is taken once, for the
 // whole tree, before anything is expanded.
 func TestTheFallbackIsPerTreeAndNeverPerGlob(t *testing.T) {
-	t.Setenv("PYTHONIOENCODING", "")
 	schema := repoSchema(t)
 
 	root := t.TempDir()
@@ -299,11 +296,11 @@ func TestTheFallbackIsPerTreeAndNeverPerGlob(t *testing.T) {
 }
 
 // TestAnExamplesTreeOnDiskWins is the other direction of the same rule, and the
-// one that keeps the parity harness meaningful: run_parity.sh plants trees and
-// expects the binary to read what is IN them. A fallback that fired while a
-// real corpus sat there would make every such case test the binary's own copy.
+// one that keeps a planted tree meaningful: several tests here and in
+// fileio_schema_test.go plant trees and expect the binary to read what is IN
+// them. A fallback that fired while a real corpus sat there would make every
+// such case test the binary's own copy.
 func TestAnExamplesTreeOnDiskWins(t *testing.T) {
-	t.Setenv("PYTHONIOENCODING", "")
 	schema := repoSchema(t)
 
 	root := t.TempDir()
@@ -333,7 +330,6 @@ func TestAnExamplesTreeOnDiskWins(t *testing.T) {
 // having done something, and answering it with a clean 12/12 out of the binary
 // would be a tool failure wearing the costume of a pass.
 func TestSomethingOtherThanAnAbsentTreeDoesNotFallBack(t *testing.T) {
-	t.Setenv("PYTHONIOENCODING", "")
 	schema := repoSchema(t)
 
 	root := t.TempDir()
@@ -352,7 +348,7 @@ func TestSomethingOtherThanAnAbsentTreeDoesNotFallBack(t *testing.T) {
 		}
 	})
 	for _, pattern := range allPatterns {
-		if !strings.Contains(stderr, "no fixtures match '"+pattern+"'") {
+		if !strings.Contains(stderr, "no fixtures match "+Quote(pattern)) {
 			t.Errorf("%s was not reported missing:\n%s", pattern, stderr)
 		}
 	}

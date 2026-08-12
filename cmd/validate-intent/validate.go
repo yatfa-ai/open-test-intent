@@ -1,25 +1,27 @@
 package main
 
-// Port of the draft-07 subset validator at bin/validate-intent:98-247.
+// The draft-07 subset the OpenTestIntent schema uses.
 //
-// The error *strings* and their *order* are the contract: this port is proven
-// against the Python reference byte for byte by tests/parity/run_parity.sh, so
-// every message here is a transcription of the reference's format string rather
-// than an idiomatic Go rephrasing.
+// The keywords implemented here are the ones schemas/open-test-intent.v1.json
+// declares, plus the near neighbours an adopter's own schema is likely to reach
+// for (`pattern`, `items`, numeric and array bounds). A keyword this file does
+// not know is IGNORED, which is what draft-07 requires — but note that ignoring
+// a keyword means not enforcing it, so anything added to the shipped schema
+// needs a branch here on the same commit.
+//
+// The error strings and their ORDER are part of the report a human reads, and
+// the order is the document's: see Object.
 
 import (
 	"fmt"
 	"strings"
 )
 
-// Machine-readable failure taxonomy — the `kind` a --json finding will carry.
+// Machine-readable failure taxonomy — the `kind` a --json finding carries.
 //
-// --json itself is a later slice, but CheckFile already returns the kind for
-// the same reason the Python reference does (bin/validate-intent:88-92): a
-// parse failure and a read failure render as identical prose, so once the
-// result is flattened to text the distinction is unrecoverable. Keeping it in
-// the signature now means the later slice adds a renderer, not a second
-// implementation that can drift.
+// It is carried through the check functions rather than reconstructed by the
+// renderer because a parse failure and a read failure render as identical prose:
+// once the result is flattened to text the distinction is unrecoverable.
 const (
 	KindSchema     = "schema"     // parsed fine, violated the JSON Schema
 	KindExtraction = "extraction" // an @intent: token whose payload could not be captured
@@ -120,7 +122,7 @@ func (s *Schema) validate(instance Value, schema Value, path string) []string {
 		if !typeMatches(instance, allowed) {
 			names := make([]string, 0, len(allowed))
 			for _, entry := range allowed {
-				names = append(names, PyStr(entry))
+				names = append(names, RenderBare(entry))
 			}
 			errors = append(errors, fmt.Sprintf("%s: expected type %s, got %s",
 				where, strings.Join(names, "|"), typeOf(instance)))
@@ -129,9 +131,9 @@ func (s *Schema) validate(instance Value, schema Value, path string) []string {
 	}
 
 	// enum ---------------------------------------------------------------- //
-	if raw, present := schemaObj.Get("enum"); present && !pyContains(raw, instance) {
+	if raw, present := schemaObj.Get("enum"); present && !containsValue(raw, instance) {
 		errors = append(errors, fmt.Sprintf("%s: value %s is not one of %s",
-			where, PyRepr(instance), PyStr(raw)))
+			where, RenderValue(instance), RenderBare(raw)))
 	}
 
 	// object keywords ------------------------------------------------------ //
@@ -160,8 +162,7 @@ func (s *Schema) validate(instance Value, schema Value, path string) []string {
 			additional = raw
 		}
 
-		// Document order, not sorted order: the reference iterates
-		// `instance.items()`, so the order of these errors tracks the order the
+		// Document order, not sorted order, so the errors track the order the
 		// keys appear in the file. See Object's doc comment.
 		for _, name := range obj.Keys() {
 			value, _ := obj.Get(name)
@@ -208,10 +209,9 @@ func (s *Schema) validate(instance Value, schema Value, path string) []string {
 
 	// string keywords ------------------------------------------------------ //
 	if str, isString := instance.(string); isString {
-		// Python's len() over a str counts code points, not bytes — and pyLen,
-		// unlike utf8.RuneCountInString, also counts a WTF-8 lone surrogate as
-		// the single character Python holds for it. See pystr.go.
-		length := pyLen(str)
+		// Characters, not bytes: see CharCount in render.go for why the
+		// difference is reachable from the shipped corpus.
+		length := CharCount(str)
 		if raw, present := schemaObj.Get("minLength"); present {
 			if min, isNumber := raw.(Number); isNumber && float64(length) < min.Float {
 				errors = append(errors, fmt.Sprintf("%s: string is %d char(s), minLength is %d",
@@ -226,11 +226,10 @@ func (s *Schema) validate(instance Value, schema Value, path string) []string {
 		}
 		if raw, present := schemaObj.Get("pattern"); present {
 			if pattern, isString := raw.(string); isString {
-				// Translated and compiled once at schema-load time by
-				// CompileSchema, which refuses the whole schema if the pattern
-				// cannot be given Python's exact meaning under RE2. There is
-				// therefore no "compile failed, skip the check" branch here for
-				// a divergence to disappear into. See pypattern.go.
+				// Compiled once at schema-load time by CompileSchema, which
+				// refuses the whole schema if a pattern will not compile. There
+				// is therefore no "compile failed, skip the check" branch here
+				// for a silently unenforced rule to hide in. See schemadoc.go.
 				compiled, known := s.Patterns[pattern]
 				if !known {
 					// Unreachable: collectPatterns walks the entire schema
@@ -240,30 +239,29 @@ func (s *Schema) validate(instance Value, schema Value, path string) []string {
 					// produce anywhere else.
 					panic(fmt.Sprintf(
 						"pattern %s reached validation without being compiled by CompileSchema",
-						PyReprString(pattern)))
+						Quote(pattern)))
 				}
 				if !compiled.MatchString(str) {
 					errors = append(errors, fmt.Sprintf("%s: string does not match pattern %s",
-						where, PyReprString(pattern)))
+						where, Quote(pattern)))
 				}
 			}
 		}
 	}
 
 	// number keywords ------------------------------------------------------ //
-	// bool is a distinct type in Go, so it is excluded for free — the Python
-	// reference has to say `and not isinstance(instance, bool)` here.
+	// bool is a distinct type here, so `true` is excluded from these for free.
 	if num, isNumber := instance.(Number); isNumber {
 		if raw, present := schemaObj.Get("minimum"); present {
 			if min, ok := raw.(Number); ok && num.Float < min.Float {
 				errors = append(errors, fmt.Sprintf("%s: value %s is below minimum %s",
-					where, PyRepr(num), PyRepr(min)))
+					where, RenderValue(num), RenderValue(min)))
 			}
 		}
 		if raw, present := schemaObj.Get("maximum"); present {
 			if max, ok := raw.(Number); ok && num.Float > max.Float {
 				errors = append(errors, fmt.Sprintf("%s: value %s is above maximum %s",
-					where, PyRepr(num), PyRepr(max)))
+					where, RenderValue(num), RenderValue(max)))
 			}
 		}
 	}

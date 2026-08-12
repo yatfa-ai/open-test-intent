@@ -2161,8 +2161,8 @@ func TestReleaseGateRefusesAThinnedEmbed(t *testing.T) {
 	requireSupportedHost(t)
 
 	// Read back out of the script rather than restated, so this test asserts
-	// agreement with the gate instead of holding a third copy of a literal
-	// tests/parity/run_parity.sh already pins. It also means a check 4 that
+	// agreement with the gate instead of holding a second copy of the literal.
+	// It also means a check 4 that
 	// stopped requiring a tally at all fails here by name, rather than leaving
 	// this test quietly comparing against a string nothing emits.
 	fullTally := pinnedSelfTestTally(t)
@@ -2330,9 +2330,8 @@ func stageTreeForBuild(t *testing.T, root string) string {
 		case entry.IsDir():
 			return os.MkdirAll(target, info.Mode().Perm())
 		case info.Mode()&os.ModeSymlink != 0:
-			// Reproduced as a link rather than followed: tests/parity carries one
-			// deliberately, and resolving it would stage a tree that differs from
-			// the one being copied.
+			// Reproduced as a link rather than followed: resolving it would stage
+			// a tree that differs from the one being copied.
 			dest, err := os.Readlink(path)
 			if err != nil {
 				return err
@@ -2374,10 +2373,9 @@ func stageTreeForBuild(t *testing.T, root string) string {
 // ================
 //
 // README.md is this repo's only adoption surface, and its prose is the one part
-// of it that nothing checks. tests/parity/run_parity.sh executes the README's
-// quickstart INVOCATIONS against both implementations, which is why the mode
-// list stays true; the framing sentences around them are read by no test at
-// all. That is how the section came to carry "(in progress)" and to name
+// of it that nothing checks. This test executes the README's quickstart
+// INVOCATIONS, which is why the mode list stays true; the framing sentences
+// around them are read by no test at all. That is how the section came to carry "(in progress)" and to name
 // "cross-compiled release binaries" as what was left to do — twenty hours after
 // scripts/build-release.sh was committed, and eight after scripts/install.sh.
 // Both were sitting in the tree, tested by this very package, while the README
@@ -2412,7 +2410,7 @@ func TestTheReadmeDoesNotCallShippedPackagingUnfinished(t *testing.T) {
 	if err != nil {
 		t.Fatalf("could not read README.md: %v", err)
 	}
-	heading, body := goPortSection(t, string(raw))
+	heading, body := binarySection(t, string(raw))
 
 	// 1. The heading. A chapter titled "in progress" is a status claim about the
 	// whole port, read before any of the qualifying prose below it.
@@ -2457,22 +2455,30 @@ func TestTheReadmeDoesNotCallShippedPackagingUnfinished(t *testing.T) {
 	}
 }
 
-// goPortSection returns the Go-port chapter's heading line and its body, up to
-// the next `## ` heading. It fails rather than skips when the chapter is absent:
-// a guard that quietly found nothing to read is the vacuous green this repo
-// keeps having to name.
-func goPortSection(t *testing.T, readme string) (heading, body string) {
+// binarySection returns the chapter describing the binary — its heading line and
+// its body, up to the next `## ` heading. It fails rather than skips when the
+// chapter is absent: a guard that quietly found nothing to read is the vacuous
+// green this repo keeps having to name.
+//
+// The chapter was called "The Go port" while there was something to be a port
+// OF. It is "The binary" now; the match below accepts either, so re-pointing it
+// was a one-line change and not a reason to delete the guard.
+func binarySection(t *testing.T, readme string) (heading, body string) {
 	t.Helper()
 	lines := strings.Split(readme, "\n")
 	start := -1
 	for i, line := range lines {
-		if strings.HasPrefix(line, "## ") && strings.Contains(strings.ToLower(line), "go port") {
+		lowered := strings.ToLower(line)
+		if strings.HasPrefix(line, "## ") &&
+			(strings.Contains(lowered, "the binary") || strings.Contains(lowered, "go port")) {
 			start = i
 			break
 		}
 	}
 	if start < 0 {
-		t.Fatalf("README.md has no `## ...Go port...` heading, so this guard read nothing. If the chapter was renamed, re-point this test at its new title rather than deleting it.")
+		t.Fatalf("README.md has no `## The binary` (or `## The Go port`) heading, so this " +
+			"guard read nothing. If the chapter was renamed again, re-point this test at its " +
+			"new title rather than deleting it.")
 	}
 	end := len(lines)
 	for i := start + 1; i < len(lines); i++ {

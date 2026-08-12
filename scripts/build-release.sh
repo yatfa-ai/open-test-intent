@@ -184,12 +184,12 @@
 # The UNSTAMPED build is not a bug
 # --------------------------------
 # `go build ./cmd/validate-intent` with no ldflags is the normal developer path
-# and is what tests/parity/run_parity.sh does. Such a binary reports the
+# and is what every local run and every CI leg does. Such a binary reports the
 # vcs.revision the Go toolchain embeds, and a binary built with -buildvcs=false
 # reports the literal `unknown`. Both are real answers; neither is empty. See
-# resolveVersion in cmd/validate-intent/version.go. Because the parity harness
-# takes the unstamped path on every run, that fallback is exercised
-# continuously rather than asserted once here.
+# resolveVersion in cmd/validate-intent/version.go. Because the unstamped path
+# is the common one, that fallback is exercised continuously rather than
+# asserted once here.
 
 set -euo pipefail
 
@@ -242,12 +242,11 @@ BAD_FIXTURES=(
 # to tell "the mode works" from "the mode always says yes", which a single
 # accepted fixture could not.
 #
-# The codes are hardcoded from the reference implementation's observed answers.
-# Deriving them by shelling out to bin/validate-intent would put python3 on the
-# critical path of a build host this script deliberately keeps to Go — and
-# tests/parity/run_parity.sh already owns the question of whether the two
-# implementations still agree. This asserts that the ARTIFACT answers, not that
-# the port is correct.
+# The codes are hardcoded to what PROTOCOL.md and the schema require of each
+# fixture. Deriving them by running the binary would compare the artifact
+# against itself and pass whatever it happened to answer. This asserts that the
+# ARTIFACT answers correctly, and the source of truth for "correctly" is the
+# specification, not another run.
 SOURCE_FIXTURES=(
   "0:examples/sources/order_spec.rb"
   "0:examples/sources/checkout_service_test.py"
@@ -706,16 +705,17 @@ done
 # runSelfTest's empty-set guard (cmd/validate-intent/selftest.go) catches an
 # embed narrowed until one of the four globs matches nothing — that exits 1. A
 # corpus merely THINNED leaves all four sets populated: it exits 0 and reports a
-# smaller number, and losing examples/invalid/ turns 12/12 into a
-# greener-reading 8/8 with the validator's ability to REJECT now wholly
-# unexercised (cmd/validate-intent/selftest_embed_test.go:222 names that case).
+# smaller number, and losing examples/invalid/ turns 15/15 into a
+# greener-reading 4/4 with the validator's ability to REJECT now wholly
+# unexercised (cmd/validate-intent/selftest_embed_test.go names that case).
 # Exit status is precisely the signal that cannot see it.
 #
-# The expectation is a literal, and the same one tests/parity/run_parity.sh
-# already pins for this binary. Deriving it by counting the checkout would
+# The expectation is a LITERAL. Deriving it by counting the checkout would
 # compare the embed against the tree the embed was made from, which agree by
-# construction in exactly the runs where the answer matters.
-SELFTEST_TALLY="12/12 fixtures matched expectation."
+# construction in exactly the runs where the answer matters. It therefore has to
+# be updated by hand whenever a fixture is added — which is the point: adding
+# one is a deliberate act, and this line is where it gets stated.
+SELFTEST_TALLY="15/15 fixtures matched expectation."
 selftest_rc=0
 "$SMOKE_PREFIX/bin/validate-intent" >"$SMOKE_DIR/out" 2>"$SMOKE_DIR/err" || selftest_rc=$?
 if [ "$selftest_rc" != 0 ]; then

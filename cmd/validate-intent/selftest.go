@@ -1,7 +1,6 @@
 package main
 
-// Self-test mode — the port of `run_self_test` and `_self_test_source_fixture`
-// (bin/validate-intent:585-710).
+// Self-test mode.
 //
 // This is the in-repo fixture harness, not an adopter surface: it loads the
 // shipped schema and checks every example fixture against its EXPECTED outcome
@@ -20,15 +19,18 @@ import (
 	opentestintent "github.com/yatfa-ai/open-test-intent"
 )
 
-// The four fixture sets, as the reference names them (bin/validate-intent:
-// 621-710) and as the "no fixtures match ..." diagnostic prints them.
+// The four fixture sets, spelled as the "no fixtures match ..." diagnostic
+// prints them.
 //
 // Held slash-separated and relative to the repo root, because that is the one
 // spelling both consumers can use: the on-disk expansion joins the root onto
 // them, the embedded expansion matches them against a corpus whose separator is
-// always "/", and the diagnostic quotes them verbatim. They used to be built
-// absolute and then relativised back for the message; the string it printed was
-// this one, so nothing about that output changed.
+// always "/", and the diagnostic quotes them verbatim.
+//
+// Together they ARE the conformance instrument. Every examples/*.json must
+// accept, every examples/invalid/*.json must reject, and the same both ways
+// in-source — PROTOCOL.md and schemas/open-test-intent.v1.json say what valid
+// means, and this is where the binary is held to it.
 const (
 	validExamplesGlob   = "examples/*.json"
 	invalidExamplesGlob = "examples/invalid/*.json"
@@ -36,20 +38,15 @@ const (
 	invalidSourcesGlob  = "examples/sources/invalid/*"
 )
 
-// RepoRoot is the reference's REPO_ROOT (bin/validate-intent:76): the parent of
-// the directory holding the executable. Deriving it from os.Executable() the way
-// SchemaPath does is what makes a Go binary built into bin/ resolve the same
-// fixture globs the Python script does — and therefore what lets the self-test
-// output be compared byte for byte.
-//
-// Decoded for the same reason SchemaPath decodes: the fixture paths this root
-// is joined onto are printed, relative to it, on every PASS/FAIL line.
+// RepoRoot is the parent of the directory holding the executable. Deriving it
+// from os.Executable() the way SchemaPath does is what makes a binary built into
+// bin/ find the fixture tree beside it with no configuration.
 func RepoRoot() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Dir(filepath.Dir(pyFSDecodeString(exe))), nil
+	return filepath.Dir(filepath.Dir(exe)), nil
 }
 
 // --------------------------------------------------------------------------- //
@@ -61,9 +58,9 @@ func RepoRoot() (string, error) {
 //
 // # Why there is a fallback at all
 //
-// RepoRoot is executable-relative, which is right for a Python script that
-// always lives at <repo>/bin/ and wrong for a distributable binary. Installed
-// at /usr/local/bin/validate-intent it resolved /usr/local/examples/*.json,
+// RepoRoot is executable-relative, which is right in a checkout and wrong for a
+// distributable binary. Installed at /usr/local/bin/validate-intent it resolved
+// /usr/local/examples/*.json,
 // found nothing, and exited 1 with four errors — while the schema, since
 // SPGD-131, loaded perfectly well. This is the other half of that same defect:
 // --help's first line advertises the bare invocation as the thing to run, and
@@ -72,12 +69,11 @@ func RepoRoot() (string, error) {
 //
 // # Why disk still wins
 //
-// The same reason LoadSchema lets it (fileio.go): tests/parity/run_parity.sh
-// plants synthetic trees and expects the binary to read what is in them. A pure
-// embed would ignore every one of those while the harness reported green.
-// In a checkout the self-test therefore reads the bytes on disk and its stdout
-// is unchanged, which is what keeps it byte-for-byte comparable against the
-// reference.
+// The same reason LoadSchema lets it (fileio.go): selftest_embed_test.go plants
+// synthetic corpora and expects the binary to read what is in them. A pure embed
+// would ignore every one of those while the tests reported green. In a checkout
+// the self-test therefore grades the binary against the fixtures a reviewer can
+// see and edit.
 //
 // # ⭐ Why the decision is per TREE and never per GLOB
 //
@@ -131,7 +127,7 @@ type embeddedCorpus interface {
 // loud "no fixtures match ..." failure it produces today. This is the branch
 // where falling back would be most convenient and least honest.
 func newFixtureSource(root string) fixtureSource {
-	if _, err := os.Stat(pyFSEncode(filepath.Join(root, "examples"))); err != nil {
+	if _, err := os.Stat(filepath.Join(root, "examples")); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return fixtureSource{root: root, corpus: opentestintent.ExamplesFS()}
 		}
@@ -140,7 +136,7 @@ func newFixtureSource(root string) fixtureSource {
 }
 
 // expand returns the fixtures matching one of the four patterns, as paths
-// relative to root, in the order the reference produces them.
+// relative to root.
 //
 // It returns RELATIVE paths in both modes because those are what gets printed,
 // and because the embedded corpus has no absolute paths to offer. On disk the
@@ -160,15 +156,15 @@ func (s fixtureSource) expand(pattern string) []string {
 
 // expandEmbedded is ExpandFiles over the compiled-in corpus.
 //
-// It is built out of THIS package's glob rather than the standard library's,
+// It is built out of THIS package's matcher rather than the standard library's,
 // and that is the whole point rather than an optimisation. The self-test's
 // stdout is a function of the expansion, not of the file set: two corpora
 // holding identical bytes but expanded by matchers that disagree still print
 // different output, which is the one thing the fallback promises not to do.
-// fs.Glob would have been a second matcher to keep in agreement with pyglob.go
-// forever — Go's `*` matches dotfiles and Python's does not, to name only the
-// difference that bites first. Reusing fnmatch, pySplit and pyJoin means there
-// is nothing to keep in agreement.
+// fs.Glob would have been a second matcher to keep in agreement with glob.go
+// forever — its `*` matches dotfiles and this one's does not, to name only the
+// difference that bites first. Reusing matchName, splitPath and joinPath means
+// there is nothing to keep in agreement.
 //
 // What it reproduces, and where each rule comes from:
 //
@@ -178,16 +174,14 @@ func (s fixtureSource) expand(pattern string) []string {
 //     disk.
 //   - ExpandFiles' isFile filter, so `examples/sources/*` yields the four
 //     source files and not the `invalid` directory entry.
-//   - ExpandFiles' sort, on the same decoded names. Embedded names are always
-//     valid UTF-8 (they came from a Go source directive), so the surrogate
-//     ordering subtlety that comment describes cannot arise here.
+//   - ExpandFiles' sort, over the same names.
 //
 // Only the ONE-directory shapes the four patterns use are handled — no `**`,
 // no magic in the directory part. A pattern needing more would silently match
 // nothing here while working on disk, which is why the four are compile-time
 // constants at the top of this file and nothing builds one at run time.
 func (s fixtureSource) expandEmbedded(pattern string) []string {
-	dir, base := pySplit(pattern)
+	dir, base := splitPath(pattern)
 	entries, err := s.corpus.ReadDir(dir)
 	if err != nil {
 		// A directory the corpus does not have. Nothing matched is the honest
@@ -205,10 +199,10 @@ func (s fixtureSource) expandEmbedded(pattern string) []string {
 		if !allowHidden && isHidden(name) {
 			continue
 		}
-		if !fnmatch(name, base) {
+		if !matchName(name, base) {
 			continue
 		}
-		files = append(files, pyJoin(dir, name))
+		files = append(files, joinPath(dir, name))
 	}
 	sort.Strings(files)
 	return files
@@ -247,8 +241,7 @@ func (s fixtureSource) checkSource(rel string, schema *Schema) (findings []Sourc
 	return CheckSourceText(text, schema), ""
 }
 
-// selfTestSourceFixture is the port of `_self_test_source_fixture`
-// (bin/validate-intent:585-618): check one source fixture end-to-end
+// selfTestSourceFixture checks one source fixture end-to-end
 // (extraction -> normalization -> validation).
 //
 // Returns true when the fixture matched its expectation. A fixture with ZERO
@@ -257,11 +250,11 @@ func (s fixtureSource) checkSource(rel string, schema *Schema) (findings []Sourc
 func selfTestSourceFixture(src fixtureSource, rel string, schema *Schema, expectValid bool) bool {
 	findings, readError := src.checkSource(rel, schema)
 	if readError != "" {
-		pyPrintf("FAIL  %s — %s\n", rel, readError)
+		fmt.Printf("FAIL  %s — %s\n", rel, readError)
 		return false
 	}
 	if len(findings) == 0 {
-		pyPrintf("FAIL  %s — no @intent annotations extracted\n", rel)
+		fmt.Printf("FAIL  %s — no @intent annotations extracted\n", rel)
 		return false
 	}
 
@@ -270,10 +263,9 @@ func selfTestSourceFixture(src fixtureSource, rel string, schema *Schema, expect
 		where := fmt.Sprintf("%s:%d", rel, finding.Line)
 		if finding.Valid == expectValid {
 			if expectValid {
-				pyPrintf("PASS  %s\n", where)
+				fmt.Printf("PASS  %s\n", where)
 				continue
 			}
-			// The reference's `problem or (errors[0] if errors else "invalid")`.
 			detail := finding.Problem
 			if detail == "" {
 				if len(finding.Errors) > 0 {
@@ -282,7 +274,7 @@ func selfTestSourceFixture(src fixtureSource, rel string, schema *Schema, expect
 					detail = "invalid"
 				}
 			}
-			pyPrintf("PASS  %s (correctly rejected — %s)\n", where, detail)
+			fmt.Printf("PASS  %s (correctly rejected — %s)\n", where, detail)
 			continue
 		}
 		matched = false
@@ -291,24 +283,25 @@ func selfTestSourceFixture(src fixtureSource, rel string, schema *Schema, expect
 			if finding.Problem != "" {
 				suffix = " (" + finding.Problem + ")"
 			}
-			pyPrintf("FAIL  %s — unexpectedly invalid%s\n", where, suffix)
+			fmt.Printf("FAIL  %s — unexpectedly invalid%s\n", where, suffix)
 			for _, err := range finding.Errors {
-				pyPrintf("        -> %s\n", err)
+				fmt.Printf("        -> %s\n", err)
 			}
 		} else {
-			pyPrintf("FAIL  %s — unexpectedly valid\n", where)
+			fmt.Printf("FAIL  %s — unexpectedly valid\n", where)
 		}
 	}
 	return matched
 }
 
-// RunSelfTest is the port of `run_self_test` (bin/validate-intent:621-710).
+// RunSelfTest grades this binary against the shipped fixture corpus.
 //
-// On the arithmetic in the final line: a run over the shipped corpus prints 24
-// PASS lines and then "12/12 fixtures matched expectation." Those numbers count
-// DIFFERENT THINGS and are supposed to disagree — `checked` counts FIXTURES
-// (8 JSON files + 4 source files), while the source fixtures print one line per
-// ANNOTATION, of which there are more. Do not "fix" it; reproduce it.
+// On the arithmetic in the final line: a run prints more PASS lines than
+// "N/N fixtures matched expectation." accounts for. Those numbers count
+// DIFFERENT THINGS and are supposed to disagree — `checked` counts FIXTURES,
+// while the source fixtures print one line per ANNOTATION, of which there are
+// more. Do not "fix" it by making them agree: a fixture is the unit of
+// expectation and an annotation is the unit of reporting.
 func RunSelfTest(schema *Schema) int {
 	root, err := RepoRoot()
 	if err != nil {
@@ -339,8 +332,8 @@ func runSelfTest(schema *Schema, src fixtureSource) int {
 	}
 
 	// A fixture set that matched NOTHING is a failure, not a vacuous pass.
-	// Dropping examples/invalid/ alone would turn 12/12 into a *greener*-reading
-	// 8/8, exit 0, with the validator's ability to reject a bad annotation now
+	// Dropping examples/invalid/ alone would turn 15/15 into a *greener*-reading
+	// 4/4, exit 0, with the validator's ability to reject a bad annotation now
 	// wholly unexercised. Each set is guarded independently — a `checked == 0`
 	// check would sail straight past that case, which is both the likeliest
 	// shape and the most misleading one. Every empty set is reported, so one run
@@ -374,7 +367,7 @@ func runSelfTest(schema *Schema, src fixtureSource) int {
 		for _, set := range empty {
 			fmt.Fprintf(os.Stderr,
 				"error: no fixtures match %s — self-test cannot verify %s\n",
-				PyReprString(set.pattern), set.verifies)
+				Quote(set.pattern), set.verifies)
 		}
 		return 1
 	}
@@ -388,14 +381,14 @@ func runSelfTest(schema *Schema, src fixtureSource) int {
 		valid, errs, parseError := src.checkJSON(rel, schema)
 		switch {
 		case parseError != "":
-			pyPrintf("FAIL  %s — unexpectedly invalid (%s)\n", rel, parseError)
+			fmt.Printf("FAIL  %s — unexpectedly invalid (%s)\n", rel, parseError)
 			mismatches++
 		case valid:
-			pyPrintf("PASS  %s\n", rel)
+			fmt.Printf("PASS  %s\n", rel)
 		default:
-			pyPrintf("FAIL  %s — unexpectedly invalid\n", rel)
+			fmt.Printf("FAIL  %s — unexpectedly invalid\n", rel)
 			for _, err := range errs {
-				pyPrintf("        -> %s\n", err)
+				fmt.Printf("        -> %s\n", err)
 			}
 			mismatches++
 		}
@@ -408,12 +401,12 @@ func runSelfTest(schema *Schema, src fixtureSource) int {
 		switch {
 		case parseError != "":
 			// Malformed JSON is a rejection too — but flag it so it's visible.
-			pyPrintf("PASS  %s (correctly rejected — %s)\n", rel, parseError)
+			fmt.Printf("PASS  %s (correctly rejected — %s)\n", rel, parseError)
 		case valid:
-			pyPrintf("FAIL  %s — unexpectedly valid\n", rel)
+			fmt.Printf("FAIL  %s — unexpectedly valid\n", rel)
 			mismatches++
 		default:
-			pyPrintf("PASS  %s (correctly invalid)\n", rel)
+			fmt.Printf("PASS  %s (correctly invalid)\n", rel)
 		}
 	}
 
@@ -431,7 +424,7 @@ func runSelfTest(schema *Schema, src fixtureSource) int {
 		}
 	}
 
-	pyPrintf("\n%d/%d fixtures matched expectation.\n", checked-mismatches, checked)
+	fmt.Printf("\n%d/%d fixtures matched expectation.\n", checked-mismatches, checked)
 	if mismatches == 0 {
 		return 0
 	}

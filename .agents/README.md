@@ -31,4 +31,4 @@ reporting the divergence. When the two differ, read `.github/workflows/`.
 
 | Draft | What it does |
 |-------|--------------|
-| `ci.yml` | Runs the two commands `README.md` designates as the gate — `python3 bin/validate-intent` (fixture conformance) and `python3 -m unittest discover -s tests` (validator logic) — on Python 3.10 and 3.13. Zero dependencies, so no install step. |
+| `ci.yml` | Runs the two gates `README.md` designates — the binary's self-test over the fixture corpus (conformance) and `go test ./...` (the code) — on two Go toolchains. No dependencies to install. |

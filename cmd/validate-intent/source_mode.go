@@ -1,6 +1,6 @@
 package main
 
-// The `--source` mode — the port of `run_source` (bin/validate-intent:755-782).
+// The `--source` mode: validate @intent annotations in place inside test source.
 
 import "fmt"
 
@@ -19,28 +19,28 @@ func RunSource(patterns []string, schema *Schema) int {
 	checkOne := func(path string) bool {
 		findings, readError := CheckSourceFile(path, schema)
 		if readError != "" {
-			pyPrintf("FAIL  %s — %s\n", path, readError)
+			fmt.Printf("FAIL  %s — %s\n", path, readError)
 			return true
 		}
 		if len(findings) == 0 {
-			pyPrintf("----  %s — no @intent annotations\n", path)
+			fmt.Printf("----  %s — no @intent annotations\n", path)
 			return false
 		}
 		failed := false
 		for _, finding := range findings {
 			where := fmt.Sprintf("%s:%d", path, finding.Line)
 			if finding.Valid {
-				pyPrintf("PASS  %s\n", where)
+				fmt.Printf("PASS  %s\n", where)
 				continue
 			}
 			if finding.Problem != "" {
 				// The em dash (U+2014) is load-bearing output, not decoration.
-				pyPrintf("FAIL  %s — %s\n", where, finding.Problem)
+				fmt.Printf("FAIL  %s — %s\n", where, finding.Problem)
 			} else {
-				pyPrintf("FAIL  %s\n", where)
+				fmt.Printf("FAIL  %s\n", where)
 			}
 			for _, err := range finding.Errors {
-				pyPrintf("        -> %s\n", err)
+				fmt.Printf("        -> %s\n", err)
 			}
 			failed = true
 		}
