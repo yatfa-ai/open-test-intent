@@ -9,6 +9,7 @@ package main
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -81,6 +82,135 @@ func TestJSONReportIsParseable(t *testing.T) {
 	empty := captureStdout(t, func() { (&JSONReport{Mode: "stdin"}).Emit(0) })
 	if !strings.Contains(empty, `"findings": []`) {
 		t.Errorf("an empty report did not render findings as []:\n%s", empty)
+	}
+}
+
+// A path the operating system hands us is a byte string, and nothing guarantees
+// it is UTF-8. Both renderers have to say so rather than repair it, and the
+// `--json` document additionally has to keep two such paths apart — the failure
+// this pins is not a crash but a QUIET MERGE: three files, one `"file"` value,
+// `summary.files: 3`, and a consumer with no way to notice.
+//
+// The pair that makes it a real defect rather than a cosmetic one is the last
+// two below: a file whose name CONTAINS an undecodable 0xE9, and a file
+// genuinely NAMED `a\xe9.json`. Any encoding that writes the first as those four
+// characters and leaves the second alone reports them identically.
+func TestJSONPathEncodingIsLosslessForOSBytes(t *testing.T) {
+	paths := []string{
+		"spec/plain.json",
+		"spec/em — dash.json",
+		"spec/a\xe9.json",
+		"spec/a\xfe.json",
+		"spec/a\xff.json",
+		`spec/a\xe9.json`, // literal backslash-x-e-9, not the byte
+		`spec/back\slash.json`,
+		"spec/\xed\xa0\x80.json", // CESU-8 high surrogate: three bytes, none decodable
+	}
+
+	seen := map[string]string{}
+	for _, path := range paths {
+		encoded := EncodeJSONPath(path)
+
+		var decoded string
+		if err := json.Unmarshal([]byte(encoded), &decoded); err != nil {
+			t.Errorf("EncodeJSONPath(%q) = %s, which is not a JSON string: %v", path, encoded, err)
+			continue
+		}
+		if strings.ContainsRune(decoded, '\uFFFD') {
+			t.Errorf("EncodeJSONPath(%q) = %s — U+FFFD is the repair PROTOCOL.md §1.1(a) forbids", path, encoded)
+		}
+		if was, clash := seen[decoded]; clash {
+			t.Errorf("EncodeJSONPath collapsed two paths onto %q:\n  %q\n  %q", decoded, was, path)
+		}
+		seen[decoded] = path
+
+		// The documented inverse: `\xHH` is a byte, `\\` is a backslash,
+		// everything else is itself. It has to give back the OS's bytes exactly,
+		// or `file` is not a name a consumer can act on.
+		if back := decodeJSONPath(t, decoded); back != path {
+			t.Errorf("EncodeJSONPath(%q) decoded back to %q", path, back)
+		}
+	}
+}
+
+// decodeJSONPath is the inverse EncodeJSONPath's comment promises a consumer.
+// It is written here, in the test, on purpose: an inverse that shares code with
+// the encoder proves the two agree, not that either is right.
+func decodeJSONPath(t *testing.T, s string) string {
+	t.Helper()
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] == '\\' && i+1 < len(s) {
+			if s[i+1] == '\\' {
+				b.WriteByte('\\')
+				i += 2
+				continue
+			}
+			if s[i+1] == 'x' && i+3 < len(s) {
+				n, err := strconv.ParseUint(s[i+2:i+4], 16, 8)
+				if err != nil {
+					t.Fatalf("%q is not the documented encoding: %v", s, err)
+				}
+				b.WriteByte(byte(n))
+				i += 4
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
+// The human renderer must not repair either. Before this, `Quote` ranged over
+// the string, so every undecodable byte decoded to U+FFFD and the no-match
+// diagnostic named a pattern the user had never typed.
+func TestQuoteShowsUndecodableBytesRatherThanRepairingThem(t *testing.T) {
+	got := Quote("x\xe9*.json")
+	if want := `'x\xe9*.json'`; got != want {
+		t.Errorf("Quote(%q) = %s, want %s", "x\xe9*.json", got, want)
+	}
+	if strings.ContainsRune(got, '\uFFFD') {
+		t.Errorf("Quote(%q) = %s — the byte was repaired, not shown", "x\xe9*.json", got)
+	}
+	// A real U+FFFD in the input is still a real character and stays literal, so
+	// the escape above is not a second spelling of it.
+	if got := Quote("x\uFFFD.json"); got != "'x\uFFFD.json'" {
+		t.Errorf("Quote of a literal U+FFFD = %s, want it left alone", got)
+	}
+}
+
+// The whole document, not just the encoder: three findings whose paths differ
+// only in one undecodable byte must arrive as three distinguishable entries,
+// and `summary` must agree with what `findings` can express.
+func TestReportKeepsPathsWithOSBytesApart(t *testing.T) {
+	report := &JSONReport{Mode: "adopter", Files: 3, Annotations: 3}
+	for _, path := range []string{"spec/a\xe9.json", "spec/a\xfe.json", "spec/a\xff.json"} {
+		report.Add(JSONFinding{File: path, OK: false, Kind: KindSchema,
+			Errors: []string{"<root>: missing required property 'entity'"}})
+	}
+
+	out := captureStdout(t, func() { report.Emit(1) })
+
+	var parsed struct {
+		Summary struct {
+			Files int `json:"files"`
+		} `json:"summary"`
+		Findings []struct {
+			File string `json:"file"`
+		} `json:"findings"`
+	}
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("the --json document does not parse: %v\n%s", err, out)
+	}
+
+	distinct := map[string]bool{}
+	for _, f := range parsed.Findings {
+		distinct[f.File] = true
+	}
+	if len(distinct) != parsed.Summary.Files {
+		t.Errorf("summary.files = %d but findings name only %d distinguishable files:\n%s",
+			parsed.Summary.Files, len(distinct), out)
 	}
 }
 

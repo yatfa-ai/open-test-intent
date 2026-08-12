@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // globTree writes the fixture tree and returns its root.
@@ -28,8 +29,19 @@ import (
 //	spec/models/order_spec.rb
 //	spec/requests/c.json
 //	spec/requests/admin/d.json
+//	spec/real/e.json
+//	spec/linked -> real      <- SYMLINKED directory
 //	spec/.secret/f.json      <- hidden DIRECTORY, and what is under it
 //	spec/.hidden.json        <- hidden FILE
+//
+// The symlink is in the SHARED tree rather than in a test of its own because
+// descent through it is not an optional behaviour: glob.go:listDir classifies
+// with os.Stat, which follows symlinks, and says so as one of the three
+// load-bearing properties of the walk. The obvious rewrite — filepath.WalkDir
+// plus a suffix filter — does not follow them, and would then skip every test
+// file under a symlinked spec directory while reporting a confident clean pass.
+// Carried here, that rewrite fails the primary `**` case below rather than one
+// case a reader might read as exotic.
 func globTree(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -39,6 +51,7 @@ func globTree(t *testing.T) string {
 		"spec/models/order_spec.rb",
 		"spec/requests/c.json",
 		"spec/requests/admin/d.json",
+		"spec/real/e.json",
 		"spec/.secret/f.json",
 		"spec/.hidden.json",
 	} {
@@ -49,6 +62,9 @@ func globTree(t *testing.T) string {
 		if err := os.WriteFile(path, []byte("{}\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := os.Symlink("real", filepath.Join(root, "spec", "linked")); err != nil {
+		t.Fatalf("the tree needs a symlinked directory to be worth walking: %v", err)
 	}
 	return root
 }
@@ -84,11 +100,17 @@ func TestExpandFiles(t *testing.T) {
 			// some, which is the only reason a file directly in spec/ is found.
 			// A recursion that reads `**` as "at least one directory" drops
 			// spec/a.json and reports a confident pass over the rest.
+			// A `**` that quietly skips a symlinked directory reports a clean
+			// pass over a smaller set of files. spec/linked/e.json is the same
+			// file as spec/real/e.json and is listed twice on purpose: the user
+			// can name both paths, so the walk yields both.
 			name:    "** matches zero segments",
 			pattern: "spec/**/*.json",
 			want: []string{
 				"spec/a.json",
+				"spec/linked/e.json",
 				"spec/models/b.json",
+				"spec/real/e.json",
 				"spec/requests/admin/d.json",
 				"spec/requests/c.json",
 			},
@@ -181,6 +203,63 @@ func TestGlobDoesNotInventAMatchForAMissingDirectory(t *testing.T) {
 	// that has stopped answering at all.
 	if got := Glob(root + "/spec/**"); len(got) == 0 {
 		t.Error("Glob(spec/**) found nothing; the guard above proves nothing")
+	}
+}
+
+// A symlink LOOP must terminate, and glob.go says how: not with a visited-inode
+// guard, but because the OS eventually refuses the too-deep path and the failed
+// read contributes no names.
+//
+// That is a deliberate choice with a failure mode on each side, which is why it
+// is pinned. Cutting the walk off earlier would silently stop finding files the
+// user can name; not terminating at all turns `--source spec/**` on an ordinary
+// tree with one self-referential link into a hang, with no output to explain it.
+//
+// The walk runs on its own goroutine so that a regression reports "did not
+// terminate" here rather than killing the package with a panic from the go test
+// timeout, several minutes later, naming every goroutine but not this rule.
+func TestGlobTerminatesOnASymlinkLoop(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "spec")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(".", filepath.Join(dir, "self")); err != nil {
+		t.Fatalf("the loop needs a symlink: %v", err)
+	}
+
+	done := make(chan []string, 1)
+	go func() { done <- ExpandFiles(root + "/spec/**/*.json") }()
+
+	select {
+	case matches := <-done:
+		// Terminating is half the rule; the other half is that the loop was
+		// really entered. A matcher that refused to follow the link would also
+		// return promptly, and would satisfy a bare "it came back" assertion
+		// while having stopped finding files the user can name.
+		//
+		// So: spec/a.json is reachable as itself AND through the link, at every
+		// depth the OS still accepts, and more than one match is the evidence
+		// the descent happened. The COUNT is not pinned — it is however many
+		// levels fit in PATH_MAX under this tmpdir, which is a property of the
+		// machine and not of the matcher.
+		found := 0
+		for _, match := range matches {
+			if filepath.Base(match) == "a.json" {
+				found++
+			}
+		}
+		if found == 0 {
+			t.Errorf("the walk terminated without finding spec/a.json: %v", matches)
+		}
+		if found == 1 {
+			t.Error("the walk never entered the loop, so its termination proves nothing")
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("ExpandFiles did not terminate on a symlink loop within 60s")
 	}
 }
 

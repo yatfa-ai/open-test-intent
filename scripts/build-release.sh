@@ -706,7 +706,7 @@ done
 # embed narrowed until one of the four globs matches nothing — that exits 1. A
 # corpus merely THINNED leaves all four sets populated: it exits 0 and reports a
 # smaller number, and losing examples/invalid/ turns 15/15 into a
-# greener-reading 4/4 with the validator's ability to REJECT now wholly
+# greener-reading 8/8 with the validator's ability to REJECT now wholly
 # unexercised (cmd/validate-intent/selftest_embed_test.go names that case).
 # Exit status is precisely the signal that cannot see it.
 #

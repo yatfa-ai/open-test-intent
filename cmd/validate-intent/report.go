@@ -118,6 +118,11 @@ func (r *JSONReport) Emit(exitCode int) int {
 // author's payload; and it reflects or sorts rather than preserving this
 // document's fixed key order, which a consumer diffing two reports depends on.
 // See EncodeJSONString in render.go.
+//
+// `file` is encoded by EncodeJSONPath rather than EncodeJSONString: it carries
+// operating-system bytes and it is the key a consumer groups and compares on,
+// so it is the one value in the document that has to be injective. The rest of
+// a finding is prose.
 func renderFindings(findings []JSONFinding) string {
 	if len(findings) == 0 {
 		return "[]"
@@ -126,7 +131,7 @@ func renderFindings(findings []JSONFinding) string {
 	for _, f := range findings {
 		var b strings.Builder
 		b.WriteString("    {\n")
-		fmt.Fprintf(&b, "      \"file\": %s,\n", EncodeJSONString(f.File))
+		fmt.Fprintf(&b, "      \"file\": %s,\n", EncodeJSONPath(f.File))
 		if f.HasLine {
 			fmt.Fprintf(&b, "      \"line\": %d,\n", f.Line)
 		} else {

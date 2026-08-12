@@ -138,7 +138,7 @@
 # strict sense of the house rule below, and it is the reason nothing is
 # installed on it.
 #
-# Only the exit code is required, deliberately. Requiring "12/12" would pin this
+# Only the exit code is required, deliberately. Requiring "15/15" would pin this
 # script to the corpus's current size, so adding a fixture would break every
 # install until someone edited a number here — and the count is already asserted
 # where it belongs, against the binary rather than against the installer

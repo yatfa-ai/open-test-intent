@@ -14,9 +14,10 @@ package main
 //   - it rejects an unterminated `[` with ErrBadPattern instead of reading it
 //     as the literal bracket a real filename can contain.
 //
-// So the matcher is written here. The rules it implements are the ones stated
-// in `--help` and exercised by the fixture corpus; there is no other authority
-// for them and none is needed.
+// So the matcher is written here. The rules it implements are the ones in the
+// table directly below and nowhere else — `--help` says only that a FILE
+// argument may be a glob, so this table is their statement of record, and it is
+// the fixture corpus and glob_test.go that hold it to them.
 //
 //	*        any run of characters within one path component
 //	?        exactly one character

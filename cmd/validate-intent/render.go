@@ -7,14 +7,21 @@ package main
 //   - Quote / RenderValue produce the HUMAN report. A quoted string there is
 //     for a person reading a terminal, so it stays as close to the author's own
 //     text as it can while still showing where the value begins and ends.
-//   - EncodeJSONString produces the `--json` document. It is bound by RFC 8259
-//     §7 and by nothing else: exactly the escapes the grammar requires, and no
-//     others.
+//   - EncodeJSONString / EncodeJSONPath produce the `--json` document. They are
+//     bound by RFC 8259 §7 and by nothing else: exactly the escapes the grammar
+//     requires, and no others.
 //
 // The second is why this file does not reach for encoding/json. That encoder
 // escapes `<`, `>` and `&` — a legacy of embedding JSON in HTML — which would
 // mangle every diagnostic quoting an author's payload, and it reorders or
 // reflects object keys, which the report's fixed key order cannot survive.
+//
+// Both audiences are handed operating-system bytes — a path, a glob pattern, an
+// OS error quoting one — and POSIX pathnames are byte strings with no encoding
+// guarantee. Neither renderer may answer that by substituting U+FFFD, which
+// PROTOCOL.md §1.1(a) forbids for a payload byte and which merges two files
+// into one report entry. Both write such a byte `\xHH`; only EncodeJSONPath is
+// additionally injective, because only it names something.
 
 import (
 	"fmt"
@@ -43,6 +50,20 @@ import (
 // escapes, so a path containing a newline or an ANSI sequence prints as
 // something a reader can copy rather than as something that reformats their
 // terminal.
+//
+// A BYTE THAT IS NOT PART OF A WELL-FORMED UTF-8 SEQUENCE prints as `\xHH`, the
+// same notation the C1 range gets. It reaches here from one direction only —
+// the operating system, in a path or a glob pattern, which on POSIX is a byte
+// string and carries no encoding guarantee. Ranging over the string instead
+// would decode every such byte to U+FFFD and print a pattern the user never
+// typed; PROTOCOL.md §1.1(a) forbids exactly that substitution for payload
+// bytes, and there is no reason to do to a filename what the specification
+// refuses to do to a value.
+//
+// This is a rendering for reading and is not a decodable channel: a real
+// U+0085 and a raw 0x85 both print `\x85`. The `--json` document is where a
+// consumer must be able to tell two paths apart, and EncodeJSONPath below is
+// what makes that true there.
 func Quote(s string) string {
 	quote := byte('\'')
 	if strings.ContainsRune(s, '\'') && !strings.ContainsRune(s, '"') {
@@ -51,7 +72,12 @@ func Quote(s string) string {
 
 	var b strings.Builder
 	b.WriteByte(quote)
-	for _, r := range s {
+	for _, c := range walkUTF8(s) {
+		if c.Raw {
+			fmt.Fprintf(&b, `\x%02x`, c.Byte)
+			continue
+		}
+		r := c.Rune
 		switch {
 		case r == rune(quote) || r == '\\':
 			b.WriteByte('\\')
@@ -141,6 +167,39 @@ func CharCount(s string) int {
 }
 
 // --------------------------------------------------------------------------- //
+// walking a byte string that may not be UTF-8
+// --------------------------------------------------------------------------- //
+
+// utf8Chunk is one step of a walk over a byte string: either a decoded rune, or
+// a single byte that no well-formed UTF-8 sequence could account for.
+type utf8Chunk struct {
+	Rune rune
+	Byte byte
+	Raw  bool
+}
+
+// walkUTF8 splits a string into runes, keeping undecodable bytes distinct.
+//
+// `for _, r := range s` cannot do this: it yields U+FFFD for an undecodable
+// byte, which is the same rune it yields for a literal U+FFFD, so the two
+// become one and the original byte is gone. Every renderer here that can be
+// handed operating-system bytes walks with this instead.
+func walkUTF8(s string) []utf8Chunk {
+	out := make([]utf8Chunk, 0, len(s))
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			out = append(out, utf8Chunk{Byte: s[i], Raw: true})
+			i++
+			continue
+		}
+		out = append(out, utf8Chunk{Rune: r})
+		i += size
+	}
+	return out
+}
+
+// --------------------------------------------------------------------------- //
 // the --json document
 // --------------------------------------------------------------------------- //
 
@@ -153,15 +212,32 @@ func CharCount(s string) int {
 // so an em dash in an error message is one em dash in the output — legible in a
 // terminal and identical in meaning to `—`. Every JSON parser reads both.
 //
-// The input is always a Go string the port itself produced or a payload string
-// the parser accepted, and PROTOCOL.md §1.1(a) guarantees the latter holds only
-// real Unicode scalar values. There is therefore no unpaired surrogate to
-// encode, which is why this function has no case for one.
+// MOST of what reaches here is guaranteed well-formed UTF-8: text the port
+// composed from its own source literals, and payload strings, which PROTOCOL.md
+// §1.1(a) admits only when they hold real Unicode scalar values. Two kinds of
+// string are not, and they are not exotic — a path or glob pattern the OS gave
+// us, and an OS error message quoting one. POSIX pathnames are byte strings and
+// carry no encoding guarantee.
+//
+// Such a byte is written `\xHH`, which is four characters of the string's
+// VALUE, not a JSON escape — RFC 8259 has none for a byte outside the character
+// model, and the document must stay valid UTF-8 for any parser to read it at
+// all. What it must not do is REPAIR: substituting U+FFFD is precisely what
+// §1.1(a) forbids for a payload byte, and it silently merges two different
+// files into one report entry.
+//
+// The escape makes an error message faithful; it does not make it decodable,
+// because prose does not double the backslashes around it. Use EncodeJSONPath
+// for a value a consumer has to be able to tell apart from another one.
 func EncodeJSONString(s string) string {
 	var b strings.Builder
 	b.WriteByte('"')
-	for _, r := range s {
-		switch r {
+	for _, c := range walkUTF8(s) {
+		if c.Raw {
+			fmt.Fprintf(&b, `\\x%02x`, c.Byte)
+			continue
+		}
+		switch c.Rune {
 		case '"':
 			b.WriteString(`\"`)
 		case '\\':
@@ -177,15 +253,40 @@ func EncodeJSONString(s string) string {
 		case '\f':
 			b.WriteString(`\f`)
 		default:
-			if r < 0x20 {
-				fmt.Fprintf(&b, `\u%04x`, r)
+			if c.Rune < 0x20 {
+				fmt.Fprintf(&b, `\u%04x`, c.Rune)
 				continue
 			}
-			b.WriteRune(r)
+			b.WriteRune(c.Rune)
 		}
 	}
 	b.WriteByte('"')
 	return b.String()
+}
+
+// EncodeJSONPath is EncodeJSONString for a value that IDENTIFIES something —
+// the `file` key, which carries a path or the glob pattern that matched
+// nothing. It is the one string in the document a consumer may have to compare
+// against another, so the encoding it uses is injective: two paths that differ
+// by one byte produce two different values, always.
+//
+// EncodeJSONString alone is not injective, and the gap is reachable rather than
+// theoretical. It writes an undecodable 0xE9 as the four characters `\xe9`, and
+// it writes a file genuinely NAMED `a\xe9.json` as those same four characters,
+// so `--json` reports both as one entry while `summary.files` counts two. That
+// is the shape of the defect this key exists not to have: a batch over a spec
+// tree whose findings silently collapse.
+//
+// So a literal backslash is doubled here, and only here. The inverse is the
+// obvious one — read `\xHH` as a byte, `\\` as a backslash, everything else as
+// itself — and it recovers the operating system's bytes exactly.
+//
+// The price is a path containing a literal backslash being reported with it
+// doubled. That is the whole cost, it is confined to this key, and it buys the
+// property the key is for; a report that cannot name two files apart is worse
+// than one that names an unusual file verbosely.
+func EncodeJSONPath(s string) string {
+	return EncodeJSONString(strings.ReplaceAll(s, `\`, `\\`))
 }
 
 // --------------------------------------------------------------------------- //

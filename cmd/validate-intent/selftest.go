@@ -333,7 +333,7 @@ func runSelfTest(schema *Schema, src fixtureSource) int {
 
 	// A fixture set that matched NOTHING is a failure, not a vacuous pass.
 	// Dropping examples/invalid/ alone would turn 15/15 into a *greener*-reading
-	// 4/4, exit 0, with the validator's ability to reject a bad annotation now
+	// 8/8, exit 0, with the validator's ability to reject a bad annotation now
 	// wholly unexercised. Each set is guarded independently — a `checked == 0`
 	// check would sail straight past that case, which is both the likeliest
 	// shape and the most misleading one. Every empty set is reported, so one run

@@ -115,8 +115,8 @@ func TestEmbeddedAndOnDiskExpansionsAgree(t *testing.T) {
 // trip. examples/.dotfile-canary.json is carried so that at least one of them
 // is a dotfile — but the corpus cannot hold the other half of the rule. A real
 // `_scratch.json` would be MATCHED by `examples/*.json`, on both sides, and
-// would therefore be a thirteenth fixture; the corpus would stop being twelve
-// files and 12/12 would stop being 12/12. So the underscore case is staged
+// would therefore be a sixteenth fixture; the corpus would stop being fifteen
+// fixtures and 15/15 would stop being 15/15. So the underscore case is staged
 // here instead, against a tree and an FS that exist for the length of one test.
 //
 // The rule has two halves and both are asserted, because "drop dotfiles" and
@@ -226,7 +226,7 @@ func TestTheEmptyFixtureGuardSurvivesTheFallback(t *testing.T) {
 	schema := repoSchema(t)
 
 	// Everything except examples/invalid/ — the set whose loss reads greenest,
-	// because 12/12 becomes 8/8 and exit 0.
+	// because 15/15 becomes 8/8 and exit 0.
 	gutted := fstest.MapFS{}
 	full := opentestintent.ExamplesFS()
 	for _, pattern := range allPatterns {
@@ -259,7 +259,7 @@ func TestTheEmptyFixtureGuardSurvivesTheFallback(t *testing.T) {
 //
 // A checkout whose examples/invalid/ has been deleted must still fail loudly.
 // The tempting alternative — fall back for whichever of the four sets came back
-// empty — would heal that tree from the binary and report 12/12, so deleting
+// empty — would heal that tree from the binary and report 15/15, so deleting
 // the rejection fixtures would delete the coverage without a single case going
 // red. That is the failure fileio.go names as this project's house defect
 // wearing a new hat, and it is the reason the decision is taken once, for the
@@ -327,7 +327,7 @@ func TestAnExamplesTreeOnDiskWins(t *testing.T) {
 // TestSomethingOtherThanAnAbsentTreeDoesNotFallBack pins the narrow half of
 // LoadSchema's absent/present rule, which this reuses: only "there is no
 // examples/ here" is an absence of intent. A plain FILE on the name is somebody
-// having done something, and answering it with a clean 12/12 out of the binary
+// having done something, and answering it with a clean 15/15 out of the binary
 // would be a tool failure wearing the costume of a pass.
 func TestSomethingOtherThanAnAbsentTreeDoesNotFallBack(t *testing.T) {
 	schema := repoSchema(t)
