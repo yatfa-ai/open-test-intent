@@ -1,6 +1,0 @@
-{
-  "entity": "Order",
-  "action": "audit",
-  "behavior": "never reached by a wildcard, because ** does not enter hidden directories",
-  "layer": "unit"
-}

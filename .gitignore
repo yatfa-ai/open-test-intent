@@ -1,9 +1,8 @@
-__pycache__/
-*.py[cod]
-
-# Go build artifacts. The parity harness builds the port into bin/ because both
-# implementations resolve the schema relative to their own location, so the
-# binary has to sit beside bin/validate-intent for their schema paths to agree.
+# Go build artifacts. The binary resolves the schema and the fixture corpus
+# relative to its own directory's parent, so a build meant to read the checkout
+# rather than its own compiled-in copies has to sit in bin/.
+/bin/validate-intent
+/bin/validate-intent.exe
 /bin/validate-intent-go
 /bin/validate-intent-go.exe
 # A single-package build from the repo root drops the binary here under its

@@ -69,7 +69,7 @@
 # -----------------
 # No Go toolchain, or a toolchain that cannot build the inspector, is "could
 # not check" and exits 2 — never a pass. Same convention as
-# tests/parity/run_parity.sh, which exits 2 rather than skipping when its build
+# scripts/build-release.sh, which exits 2 rather than skipping when its build
 # fails, and for the same reason: a build checker that silently skipped would
 # be a textbook instance of the vacuous green this project keeps naming.
 #
@@ -116,7 +116,7 @@ TARGETS=(
 )
 
 # Fixtures for the installed-layout smoke test. These already exist and are the
-# same ones the reference implementation's own self-test uses.
+# same ones the binary's own self-test uses.
 GOOD_FIXTURE="examples/unit-order-total.json"
 BAD_FIXTURES=(
   "examples/invalid/bad-layer.json"

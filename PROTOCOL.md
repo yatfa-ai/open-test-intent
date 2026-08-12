@@ -2,8 +2,13 @@
 
 The **OpenTestIntent** protocol is a tiny, language-agnostic annotation that declares *what a
 test verifies*. It is "open" because any tool — not just SpecGuard — can read it. The canonical schema
-and this specification live in the **`open-test-intent`** repository (vendor-neutral); SpecGuard
-is the reference implementation and first consumer.
+and this specification live in the **`open-test-intent`** repository (vendor-neutral); SpecGuard is
+its first consumer.
+
+**This document is normative.** Together with `schemas/open-test-intent.v1.json` (§3) it defines
+what a valid annotation is. No implementation is the arbiter: the `validate-intent` binary shipped
+from this repository is the canonical *validator*, and where it and this document disagree, the
+document is right and the binary has a bug.
 
 A test that carries an `@intent` is **annotated**; one that doesn't is **unannotated**. Both are
 ingested (so the annotated ratio is measurable), but only annotated tests participate in
@@ -33,6 +38,66 @@ All of the following parse to the same intent and are valid:
 # @intent: { entity: 'Order', action: 'checkout', behavior: 'returns 402 payment required on expired card', layer: 'request' }
 # @intent: {entity:"Order",action:"checkout",behavior:"returns 402 payment required on expired card",layer:"request"}
 ```
+
+### 1.1 The accepted JSON language (normative)
+
+The key words **MUST**, **MUST NOT**, **SHOULD** and **MAY** in this section are to be interpreted
+as described in RFC 2119.
+
+Normalization is a *surface-syntax* step and nothing more: it rewrites unquoted keys, single quotes
+and a trailing comma, and it rewrites nothing inside a quoted string. **The result of normalizing an
+annotation payload MUST be a JSON text as defined by RFC 8259.** Everything below is a property of
+that normalized text; a payload already written in strict JSON is normalized to itself, so the rules
+apply to it unchanged.
+
+A conforming validator MUST reject a payload that is not such a JSON text, and MUST report the
+rejection as a parse failure rather than as a schema violation.
+
+**Encoding.** A payload MUST be well-formed UTF-8 (RFC 8259 §8.1). Input that is not well-formed
+UTF-8 is not a JSON text, and a validator MUST NOT repair it — substituting U+FFFD for an
+undecodable byte silently changes the value being validated.
+
+RFC 8259 leaves three points to the implementation. Until now each was settled, de facto, by
+whichever parser a given tool happened to use. They are settled by this document instead. None of
+the three is a change of protocol *behaviour* — see "Why this states rather than narrows" below.
+
+**(a) Surrogate escapes MUST be paired.** A `\uXXXX` escape naming a high surrogate (U+D800–U+DBFF)
+MUST be immediately followed by a `\uXXXX` escape naming a low surrogate (U+DC00–U+DFFF), and a
+low-surrogate escape MUST NOT appear except as the second half of such a pair. An unpaired
+surrogate escape MUST be rejected. RFC 8259 §8.2 makes an unpaired surrogate non-conformant and
+directs implementations aiming at interoperability to reject it; a lone surrogate also has no UTF-8
+encoding, so a payload carrying one cannot cross a transport that requires well-formed UTF-8 —
+which every consumer of this protocol does.
+
+```jsonc
+"\ud83d\ude80"  // valid — a surrogate pair, one astral character (U+1F680)
+"\ud800"        // REJECTED — lone high surrogate
+"\udc00"        // REJECTED — lone low surrogate
+"\ud800\ud800"  // REJECTED — a high surrogate not followed by a low one
+```
+
+**(b) Non-finite literals are not JSON and MUST be rejected.** `NaN`, `Infinity` and `-Infinity`
+are not values in RFC 8259 §6's number grammar. A parser that accepts them accepts a superset of
+JSON; a conforming validator MUST NOT.
+
+**(c) The maximum nesting depth is 100.** RFC 8259 §9 makes depth limits explicitly
+implementation-defined, so this document fixes one. An array or object is one level of nesting; the
+outermost object of an annotation payload is level 1. A payload nested more than **100** levels deep
+MUST be rejected. Any conforming payload is far below this bound — the schema in §3 admits exactly
+two levels — so the limit exists to bound a parser's work, not to constrain an author.
+
+**Duplicate names.** RFC 8259 §4 says the names within an object SHOULD be unique. A payload
+repeating a name is accepted, and the *last* value for that name is the one validated; the name
+keeps the position of its first occurrence for the purposes of diagnostic ordering. Authors SHOULD
+NOT rely on this.
+
+**Why this states rather than narrows.** §3's schema sets `additionalProperties: false` and admits
+only `string` and `array`-of-`string` values, so a non-finite number and a deep nest can never
+occupy a schema-legal slot: refusing them changes which diagnostic is printed, never whether a
+payload passes. A surrogate escape lives inside a string and so is the only one of the three that
+could move a verdict — and the payload it moves is one no consumer could carry. Accepting any of
+the three was never a documented capability of this protocol. Stating them costs no field, no type,
+no constraint and no enum, so it is not a breaking change under §5 and does not bump the version.
 
 ## 2. Fields
 

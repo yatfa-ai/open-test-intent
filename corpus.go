@@ -14,10 +14,10 @@ package opentestintent
 //
 // And examples/ is NOT copied down into cmd/validate-intent/ so a local embed
 // could see it. That would create a second copy of the corpus, free to drift
-// from the one the parity harness, the Ruby oracle and every reviewer actually
-// read — the same objection schema.go raised against a second copy of the
-// contract, and worse here, because a drifted fixture is how a validator starts
-// passing a test nobody wrote.
+// from the one the self-test, the clients and every reviewer actually read —
+// the same objection schema.go raised against a second copy of the contract,
+// and worse here, because a drifted fixture is how a validator starts passing a
+// test nobody wrote.
 //
 // WHY EMBEDDING AT ALL
 // ====================
@@ -43,10 +43,10 @@ package opentestintent
 //
 // A real examples/ tree beside the executable WINS. The embedded copy is used
 // only when that tree is absent, so in a checkout the self-test reads exactly
-// the bytes on disk and its output stays byte-for-byte comparable against the
-// Python reference. See newFixtureSource in cmd/validate-intent/selftest.go for
-// the absent/present rule, and for why the decision is taken once for the whole
-// TREE rather than per glob.
+// the bytes on disk — the fixtures a reviewer can see and edit. See
+// newFixtureSource in cmd/validate-intent/selftest.go for the absent/present
+// rule, and for why the decision is taken once for the whole TREE rather than
+// per glob.
 
 import "embed"
 
@@ -65,11 +65,11 @@ import "embed"
 // one level up. examples/.dotfile-canary.json is carried to make the
 // consequence observable, and corpus_test.go now refuses to run without it.
 //
-// Skipping dotfiles is Python's GLOB rule (`*` never matches one), not a
-// property of the corpus, so it is applied where the reference applies it: in
-// the expansion, by cmd/validate-intent's fixtureSource. Embedding faithfully
+// Skipping dotfiles is the GLOB rule (`*` never matches one), not a property of
+// the corpus, so it is applied where that rule lives: in the expansion, by
+// cmd/validate-intent's fixtureSource. Embedding faithfully
 // and filtering at the glob keeps each rule in the one place it is true — and
-// keeps the canary out of the self-test, which still reports 12/12.
+// keeps the canary out of the self-test, which counts only the fixtures.
 //
 //go:embed all:examples
 var examplesCorpus embed.FS

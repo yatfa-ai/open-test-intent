@@ -20,10 +20,10 @@
 // ====================
 //
 // cmd/validate-intent derives its schema path from its own location
-// (fileio.go's SchemaPath), a faithful port of the Python reference's
-// REPO_ROOT computation. That is correct for a script that always lives at
-// <repo>/bin/, and wrong for a distributable binary, whose entire purpose is
-// to live somewhere else: installed at /usr/local/bin/validate-intent it
+// (fileio.go's SchemaPath). That is correct in a checkout, where the binary is
+// built into bin/ and the schema sits beside it, and wrong for a distributable
+// binary, whose entire purpose is to live somewhere else: installed at
+// /usr/local/bin/validate-intent it
 // resolved its schema to /usr/local/schemas/open-test-intent.v1.json, found
 // nothing, and exited 2 in every working mode.
 //
@@ -67,13 +67,12 @@ func SchemaJSON() []byte {
 //
 // An embedded asset is invisible. Every drift guard in this ecosystem compares a
 // MATCHED PAIR inside ONE checkout — schema_test.go digests the embed against
-// schemas/open-test-intent.v1.json in the Go tree, specguard-rspec's
+// schemas/open-test-intent.v1.json in the Go tree, and specguard-rspec's
 // schema_packaging_spec.rb digests the gem's vendored copy against the gem's own
-// pin, tests/parity/run_ruby_parity.sh compares two files in two checkouts. None
-// of them is looking at an INSTALLED artifact, and none of them can: an installed
+// pin. Neither is looking at an INSTALLED artifact, and neither can: an installed
 // binary has no schemas/ beside it (tests/cross/run_cross_build.sh asserts the
 // absence). So a gem that vendors schema A can be pointed at a binary built when
-// canonical was B, and all three guards stay green while the two halves enforce
+// canonical was B, and both guards stay green while the two halves enforce
 // different contracts.
 //
 // Answering that needs no new pin and no new file — the bytes are already here.

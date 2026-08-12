@@ -23,7 +23,7 @@ package opentestintent
 //  1. The embed directive is RE-POINTED or NARROWED — at a different directory,
 //     or back to a bare `//go:embed examples` that drops dotfiles and
 //     underscore-prefixed names. Then the binary carries a corpus that is not
-//     the one in the tree, and every parity claim about the two producing
+//     the one in the tree, and every claim about the two producing
 //     identical output is void. TestEmbeddedCorpusIsTheOnDiskCorpus compares
 //     them file for file and byte for byte, and names the file that differs.
 //
@@ -42,14 +42,14 @@ package opentestintent
 //     expanded by two CALLERS of one matcher — ExpandFiles walks the disk and
 //     expandEmbedded walks the embed, and both go through this project's own
 //     fnmatch/pySplit/pyJoin. (fs.Glob was rejected precisely so there would
-//     not be a second matcher to keep in agreement with the reference; it
+//     not be a second matcher to keep in agreement with the on-disk one; it
 //     appears nowhere in the sources but the comments saying so.) One matcher
 //     makes agreement likely, not certain — the two callers still apply the
 //     dotfile rule and the isFile filter themselves. That belongs to the
 //     consumer, so it is asserted there —
 //     cmd/validate-intent/selftest_embed_test.go's
 //     TestEmbeddedAndOnDiskExpansionsAgree and
-//     TestBothExpansionsApplyThePythonDotfileRule.
+//     TestBothExpansionsApplyTheDotfileRule.
 //
 // Digests here go through SHA256Hex, the module's one fold, rather than a
 // second local one: see that function's comment for why a difference must mean

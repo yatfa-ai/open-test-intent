@@ -25,19 +25,7 @@ package main
 // the dependency this binary exists to remove from node:alpine / scratch CI
 // images. So the binary has to report it itself.
 //
-// DELIBERATE DIVERGENCE FROM THE REFERENCE
-// ========================================
-//
-// `python3 bin/validate-intent --version` still prints "no file(s) match" and
-// still exits 1. That is not a port bug to be mirrored into oblivion, and it is
-// not a reference bug to be "fixed" here: it is a Go-only surface, added on
-// purpose, and the divergence is written down rather than hidden — see
-// tests/parity/run_parity.sh, excluded group 4 in the file header and the
-// assertions in section 16b ("--version — the excluded surface that
-// SUCCEEDS"). Nothing in the parity corpus invokes `--version`, so no
-// comparison changes.
-//
-// Note also what is NOT here: `--version` is absent from the `usage` block in
+// Note what is NOT here: `--version` is absent from the `usage` block in
 // main.go, and that is a placement decision rather than an omission — see
 // helpTrailer below for where it IS documented, and why it is documented from
 // there.
@@ -77,35 +65,23 @@ import (
 // WHY IT IS NOT A ROW IN `usage`
 // ==============================
 //
-// `usage` is compared byte-for-byte against the reference's USAGE, and not only
-// on the --help path: it is printed on refusals too, three of which are
-// themselves compared (`--source` with no FILE, `--json` in self-test mode,
-// `--source --json` with no FILE). A Go-only row inside that constant would
-// break all four comparisons, not just section 7.
-//
-// The matched edit that would normally restore them — changing
-// bin/validate-intent to say the same thing — is not available here, and this
-// is the part that makes the answer permanent rather than another deferral. The
-// reference has NO --version. It reads the flag as a filename, reports "no
-// file(s) match '--version'" and exits 1. A usage block advertising a flag that
-// answers like that would be a worse falsehood than the one SPGD-279 removed,
-// so the Python text must not gain this row, now or later.
+// `usage` is not printed only by --help: every refusal that cannot name a
+// better next step prints it too (`--source` with no FILE, `--json` in
+// self-test mode, `--source --json` with no FILE). Those are usage errors on
+// the INPUT MODES, and a reader looking at one is being told how to invoke a
+// mode — not being offered two flags that report on the binary itself. Keeping
+// the trailer out of `usage` is what makes each refusal answer the question it
+// was asked.
 //
 // HOW IT STAYS HONEST
 // ===================
 //
-// The divergence is carried in the same shape as the flag itself: declared,
-// separated, and asserted. tests/parity/run_parity.sh's compare_help (section 7)
-// splits the port's --help stdout at the exact byte length of the reference's
-// and holds both halves to an exact expectation — the PREFIX must equal the
-// reference's output byte-for-byte, so the shared texts still can only move
-// together and either one moving alone is still red; the REMAINDER must equal
-// this trailer exactly. It is neither stripped nor pattern-matched, because a
-// stripped trailer is an unchecked one.
+// version_test.go holds `--help` stdout to `usage + helpTrailer` exactly: the
+// trailer is neither stripped nor pattern-matched, because a stripped trailer is
+// an unchecked one.
 //
 // The leading blank line and the trailing newline are part of the constant so
-// that `usage + helpTrailer` reads as one block and the harness's split is a
-// plain byte offset rather than a search.
+// that `usage + helpTrailer` reads as one block.
 //
 // WHAT THE SCHEMA SENTENCE IS CAREFUL NOT TO SAY
 // ==============================================
@@ -128,7 +104,7 @@ import (
 // host this ships to, `--help` is where an adopter finds out that the two digests
 // can differ and which one to ask for.
 const helpTrailer = `
-Go port only — the Python reference has no such flags:
+Reporting on the binary itself:
 
        --version   print this binary's identity (name, version, Go toolchain
                    and target) followed by the SHA-256 of the schema compiled
@@ -165,8 +141,7 @@ const programName = "validate-intent"
 // binary that reports something else entirely.
 //
 // It is a var, and it is deliberately empty by default. An UNSTAMPED build is
-// the normal case — plain `go build`, `go test`, and tests/parity/run_parity.sh
-// (which builds without ldflags at run_parity.sh:189) all take it — so the
+// the normal case — plain `go build` and `go test` both take it — so the
 // unstamped path has to produce a real answer rather than an empty one. That
 // makes the fallback below continuously exercised rather than a one-off claim.
 var Version = ""

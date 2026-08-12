@@ -3,7 +3,7 @@ package main
 // Tests for the two modes slice 3 added — stdin and adopter --json — pinned at
 // the level the differential harness cannot isolate.
 //
-// tests/parity/run_parity.sh proves these byte-identical to python3, which is
+// The self-test does not reach stdin mode at all, which is
 // the real acceptance test. What it cannot do is say WHICH property broke when
 // a document changes: a whole-document diff reports "stdout differs" whether the
 // cause is a miscount, a reordered key or a lost newline. These name the
@@ -75,7 +75,7 @@ func repoSchema(t *testing.T) *Schema {
 	if err != nil {
 		t.Fatalf("reading the shipped schema: %v", err)
 	}
-	root, err := DecodeOrdered(raw)
+	root, err := DecodeJSON(raw)
 	if err != nil {
 		t.Fatalf("decoding the shipped schema: %v", err)
 	}
@@ -95,7 +95,6 @@ func repoSchema(t *testing.T) *Schema {
 //	"line" / "kind"  null, not 0 and not ""
 //	trailing newline exactly one
 func TestRunStdinJSON_documentShape(t *testing.T) {
-	t.Setenv("PYTHONIOENCODING", "")
 	schema := repoSchema(t)
 	valid, err := os.ReadFile(filepath.Join("..", "..", "examples", "unit-order-total.json"))
 	if err != nil {
@@ -168,24 +167,22 @@ func TestRunStdinJSON_readParseSplit(t *testing.T) {
 			wantKind: `"kind": "parse"`, wantAnnotations: `"annotations": 1`,
 		},
 		{
-			// Never decoded: there was no site to examine, so it does not
-			// count — the same rule an unreadable file follows.
-			name: "undecodable under strict", env: "utf-8", input: []byte("\xff\xfe{}"),
+			// Never decoded: PROTOCOL.md §1.1 makes UTF-8 part of what a JSON
+			// text IS, so there was no site to examine and it does not count —
+			// the same rule an unreadable file follows.
+			name: "not well-formed UTF-8", env: "", input: []byte("\xff\xfe{}"),
 			wantKind: `"kind": "read"`, wantAnnotations: `"annotations": 0`,
 		},
 		{
-			// The very same bytes under the default handler decode into lone
-			// surrogates rather than failing, so they reach the parser and are
-			// rejected THERE — a different kind and a different annotation count
-			// for one unchanged input. That is why the handler is reproduced
-			// rather than assumed.
-			name: "the same bytes under surrogateescape", env: "", input: []byte("\xff\xfe{}"),
+			// The distinction has to survive the payload being ALMOST right: a
+			// stream that decodes and then fails on a §1.1 rule is a parse
+			// failure with a site, not a read failure.
+			name: "decodable, refused by §1.1(a)", env: "", input: []byte(`{"a":"\ud800"}`),
 			wantKind: `"kind": "parse"`, wantAnnotations: `"annotations": 1`,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("PYTHONIOENCODING", tc.env)
 			var out string
 			var code int
 			withStdin(t, tc.input, func() {

@@ -13,10 +13,9 @@ package main
 // found beside the executable priority over the embedded copy, so a run can
 // enforce bytes `--version` has never seen.
 //
-// That was not a hypothetical hedge. tests/parity/run_parity.sh's compare_root
-// and assert_pattern_refusal cases work precisely by planting a synthetic schema
-// beside the binary — enforcing a non-embedded schema is the harness's normal
-// operating mode. And nothing downstream could tell: specguard-rspec's
+// That was not a hypothetical hedge. fileio_schema_test.go exercises the
+// validator's unshipped keywords precisely by planting a synthetic schema beside
+// the binary — enforcing a non-embedded schema is a normal operating mode. And nothing downstream could tell: specguard-rspec's
 // Runner#verify! (SPGD-295) compares its vendored schema against `--version`'s
 // digest, a guard a binary whose runs enforce a shadowing on-disk schema
 // satisfies while enforcing something else entirely.
@@ -26,8 +25,8 @@ package main
 // the artifact contingent on a schema being loadable — a binary that could not say
 // what it is on exactly the trees where you most need to ask. So this is a SECOND
 // flag rather than a widened first one, and `--version`'s bytes are unchanged:
-// they are pinned by version_test.go, run_parity.sh section 16b,
-// scripts/build-release.sh check 3, and scripts/install.sh's post-install run.
+// they are pinned by version_test.go, scripts/build-release.sh check 3, and
+// scripts/install.sh's post-install run.
 //
 // WHY IT RUNS THE REAL LOADER
 // ===========================
