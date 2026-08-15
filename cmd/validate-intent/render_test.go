@@ -305,7 +305,10 @@ func TestCharCount(t *testing.T) {
 // a null/bool/number/object value produces a type-mismatch line and the only
 // message that would interpolate the value is dropped as shadowed by it. This
 // binary still has to render them because it decodes before it validates — and
-// for those arms this test is the only thing holding the spelling.
+// for those arms the spelling is held by this repo's own tests, not by anything
+// on the gem's side. How widely varies: blanking the number arm reds
+// TestValidateMessages and TestObjectDuplicateKeyKeepsFirstPosition as well as
+// this test, because both render numbers through it.
 // The spelling is not free to change regardless: `layer: value 'e2e' is not
 // one of [...]` is a line CI logs get diffed on, and the two tools build it
 // from different code.

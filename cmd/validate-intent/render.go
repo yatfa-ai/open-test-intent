@@ -59,8 +59,11 @@ import (
 // hand-copied strings as a proof about two programs is a misreading.
 //
 // Which is exactly why changing the quoting here breaks the agreement
-// SILENTLY: nothing runs this function on the gem's behalf, so a divergence
+// SILENTLY: nothing runs this function on the gem's behalf, so the DISAGREEMENT
 // surfaces at the next re-recording, or in a CI log diff, and nowhere earlier.
+// This repo's own tests are no help there — a quoting change reds TestRenderValue
+// and TestValidateMessages immediately, but that is this binary asserted against
+// itself, and it stays green when the gem is the side that drifted.
 //
 // Escaping: a printable character stays literal, including a non-ASCII one, so
 // a `behavior` sentence keeps its em dash; C0 controls and DEL become visible
