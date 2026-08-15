@@ -89,6 +89,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/yatfa-ai/open-test-intent/tests/cross/internal/report"
 )
 
 // digestHexLen is the width of a SHA-256 digest in the manifest's hex encoding.
@@ -123,23 +125,11 @@ func main() {
 		if flag.NArg() != 0 {
 			usage("-c takes no operands; the manifest names the files itself")
 		}
+		// The 0/1/2 translation lives in report because inspect-artifact makes
+		// the same one, and the scripts that read these codes discriminate all
+		// three.
 		problems, notes, err := verify(*checkAt)
-		if err != nil {
-			// Could not examine. Distinct exit code, so a caller can never read
-			// it as a pass or as a checked-and-wrong verdict.
-			fmt.Fprintf(os.Stderr, "sha256sums: %v\n", err)
-			os.Exit(2)
-		}
-		for _, n := range notes {
-			fmt.Println(n)
-		}
-		if len(problems) > 0 {
-			for _, p := range problems {
-				fmt.Fprintln(os.Stderr, "  FAIL  "+p)
-			}
-			os.Exit(1)
-		}
-		os.Exit(0)
+		report.Exit("sha256sums", problems, notes, err)
 
 	default:
 		usage("give either -o <manifest> <file>... or -c <manifest>")

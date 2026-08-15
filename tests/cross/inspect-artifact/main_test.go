@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yatfa-ai/open-test-intent/tests/cross/internal/crosstest"
 )
 
 // Calibration for the inspector.
@@ -72,17 +74,6 @@ func buildFixture(t *testing.T, goos, goarch string, cgo bool) string {
 	return out
 }
 
-// requireProblem fails unless some problem contains want.
-func requireProblem(t *testing.T, problems []string, want string) {
-	t.Helper()
-	for _, p := range problems {
-		if strings.Contains(p, want) {
-			return
-		}
-	}
-	t.Errorf("no problem mentioned %q; got %#v", want, problems)
-}
-
 func TestCorrectArtifactsProduceNoProblems(t *testing.T) {
 	for _, tc := range []struct{ goos, goarch string }{
 		{"linux", "amd64"},
@@ -113,7 +104,7 @@ func TestWrongArchIsCaughtByTheFileHeaderAndNotOnlyTheBuildStamp(t *testing.T) {
 	// The header assertion is the load-bearing one: it reads what the linker
 	// wrote. The build stamp trips too, but it would trip even if the header
 	// check were gone, so it cannot stand in for this.
-	requireProblem(t, problems, "ELF machine is EM_AARCH64, want EM_X86_64")
+	crosstest.RequireProblem(t, problems, "ELF machine is EM_AARCH64, want EM_X86_64")
 }
 
 func TestWrongOSIsCaughtInBothDirections(t *testing.T) {
@@ -123,7 +114,7 @@ func TestWrongOSIsCaughtInBothDirections(t *testing.T) {
 		if err != nil {
 			t.Fatalf("inspect: %v", err)
 		}
-		requireProblem(t, problems, "this is a Mach-O object")
+		crosstest.RequireProblem(t, problems, "this is a Mach-O object")
 	})
 
 	t.Run("elf offered as darwin", func(t *testing.T) {
@@ -132,7 +123,7 @@ func TestWrongOSIsCaughtInBothDirections(t *testing.T) {
 		if err != nil {
 			t.Fatalf("inspect: %v", err)
 		}
-		requireProblem(t, problems, "this is an ELF object")
+		crosstest.RequireProblem(t, problems, "this is an ELF object")
 	})
 }
 
@@ -156,7 +147,7 @@ func TestCgoIsCaughtEvenWhenItLinksStatically(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect: %v", err)
 	}
-	requireProblem(t, problems, `recorded CGO_ENABLED="1"`)
+	crosstest.RequireProblem(t, problems, `recorded CGO_ENABLED="1"`)
 
 	// The other half: confirm the linkage assertions did NOT fire, which is
 	// what makes the build-stamp check the only thing standing between this

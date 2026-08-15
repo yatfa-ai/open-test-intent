@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/yatfa-ai/open-test-intent/tests/cross/internal/crosstest"
 )
 
 // Calibration for the manifest tool.
@@ -185,17 +187,6 @@ func emitFor(t *testing.T, dir string) string {
 	return manifest
 }
 
-// requireProblem fails unless some problem contains want.
-func requireProblem(t *testing.T, problems []string, want string) {
-	t.Helper()
-	for _, p := range problems {
-		if strings.Contains(p, want) {
-			return
-		}
-	}
-	t.Errorf("no problem mentioned %q; got %#v", want, problems)
-}
-
 func TestEmitWritesTheStandardFormatWithBasenamesOnly(t *testing.T) {
 	dir := stageWith(t, stagedArtifacts)
 
@@ -315,7 +306,7 @@ func TestVerifyCatchesAnArtifactCorruptedAfterEmit(t *testing.T) {
 	if len(problems) == 0 {
 		t.Fatal("a staged artifact was corrupted between digesting and verifying and the manifest check PASSED")
 	}
-	requireProblem(t, problems, "validate-intent-darwin-arm64 does not match SHA256SUMS")
+	crosstest.RequireProblem(t, problems, "validate-intent-darwin-arm64 does not match SHA256SUMS")
 
 	// The three untouched artifacts must not be swept up in it: a check that
 	// failed everything on any change would be no more informative than one that
@@ -349,7 +340,7 @@ func TestVerifyCatchesAListedArtifactThatIsMissing(t *testing.T) {
 		// report half a release as "could not examine".
 		t.Fatalf("a missing listed file was reported as unexaminable: %v", err)
 	}
-	requireProblem(t, problems, "validate-intent-linux-arm64 is listed in SHA256SUMS but is not there")
+	crosstest.RequireProblem(t, problems, "validate-intent-linux-arm64 is listed in SHA256SUMS but is not there")
 }
 
 func TestVerifyCatchesAnArtifactThatNoRowDescribes(t *testing.T) {
@@ -367,7 +358,7 @@ func TestVerifyCatchesAnArtifactThatNoRowDescribes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
-	requireProblem(t, problems, "described by no row in SHA256SUMS: validate-intent-windows-amd64")
+	crosstest.RequireProblem(t, problems, "described by no row in SHA256SUMS: validate-intent-windows-amd64")
 }
 
 // abcRow is a WELL-FORMED row for the file every parse fixture's directory
