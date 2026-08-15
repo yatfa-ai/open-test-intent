@@ -39,11 +39,19 @@ import (
 // The style — single quotes, switching to double only when the string contains
 // a `\'` and no `"` — is THE ECOSYSTEM'S MESSAGE VOCABULARY, not a stylistic
 // preference and not this file's to change. `specguard-rspec` renders the same
-// violations from its own structured fields and its
-// spec/specguard/rspec/message_parity_spec.rb pins the resulting text against
-// this binary's, so that two tools reporting the same verdict describe it the
-// same way — the client-gem spec's criterion 7. Changing the quoting here
-// silently breaks that agreement in a place only a CI log diff would show.
+// violations from its own structured fields, and the two tools spell them the
+// same way BY CONVENTION — the client-gem spec's criterion 7 — not because
+// either suite pins the other. NO SPEC IN EITHER REPO COMPARES THE TWO
+// RENDERERS: the gem's spec/specguard/rspec/message_parity_spec.rb runs four
+// payloads through its own `Schema#violations` and asserts the result against
+// strings hand-copied from this binary, and its header is explicit that
+// reading four hand-copied strings as a proof about two programs is a
+// misreading; the gem's spec/specguard/rspec/validator_backend_spec.rb, the
+// nearest thing to a cross-tool comparison, replays reports RECORDED from this
+// binary through a shell stub and never executes it either. The agreement is
+// therefore held by this comment and its counterpart in the gem, which is
+// exactly why changing the quoting here breaks it silently, in a place only a
+// CI log diff would show.
 //
 // Escaping: a printable character stays literal, including a non-ASCII one, so
 // a `behavior` sentence keeps its em dash; C0 controls and DEL become visible

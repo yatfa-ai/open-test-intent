@@ -288,10 +288,21 @@ func TestCharCount(t *testing.T) {
 	}
 }
 
-// The spelling here is the ecosystem's shared message vocabulary, pinned
-// against specguard-rspec's own renderer by that gem's message_parity_spec.rb.
-// It is not free to change: `layer: value 'e2e' is not one of [...]` is a line
-// CI logs get diffed on, and the two tools build it from different code.
+// The spelling here is the ecosystem's shared message vocabulary — a
+// CONVENTION specguard-rspec's renderer follows too, NOT something a spec pins
+// cross-tool. Nothing covers the cases below from the Ruby side: that gem's
+// message_parity_spec.rb asserts its own `Schema#violations` output against
+// four strings hand-copied from this binary, and its header refuses to be read
+// as a proof about two programs.
+// Most of the cases below are unreachable over there in any event: the
+// annotation schema types every property `string` (or an array of strings), so
+// a null/bool/number/object value produces a type-mismatch line and the only
+// message that would interpolate the value is dropped as shadowed by it. This
+// binary still has to render them because it decodes before it validates.
+// The spelling is not free to change regardless: `layer: value 'e2e' is not
+// one of [...]` is a line CI logs get diffed on, the two tools build it from
+// different code, and nothing but this test and the matching comments keeps
+// them in step.
 func TestRenderValue(t *testing.T) {
 	cases := []struct{ doc, want string }{
 		{`null`, `None`},
