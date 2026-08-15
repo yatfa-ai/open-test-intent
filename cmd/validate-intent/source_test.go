@@ -107,6 +107,61 @@ func TestExtractIntents_stringLiteralDefectIsReproduced(t *testing.T) {
 	}
 }
 
+// TestExtractIntents_payloadSearchIsBoundedByTheNextToken pins the bound in
+// extractFromLine: a malformed @intent: token followed by a well-formed one
+// must NOT adopt its neighbour's object literal.
+//
+// Unbounded, the first token captured the second's literal and reported
+// problem-free, and the resume position then jumped past the real annotation —
+// a false green carrying an intent its author never wrote, plus a silent skip.
+// The gem's scanner bounds the same search; this is the port of that guard.
+//
+// The Raw assertion is the sharp end and is deliberately separate from the
+// "the site failed" one: a fix that declined the line for some OTHER reason
+// would satisfy the first assertion while still having read the neighbour's
+// payload. Revert the bound and it is the malformed[0].Raw check — via the
+// Problem check immediately above it — that dies first.
+func TestExtractIntents_payloadSearchIsBoundedByTheNextToken(t *testing.T) {
+	const neighbour = `{"entity":"Order","action":"ship","behavior":"ships the order to the customer","layer":"unit"}`
+
+	malformed := ExtractIntents(
+		"# @intent: (entity: Order) - superseded by @intent: " + neighbour + "\n")
+
+	// LINE ABANDONMENT, PRESERVED. The no-payload path returns rather than
+	// resuming, so the line yields ONE site, not one per token. The gem
+	// declined to change this and so does the port; continuing the scan past
+	// the token would be a behaviour change riding along with a bug fix.
+	if len(malformed) != 1 {
+		t.Fatalf("expected exactly 1 site for the two-token line, got %d (%+v)", len(malformed), malformed)
+	}
+	if malformed[0].Problem != "no '{...}' object literal follows the @intent: token" {
+		t.Errorf("the malformed token did not take the no-payload path: problem=%q raw=%q",
+			malformed[0].Problem, malformed[0].Raw)
+	}
+	// THE SHARP END: the neighbour's literal must never surface as any site's
+	// payload. Asserting only that the line fails would pass on a fix that
+	// failed it for the wrong reason.
+	if malformed[0].Raw != "" {
+		t.Errorf("the malformed token adopted a payload it does not own: %q", malformed[0].Raw)
+	}
+
+	// POSITIVE CONTROL: the bound is INERT when each token owns the brace that
+	// follows it. Without this, a "fix" that refused every line carrying two
+	// tokens would read as a pass.
+	const a = `{"entity":"Order","action":"create","behavior":"creates an order","layer":"unit"}`
+	const b = `{"entity":"Order","action":"ship","behavior":"ships an order","layer":"unit"}`
+	wellFormed := ExtractIntents("# @intent: " + a + " and @intent: " + b + "\n")
+
+	if len(wellFormed) != 2 {
+		t.Fatalf("positive control: expected 2 sites for two well-formed tokens, got %d (%+v)",
+			len(wellFormed), wellFormed)
+	}
+	if wellFormed[0].Raw != a || wellFormed[1].Raw != b {
+		t.Errorf("positive control: the bound changed which brace a token owns\n got[0]: %s\n got[1]: %s",
+			wellFormed[0].Raw, wellFormed[1].Raw)
+	}
+}
+
 // --------------------------------------------------------------------------- //
 // scanString / scanObject
 // --------------------------------------------------------------------------- //

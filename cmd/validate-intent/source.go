@@ -159,8 +159,35 @@ func extractFromLine(line []rune, lineNo int) []IntentSite {
 		if tokenAt == -1 {
 			return sites
 		}
+		// The payload search is BOUNDED BY THE NEXT @intent: TOKEN on the line.
+		//
+		// Unbounded, it reads to end of line, so a malformed token followed by a
+		// well-formed one adopts its neighbour's object literal: the typo'd token
+		// is reported as VALID carrying an intent its author never wrote, and
+		// because `pos` then resumes past the captured payload the real
+		// annotation is swallowed on the way. One false green, one silent skip,
+		// from a single unbounded read. This tool exists to report a bad
+		// annotation loudly — a false red costs a reader one glance, a false
+		// green costs them the guarantee — so a line that is genuinely ambiguous
+		// about which token owns the literal takes the no-payload path instead of
+		// guessing.
+		//
+		// It also keeps the two backends in agreement: the gem's scanner bounds
+		// the same search (Specguard::RSpec::AnnotationScanner#payload_brace), and
+		// this binary is the canonical validator the gem can be pointed at, so an
+		// unbounded read here means the same file gets two verdicts depending on
+		// which backend the user opted into — with the opted-in one permissive.
+		//
+		// The bound can only ever SHRINK the search. It never picks a different
+		// brace, only declines one, so every line whose token owns the brace that
+		// follows it is unaffected.
+		//
+		// runeIndex, not strings.Index: this is a code-point offset like every
+		// other index in this file, and intentToken is ASCII so len() is the same
+		// count in both — matching what the braceAt search below already relies on.
+		nextToken := runeIndex(line, intentToken, tokenAt+len(intentToken))
 		braceAt := runeIndex(line, "{", tokenAt+len(intentToken))
-		if braceAt == -1 {
+		if braceAt == -1 || (nextToken != -1 && braceAt > nextToken) {
 			return append(sites, IntentSite{Line: lineNo,
 				Problem: "no '{...}' object literal follows the @intent: token"})
 		}
