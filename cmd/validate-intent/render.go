@@ -40,18 +40,27 @@ import (
 // a `\'` and no `"` — is THE ECOSYSTEM'S MESSAGE VOCABULARY, not a stylistic
 // preference and not this file's to change. `specguard-rspec` renders the same
 // violations from its own structured fields, and the two tools spell them the
-// same way BY CONVENTION — the client-gem spec's criterion 7 — not because
-// either suite pins the other. NO SPEC IN EITHER REPO COMPARES THE TWO
-// RENDERERS: the gem's spec/specguard/rspec/message_parity_spec.rb runs four
-// payloads through its own `Schema#violations` and asserts the result against
-// strings hand-copied from this binary, and its header is explicit that
-// reading four hand-copied strings as a proof about two programs is a
-// misreading; the gem's spec/specguard/rspec/validator_backend_spec.rb, the
-// nearest thing to a cross-tool comparison, replays reports RECORDED from this
-// binary through a shell stub and never executes it either. The agreement is
-// therefore held by this comment and its counterpart in the gem, which is
-// exactly why changing the quoting here breaks it silently, in a place only a
-// CI log diff would show.
+// same way BY CONVENTION — the client-gem spec's criterion 7 — rather than
+// because either program is generated from the other.
+//
+// The convention IS pinned, but in ONE DIRECTION ONLY, and it is not the
+// direction that protects an edit made here. The gem's
+// spec/specguard/rspec/validator_backend_spec.rb asserts its own rendered
+// stdout byte-for-byte against reports RECORDED from this binary and committed
+// as its spec/fixtures/validator/source-corpus.json — a fixture carrying this
+// binary's rendered text verbatim, `layer: value 'model' is not one of
+// ['unit', ...]` included. A change on the GEM's side of that comparison
+// therefore goes red at once, while a change HERE goes red only once someone
+// re-records that corpus. No spec in the gem executes this binary: that one
+// replays the recorded stdout through a four-line shell stub, and the gem's
+// spec/specguard/rspec/message_parity_spec.rb pins less than its name suggests
+// — four payloads through the gem's own `Schema#violations`, asserted against
+// strings hand-copied from here — with a header explicit that reading four
+// hand-copied strings as a proof about two programs is a misreading.
+//
+// Which is exactly why changing the quoting here breaks the agreement
+// SILENTLY: nothing runs this function on the gem's behalf, so a divergence
+// surfaces at the next re-recording, or in a CI log diff, and nowhere earlier.
 //
 // Escaping: a printable character stays literal, including a non-ASCII one, so
 // a `behavior` sentence keeps its em dash; C0 controls and DEL become visible
