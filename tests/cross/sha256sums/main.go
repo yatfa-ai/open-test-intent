@@ -10,7 +10,7 @@
 // resulting binary says which bytes went in", and the remedy it ratified is a
 // pinned digest. A released binary is the same shape and strictly more exposed
 // — it leaves the build host and travels over the network. The release script's
-// three checks all run on the build host and leave nothing behind; the manifest
+// checks all run on the build host and leave nothing behind; the manifest
 // is what carries their subject across.
 //
 // It is an IDENTITY and INTEGRITY record, not a signature. It says "these are
