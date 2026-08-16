@@ -54,7 +54,7 @@ func writeSchema(t *testing.T, dir, content string) string {
 	return path
 }
 
-// mustDecode lives in port_test.go — this file reuses it rather than keeping a
+// mustDecode lives in validator_test.go — this file reuses it rather than keeping a
 // second decoder helper that could drift from it.
 
 // ABSENT — the release-asset case, and the only behaviour this slice changes.

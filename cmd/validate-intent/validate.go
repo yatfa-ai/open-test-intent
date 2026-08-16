@@ -3,11 +3,11 @@ package main
 // The draft-07 subset the OpenTestIntent schema uses.
 //
 // The keywords implemented here are the ones schemas/open-test-intent.v1.json
-// declares, plus the near neighbours an adopter's own schema is likely to reach
-// for (`pattern`, `items`, numeric and array bounds). A keyword this file does
-// not know is IGNORED, which is what draft-07 requires — but note that ignoring
-// a keyword means not enforcing it, so anything added to the shipped schema
-// needs a branch here on the same commit.
+// declares (`items` among them), plus the near neighbours an adopter's own
+// schema is likely to reach for (`pattern`, numeric and array bounds). A
+// keyword this file does not know is IGNORED, which is what draft-07 requires —
+// but note that ignoring a keyword means not enforcing it, so anything added to
+// the shipped schema needs a branch here on the same commit.
 //
 // The error strings and their ORDER are part of the report a human reads, and
 // the order is the document's: see Object.

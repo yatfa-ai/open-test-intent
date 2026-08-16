@@ -162,7 +162,7 @@ type SchemaSource struct {
 // The obvious fix — embed the schema and stop reading disk — is WRONG here, and
 // the reason is worth stating because it is invisible from this file.
 // The validator implements keywords the shipped schema does not declare
-// (`pattern`, numeric bounds, `items`), and the only way to exercise them is to
+// (`pattern`, numeric bounds), and the only way to exercise them is to
 // point the binary at a schema that DOES declare them — which fileio_schema_test.go
 // does by planting one in a throwaway tree. A pure embed would make the binary
 // ignore every such schema while the tests went on reporting green: coverage

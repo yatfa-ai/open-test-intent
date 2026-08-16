@@ -2,7 +2,7 @@ package main
 
 // Coverage for the matcher's DIRECTORY WALK.
 //
-// port_test.go covers matchName, which decides one name against one pattern.
+// validator_test.go covers matchName, which decides one name against one pattern.
 // Everything here is about the walk around it, and the two are worth separating
 // because a matcher that is right about names can still be wrong about which
 // names it is ever shown — and that failure is silent. A `**` that quietly
