@@ -172,8 +172,8 @@ func (s fixtureSource) expand(pattern string) []string {
 //     matches one. The embed carries dotfiles (`all:` is what makes it a mirror
 //     of the tree), so this is the layer that has to drop them, exactly as on
 //     disk.
-//   - ExpandFiles' isFile filter, so `examples/sources/*` yields the four
-//     source files and not the `invalid` directory entry.
+//   - ExpandFiles' isFile filter, so `examples/sources/*` yields the source
+//     files and not the `invalid` directory entry.
 //   - ExpandFiles' sort, over the same names.
 //
 // Only the ONE-directory shapes the four patterns use are handled — no `**`,
