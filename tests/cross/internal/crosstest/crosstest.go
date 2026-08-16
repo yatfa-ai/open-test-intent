@@ -81,9 +81,9 @@ func SetDiff(want, got []string) (missing, extra []string) {
 // path relative to the repository root, and returns the "goos/goarch" entries
 // it names.
 //
-// It is ShellList pinned to the one block name that has more than one caller;
-// the fatal-not-skip contract described there is what makes the agreement checks
-// built on it able to fail at all.
+// It is ShellList pinned to the TARGETS block name; the fatal-not-skip contract
+// described there is what makes the agreement checks built on it able to fail at
+// all.
 func ShellTargets(t *testing.T, rel string) []string {
 	t.Helper()
 	return ShellList(t, rel, "TARGETS")
@@ -96,10 +96,11 @@ func ShellTargets(t *testing.T, rel string) []string {
 // Every failure here is a t.Fatal rather than a skip or an empty result, because
 // the whole value of the agreement checks built on it is that they FAIL when the
 // lists diverge — and a parser that quietly returned nothing would make every
-// empty list agree perfectly while the scripts disagreed. That applies to each
-// of the four ways this can go wrong: the block is missing, there is more than
-// one of it, it is empty, or it is never closed. A "no block found" that skipped
-// would read as agreement to anyone glancing at the run.
+// empty list agree perfectly while the scripts disagreed. That applies to every
+// way this can go wrong: the file cannot be read, the block is missing, there is
+// more than one of it, it is empty, an entry is not a double-quoted value, or it
+// is never closed. A "no block found" that skipped would read as agreement to
+// anyone glancing at the run.
 //
 // Comments and blank lines inside the block are skipped rather than parsed, so a
 // list may be annotated per entry without the annotation becoming an entry.
