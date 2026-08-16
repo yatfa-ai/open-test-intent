@@ -2182,9 +2182,12 @@ func pinnedSelfTestTally(t *testing.T) string {
 // The subset is chosen so all four of the self-test's globs still match
 // something. runSelfTest refuses an EMPTY set outright and exits 1 — a real
 // defect, but one the bare run's exit status already catches, and not the one
-// this test is for. Dropping three of the four examples/invalid/*.json leaves
-// every glob populated, so the artifact exits 0 and simply counts lower, with
-// its ability to REJECT very nearly unexercised.
+// this test is for. Keeping exactly ONE of the examples/invalid/*.json and
+// dropping the rest leaves every glob populated, so the artifact exits 0 and
+// simply counts lower, with its ability to REJECT very nearly unexercised.
+// Stated as "keep one" rather than as a count of what is dropped: the corpus
+// grows, and a sentence naming how many are dropped is stale the next time it
+// does.
 func thinTheEmbeddedCorpus(t *testing.T, corpus string) {
 	t.Helper()
 

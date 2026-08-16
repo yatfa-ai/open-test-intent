@@ -115,14 +115,28 @@ TARGETS=(
   "darwin/arm64"
 )
 
-# Fixtures for the installed-layout smoke test. These already exist and are the
-# same ones the binary's own self-test uses.
+# Fixtures for the installed-layout smoke test. BAD_FIXTURES is the WHOLE of
+# examples/invalid/*.json — the same set the binary's own self-test expands and
+# requires to be rejected (cmd/validate-intent/selftest.go's
+# invalidExamplesGlob) — and tests/cross/corpus's TestTheCorpusListsAgree holds
+# it to that. It said so here for a long time while naming four of seven: the
+# preflight below walks the LIST and asks the disk, so the fixtures that were
+# added to the tree and never to the list were invisible to it, and this
+# sentence was the only thing claiming otherwise.
+#
+# GOOD_FIXTURE is deliberately ONE of the examples/*.json the self-test accepts
+# rather than all of them, and is not held to a glob: this section's job on the
+# accepting side is to tell "the embedded schema loaded" from "it did not", and
+# one accepted document settles that.
 GOOD_FIXTURE="examples/unit-order-total.json"
 BAD_FIXTURES=(
   "examples/invalid/bad-layer.json"
   "examples/invalid/missing-required.json"
+  "examples/invalid/nesting-too-deep.json"
+  "examples/invalid/non-finite-number.json"
   "examples/invalid/short-behavior.json"
   "examples/invalid/typo-extra-property.json"
+  "examples/invalid/unpaired-surrogate-escape.json"
 )
 
 WORK="$(mktemp -d)"
@@ -162,8 +176,11 @@ bad()  { failed=$((failed + 1)); red   "  FAIL  $*"; }
 # names still read as written.
 #
 # The lists above are character-identical to the ones restated in
-# scripts/build-release.sh, which guards them the same way; nothing enforces
-# that, and drift is silent in both directions.
+# scripts/build-release.sh, which guards them the same way. That is enforced —
+# tests/cross/corpus's TestTheCorpusListsAgree compares the two blocks against
+# each other AND against examples/invalid/*.json on disk, which is the direction
+# this loop cannot see: it walks the list and asks the disk, so a fixture ADDED
+# to the tree and not to the list is invisible here.
 for fixture in "$GOOD_FIXTURE" "${BAD_FIXTURES[@]}"; do
   if [ ! -f "$REPO_ROOT/$fixture" ]; then
     red "error: $fixture is named in this script's corpus and is not in the checkout."
