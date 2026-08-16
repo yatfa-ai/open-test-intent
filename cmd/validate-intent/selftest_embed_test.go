@@ -21,10 +21,10 @@ package main
 // And one that could be staged from outside but must not be: a corpus name that
 // the self-test's own globs would pick up differently on the two sides. Adding
 // a real `_scratch.json` to examples/ would test the dotfile rule beautifully
-// and would also make the corpus thirteen fixtures, so that case is staged
-// against a temporary tree and an fstest.MapFS instead — see
-// TestBothExpansionsApplyTheDotfileRule, and examples/.dotfile-canary.json
-// for the half the corpus CAN carry.
+// and would also grow the corpus by one, so the enforced tally would stop
+// matching. That case is staged against a temporary tree and an fstest.MapFS
+// instead — see TestBothExpansionsApplyTheDotfileRule, and
+// examples/.dotfile-canary.json for the half the corpus CAN carry.
 
 import (
 	"io/fs"
@@ -83,10 +83,10 @@ var allPatterns = []string{
 // Both sides go through this package's own fnmatch by construction (see
 // expandEmbedded), so this asserts that construction rather than hoping for it.
 //
-// What it CANNOT assert is a rule the corpus's own names never trip. It compares
-// the corpus's fixtures and one canary, so it sees the rules those names
-// happen to exercise and no others — it is a check that the shipped corpus
-// expands the same way twice, not a statement of the rule.
+// What it CANNOT assert is a rule the corpus's own names never trip. It
+// compares the corpus's fixtures and one canary, so it sees the rules those
+// names happen to exercise and no others — it is a check that the shipped
+// corpus expands the same way twice, not a statement of the rule.
 // TestBothExpansionsApplyTheDotfileRule states the rule, on names staged
 // to trip it.
 func TestEmbeddedAndOnDiskExpansionsAgree(t *testing.T) {
