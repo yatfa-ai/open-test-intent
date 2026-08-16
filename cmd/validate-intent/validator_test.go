@@ -6,8 +6,8 @@ package main
 // against PROTOCOL.md, the schema and the shipped fixtures. What it CANNOT
 // reach is anything the shipped schema does not declare (number typing, the
 // numeric and array bounds), the path primitives at their edges, and the
-// invariants that keep error ORDER deterministic — because a corpus of four
-// valid and four invalid fixtures exercises none of them. Those are here.
+// invariants that keep error ORDER deterministic — because the shipped corpus
+// of valid and invalid fixtures exercises none of them. Those are here.
 
 import (
 	"strings"
