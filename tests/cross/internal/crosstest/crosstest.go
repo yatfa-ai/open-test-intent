@@ -81,11 +81,29 @@ func SetDiff(want, got []string) (missing, extra []string) {
 // path relative to the repository root, and returns the "goos/goarch" entries
 // it names.
 //
+// It is ShellList pinned to the one block name that has more than one caller;
+// the fatal-not-skip contract described there is what makes the agreement checks
+// built on it able to fail at all.
+func ShellTargets(t *testing.T, rel string) []string {
+	t.Helper()
+	return ShellList(t, rel, "TARGETS")
+}
+
+// ShellList reads a `<name>=( ... )` array block out of a shell script, given a
+// path relative to the repository root, and returns the double-quoted entries it
+// names, in the order the script writes them.
+//
 // Every failure here is a t.Fatal rather than a skip or an empty result, because
 // the whole value of the agreement checks built on it is that they FAIL when the
 // lists diverge — and a parser that quietly returned nothing would make every
-// empty list agree perfectly while the scripts disagreed.
-func ShellTargets(t *testing.T, rel string) []string {
+// empty list agree perfectly while the scripts disagreed. That applies to each
+// of the four ways this can go wrong: the block is missing, there is more than
+// one of it, it is empty, or it is never closed. A "no block found" that skipped
+// would read as agreement to anyone glancing at the run.
+//
+// Comments and blank lines inside the block are skipped rather than parsed, so a
+// list may be annotated per entry without the annotation becoming an entry.
+func ShellList(t *testing.T, rel, blockName string) []string {
 	t.Helper()
 	path := filepath.Join(RepoRoot(t), rel)
 	data, err := os.ReadFile(path)
@@ -93,38 +111,78 @@ func ShellTargets(t *testing.T, rel string) []string {
 		t.Fatalf("reading %s: %v", rel, err)
 	}
 
+	opener := blockName + "=("
 	lines := strings.Split(string(data), "\n")
 	start := -1
 	for i, line := range lines {
-		if strings.TrimSpace(line) != "TARGETS=(" {
+		if strings.TrimSpace(line) != opener {
 			continue
 		}
 		if start != -1 {
-			t.Fatalf("%s holds more than one `TARGETS=(` block, so which one describes the release is a guess", rel)
+			t.Fatalf("%s holds more than one `%s` block, so which one this test compares is a guess", rel, opener)
 		}
 		start = i
 	}
 	if start == -1 {
-		t.Fatalf("%s holds no `TARGETS=(` block. This test can no longer see the list it compares, which is not the same as the lists agreeing — re-point it rather than deleting it", rel)
+		t.Fatalf("%s holds no `%s` block. This test can no longer see the list it compares, which is not the same as the lists agreeing — re-point it rather than deleting it", rel, opener)
 	}
 
-	var targets []string
+	var entries []string
 	for _, line := range lines[start+1:] {
 		entry := strings.TrimSpace(line)
 		if entry == ")" {
-			if len(targets) == 0 {
-				t.Fatalf("%s: the TARGETS block is empty", rel)
+			if len(entries) == 0 {
+				t.Fatalf("%s: the %s block is empty", rel, blockName)
 			}
-			return targets
+			return entries
 		}
 		if entry == "" || strings.HasPrefix(entry, "#") {
 			continue
 		}
 		if len(entry) < 3 || !strings.HasPrefix(entry, `"`) || !strings.HasSuffix(entry, `"`) {
-			t.Fatalf("%s: cannot read %q as a target entry; this test parses one quoted \"goos/goarch\" per line", rel, entry)
+			t.Fatalf("%s: cannot read %q as an entry of the %s block; this test parses one double-quoted value per line", rel, entry, blockName)
 		}
-		targets = append(targets, strings.Trim(entry, `"`))
+		entries = append(entries, strings.Trim(entry, `"`))
 	}
-	t.Fatalf("%s: the `TARGETS=(` block is never closed", rel)
+	t.Fatalf("%s: the `%s` block is never closed", rel, opener)
 	return nil
+}
+
+// ShellScalar reads a `<name>="value"` assignment out of a shell script, given a
+// path relative to the repository root, and returns the value.
+//
+// The sibling of ShellList for the lists that are one element long, and it
+// carries the same fatal-not-skip contract for the same reason: a scalar this
+// parser could not find would otherwise compare equal to another it also could
+// not find. Only the double-quoted form is accepted — the scripts write it that
+// way, and guessing at unquoted or single-quoted spellings would mean guessing
+// at where the value ends.
+func ShellScalar(t *testing.T, rel, name string) string {
+	t.Helper()
+	path := filepath.Join(RepoRoot(t), rel)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", rel, err)
+	}
+
+	prefix := name + `="`
+	value := ""
+	found := false
+	for _, line := range strings.Split(string(data), "\n") {
+		assignment := strings.TrimSpace(line)
+		if !strings.HasPrefix(assignment, prefix) || !strings.HasSuffix(assignment, `"`) {
+			continue
+		}
+		if found {
+			t.Fatalf("%s assigns `%s` more than once, so which one this test compares is a guess", rel, name)
+		}
+		value, found = strings.TrimSuffix(strings.TrimPrefix(assignment, prefix), `"`), true
+	}
+	if !found {
+		t.Fatalf("%s holds no `%s=\"...\"` assignment. This test can no longer see the value it compares, which is not the same as the values agreeing — re-point it rather than deleting it", rel, name)
+	}
+	if value == "" {
+		t.Fatalf("%s: `%s` is assigned the empty string", rel, name)
+	}
+	return value
 }

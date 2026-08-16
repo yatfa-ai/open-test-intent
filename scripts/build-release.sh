@@ -225,8 +225,11 @@ GOOD_FIXTURE="examples/unit-order-total.json"
 BAD_FIXTURES=(
   "examples/invalid/bad-layer.json"
   "examples/invalid/missing-required.json"
+  "examples/invalid/nesting-too-deep.json"
+  "examples/invalid/non-finite-number.json"
   "examples/invalid/short-behavior.json"
   "examples/invalid/typo-extra-property.json"
+  "examples/invalid/unpaired-surrogate-escape.json"
 )
 
 # --source is carried too, because it reaches the schema by a different route
@@ -618,12 +621,14 @@ fi
 # promoted on the strength of an error message about a missing path.
 #
 # The lists above are restated from tests/cross/run_cross_build.sh rather than
-# sourced, for reasons given there; the cost of that copy is drift, and drift
-# here is silent in BOTH directions. Asserting the corpus is present before
-# asserting anything about its verdicts keeps "could not check" distinguishable
-# from "checked and clean". The ${...#*:} strips the "<want>:" prefix so one
-# loop covers all three lists. Deliberately before the cd, so $REPO_ROOT-
-# relative names still read as written.
+# sourced, for reasons given there; the cost of that copy is drift, which
+# tests/cross/corpus's TestTheCorpusListsAgree closes in both directions —
+# including the one this loop is structurally blind to, since it walks the list
+# and asks the disk rather than the other way round. Asserting the corpus is
+# present before asserting anything about its verdicts keeps "could not check"
+# distinguishable from "checked and clean". The ${...#*:} strips the "<want>:"
+# prefix so one loop covers all three lists. Deliberately before the cd, so
+# $REPO_ROOT-relative names still read as written.
 for fixture in "$GOOD_FIXTURE" "${BAD_FIXTURES[@]}" "${SOURCE_FIXTURES[@]#*:}"; do
   [ -f "$REPO_ROOT/$fixture" ] || die "$fixture is named in this script's corpus and is not
        in the checkout. The artifact exits 1 for a path it cannot find, which an
