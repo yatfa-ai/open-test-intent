@@ -66,6 +66,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yatfa-ai/open-test-intent/tests/cross/internal/crosstest"
 )
 
 // manifestName is the file install.sh verifies against — the same constant
@@ -98,19 +100,9 @@ func hostArtifact() string {
 	return fmt.Sprintf("%s-%s-%s", installedName, runtime.GOOS, runtime.GOARCH)
 }
 
-// repoRoot is three levels up from tests/cross/install, where go test runs.
-func repoRoot(t *testing.T) string {
-	t.Helper()
-	root, err := filepath.Abs(filepath.Join("..", "..", ".."))
-	if err != nil {
-		t.Fatalf("could not resolve the repository root: %v", err)
-	}
-	return root
-}
-
 func installScript(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(repoRoot(t), "scripts", "install.sh")
+	path := filepath.Join(crosstest.RepoRoot(t), "scripts", "install.sh")
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("scripts/install.sh is not there: %v", err)
@@ -1428,7 +1420,7 @@ func runUnder(t *testing.T, shell []string, path string, stdin string, args ...s
 	}
 
 	cmd := exec.CommandContext(ctx, shell[0], argv...)
-	cmd.Dir = repoRoot(t)
+	cmd.Dir = crosstest.RepoRoot(t)
 	cmd.Env = append(os.Environ(), "no_proxy=*", "NO_PROXY=*")
 	if path != "" {
 		cmd.Env = append(cmd.Env, "PATH="+path)
@@ -1823,65 +1815,23 @@ func TestADirectoryOnTheInstallNameIsRefused(t *testing.T) {
 
 // --- the lists and defaults that have to agree ------------------------------
 
-// shellTargets reads the `TARGETS=( ... )` block out of a shell script.
-//
-// Every failure here is a t.Fatal rather than a skip or an empty result, because
-// the whole value of TestTheFourTargetListsAgree is that it FAILS when the lists
-// diverge — and a parser that quietly returned nothing would make four empty
-// lists agree perfectly while the scripts disagreed.
-func shellTargets(t *testing.T, rel string) []string {
-	t.Helper()
-	path := filepath.Join(repoRoot(t), rel)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("reading %s: %v", rel, err)
-	}
-
-	lines := strings.Split(string(data), "\n")
-	start := -1
-	for i, line := range lines {
-		if strings.TrimSpace(line) != "TARGETS=(" {
-			continue
-		}
-		if start != -1 {
-			t.Fatalf("%s holds more than one `TARGETS=(` block, so which one describes the release is a guess", rel)
-		}
-		start = i
-	}
-	if start == -1 {
-		t.Fatalf("%s holds no `TARGETS=(` block. This test can no longer see the list it compares, which is not the same as the lists agreeing — re-point it rather than deleting it", rel)
-	}
-
-	var targets []string
-	for _, line := range lines[start+1:] {
-		entry := strings.TrimSpace(line)
-		if entry == ")" {
-			if len(targets) == 0 {
-				t.Fatalf("%s: the TARGETS block is empty", rel)
-			}
-			return targets
-		}
-		if entry == "" || strings.HasPrefix(entry, "#") {
-			continue
-		}
-		if len(entry) < 3 || !strings.HasPrefix(entry, `"`) || !strings.HasSuffix(entry, `"`) {
-			t.Fatalf("%s: cannot read %q as a target entry; this test parses one quoted \"goos/goarch\" per line", rel, entry)
-		}
-		targets = append(targets, strings.Trim(entry, `"`))
-	}
-	t.Fatalf("%s: the `TARGETS=(` block is never closed", rel)
-	return nil
-}
-
 // TestTheFourTargetListsAgree is the check that makes the duplication of TARGETS
 // safe to have.
 //
-// The list of release targets is written out FOUR times in this repository:
-// scripts/build-release.sh builds them, scripts/install.sh maps a host onto one
-// of them, tests/cross/run_cross_build.sh walks them, and this file names the
-// artifacts they produce. install.sh cannot read the producer's copy at runtime
-// — it runs on a host with no clone, which is the entire premise of the script —
-// so the copy is unavoidable, and only an agreement check makes it honest.
+// FOUR of the repository's copies of the release target list are the ones this
+// test joins: scripts/build-release.sh builds them, scripts/install.sh maps a
+// host onto one of them, tests/cross/run_cross_build.sh walks them, and this
+// file names the artifacts they produce. install.sh cannot read the producer's
+// copy at runtime — it runs on a host with no clone, which is the entire premise
+// of the script — so the copy is unavoidable, and only an agreement check makes
+// it honest.
+//
+// They are not the only copies. tests/cross/sha256sums/main_test.go writes the
+// list out three more times, with three DIFFERENT order semantics, and those are
+// joined to the same authority by TestTheseThreeListsAgreeWithBuildRelease over
+// there rather than here — a set-wise check in this file would silently accept
+// the reordering that makes that file's sortedness assertion vacuous. This test
+// deliberately compares four lists, not seven.
 //
 // Nothing else in the suite can catch a divergence. Every other test here runs
 // on ONE machine and therefore only ever exercises the single target that
@@ -1912,14 +1862,14 @@ func TestTheFourTargetListsAgree(t *testing.T) {
 	// build-release.sh is the authority: it is the script that decides what a
 	// release contains. Everything else is a consumer of that decision.
 	const authorityName = "scripts/build-release.sh"
-	authority := shellTargets(t, authorityName)
+	authority := crosstest.ShellTargets(t, authorityName)
 
 	for _, other := range []struct {
 		name    string
 		targets []string
 	}{
-		{"scripts/install.sh", shellTargets(t, "scripts/install.sh")},
-		{"tests/cross/run_cross_build.sh", shellTargets(t, "tests/cross/run_cross_build.sh")},
+		{"scripts/install.sh", crosstest.ShellTargets(t, "scripts/install.sh")},
+		{"tests/cross/run_cross_build.sh", crosstest.ShellTargets(t, "tests/cross/run_cross_build.sh")},
 		{"tests/cross/install/install_test.go's releaseArtifacts", fromThisFile},
 	} {
 		if missing, extra := setDiff(authority, other.targets); len(missing) > 0 || len(extra) > 0 {
@@ -2081,7 +2031,7 @@ func TestAgainstARealReleaseBuild(t *testing.T) {
 	}
 	requireSupportedHost(t)
 
-	root := repoRoot(t)
+	root := crosstest.RepoRoot(t)
 	dist := filepath.Join(t.TempDir(), "release")
 
 	build := exec.Command(filepath.Join(root, "scripts", "build-release.sh"), "1.4.0")
@@ -2167,7 +2117,7 @@ func TestReleaseGateRefusesAThinnedEmbed(t *testing.T) {
 	// this test quietly comparing against a string nothing emits.
 	fullTally := pinnedSelfTestTally(t)
 
-	tree := stageTreeForBuild(t, repoRoot(t))
+	tree := stageTreeForBuild(t, crosstest.RepoRoot(t))
 	thinTheEmbeddedCorpus(t, filepath.Join(tree, "corpus.go"))
 
 	dist := filepath.Join(t.TempDir(), "release")
@@ -2233,7 +2183,7 @@ func TestReleaseGateRefusesAThinnedEmbed(t *testing.T) {
 func pinnedSelfTestTally(t *testing.T) string {
 	t.Helper()
 
-	script, err := os.ReadFile(filepath.Join(repoRoot(t), "scripts", "build-release.sh"))
+	script, err := os.ReadFile(filepath.Join(crosstest.RepoRoot(t), "scripts", "build-release.sh"))
 	if err != nil {
 		t.Fatalf("reading scripts/build-release.sh: %v", err)
 	}
@@ -2395,7 +2345,7 @@ func stageTreeForBuild(t *testing.T, root string) string {
 // pairing that was false: naming the release binaries and marking them as
 // still-to-come IN THE SAME SENTENCE. Saying they shipped, in any words, passes.
 func TestTheReadmeDoesNotCallShippedPackagingUnfinished(t *testing.T) {
-	root := repoRoot(t)
+	root := crosstest.RepoRoot(t)
 
 	// The gate. These are the two things the stale sentence named as outstanding,
 	// so their presence is what makes the claim false — and their absence is what
