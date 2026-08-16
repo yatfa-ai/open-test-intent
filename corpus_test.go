@@ -2,7 +2,7 @@ package opentestintent
 
 // The guard that lets the embedded corpus be trusted.
 //
-// It is schema_test.go's argument applied to twelve files instead of one: an
+// It is schema_test.go's argument applied to a tree of files instead of one: an
 // embedded asset is invisible, and nothing about reading the resulting binary
 // says which bytes went in. What can go wrong here is narrower than for the
 // schema, and worth naming precisely, because it decides what this file checks.

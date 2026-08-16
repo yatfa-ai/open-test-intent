@@ -119,7 +119,7 @@
 #
 # SPGD-315 removed the blocker rather than working around it: the fixture corpus
 # is embedded on the same absent/present rule as the schema, so a bare
-# invocation on a host with no checkout runs all twelve fixtures out of the
+# invocation on a host with no checkout runs the whole corpus out of the
 # binary. That is now run, from the prefix, and it is a real end-to-end pass —
 # schema loaded, fixtures expanded, JSON validated, source annotations
 # extracted, normalized and validated, and every verdict compared against its

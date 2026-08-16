@@ -84,9 +84,9 @@ var allPatterns = []string{
 // expandEmbedded), so this asserts that construction rather than hoping for it.
 //
 // What it CANNOT assert is a rule the corpus's own names never trip. It compares
-// twelve fixtures and one canary, so it sees the rules those names happen to
-// exercise and no others — it is a check that the shipped corpus expands the
-// same way twice, not a statement of the rule.
+// the corpus's fixtures and one canary, so it sees the rules those names
+// happen to exercise and no others — it is a check that the shipped corpus
+// expands the same way twice, not a statement of the rule.
 // TestBothExpansionsApplyTheDotfileRule states the rule, on names staged
 // to trip it.
 func TestEmbeddedAndOnDiskExpansionsAgree(t *testing.T) {
