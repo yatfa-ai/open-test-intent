@@ -48,6 +48,35 @@ func RepoRoot(t *testing.T) string {
 	return root
 }
 
+// SetDiff reports what is in want but not got, and what is in got but not want.
+//
+// It lives here rather than beside either caller for the same reason the
+// agreement checks built on it exist at all: it was written out once per
+// tests/cross tool, and the two copies had already drifted cosmetically before
+// the second one was a day old. A helper duplicated across packages with
+// nothing executing the agreement is exactly the shape those checks police.
+func SetDiff(want, got []string) (missing, extra []string) {
+	index := func(items []string) map[string]bool {
+		m := make(map[string]bool, len(items))
+		for _, item := range items {
+			m[item] = true
+		}
+		return m
+	}
+	wantSet, gotSet := index(want), index(got)
+	for _, item := range want {
+		if !gotSet[item] {
+			missing = append(missing, item)
+		}
+	}
+	for _, item := range got {
+		if !wantSet[item] {
+			extra = append(extra, item)
+		}
+	}
+	return missing, extra
+}
+
 // ShellTargets reads the `TARGETS=( ... )` block out of a shell script, given a
 // path relative to the repository root, and returns the "goos/goarch" entries
 // it names.

@@ -694,7 +694,7 @@ func TestTheseThreeListsAgreeWithBuildRelease(t *testing.T) {
 		{"stagedArtifacts' keys", staged},
 		{"manifestNames", manifestNames},
 	} {
-		missing, extra := setDiff(wantOrdered, set.names)
+		missing, extra := crosstest.SetDiff(wantOrdered, set.names)
 		if len(missing) > 0 || len(extra) > 0 {
 			t.Errorf("%s does not name the same release artifacts as %s:\n  missing from %s: %v\n  named only by %s: %v\n"+
 				"These tests would be staging a release that %s does not build.",
@@ -722,27 +722,4 @@ func TestTheseThreeListsAgreeWithBuildRelease(t *testing.T) {
 				authorityName, i, wantOrdered[i], releaseOrder[i], releaseOrder, authorityName, wantOrdered)
 		}
 	}
-}
-
-// setDiff reports what is in want but not got, and what is in got but not want.
-func setDiff(want, got []string) (missing, extra []string) {
-	index := func(items []string) map[string]bool {
-		m := make(map[string]bool, len(items))
-		for _, item := range items {
-			m[item] = true
-		}
-		return m
-	}
-	wantSet, gotSet := index(want), index(got)
-	for _, w := range want {
-		if !gotSet[w] {
-			missing = append(missing, w)
-		}
-	}
-	for _, g := range got {
-		if !wantSet[g] {
-			extra = append(extra, g)
-		}
-	}
-	return missing, extra
 }

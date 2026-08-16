@@ -1872,7 +1872,7 @@ func TestTheFourTargetListsAgree(t *testing.T) {
 		{"tests/cross/run_cross_build.sh", crosstest.ShellTargets(t, "tests/cross/run_cross_build.sh")},
 		{"tests/cross/install/install_test.go's releaseArtifacts", fromThisFile},
 	} {
-		if missing, extra := setDiff(authority, other.targets); len(missing) > 0 || len(extra) > 0 {
+		if missing, extra := crosstest.SetDiff(authority, other.targets); len(missing) > 0 || len(extra) > 0 {
 			t.Errorf("%s does not name the same release targets as %s:\n  missing from %s: %v\n  named only by %s: %v\n"+
 				"A release built from %s would not contain what %s asks for.",
 				other.name, authorityName,
@@ -1881,29 +1881,6 @@ func TestTheFourTargetListsAgree(t *testing.T) {
 				authorityName, other.name)
 		}
 	}
-}
-
-// setDiff reports what is in want but not got, and what is in got but not want.
-func setDiff(want, got []string) (missing, extra []string) {
-	index := func(items []string) map[string]bool {
-		m := make(map[string]bool, len(items))
-		for _, item := range items {
-			m[item] = true
-		}
-		return m
-	}
-	wantSet, gotSet := index(want), index(got)
-	for _, item := range want {
-		if !gotSet[item] {
-			missing = append(missing, item)
-		}
-	}
-	for _, item := range got {
-		if !wantSet[item] {
-			extra = append(extra, item)
-		}
-	}
-	return missing, extra
 }
 
 // TestPrefixInTheEnvironmentDoesNotRedirectTheInstall pins where the binary is
