@@ -28,10 +28,7 @@ package main
 // a failure rather than a skip: the fixture is the artifact an adopter copies,
 // so the assertion must be about the fixture and not about a copy that drifts.
 
-import (
-	"path/filepath"
-	"testing"
-)
+import "testing"
 
 // TestInvalidSourceCorpusIsGradedPerAnnotation pins the shipped expected-invalid
 // source fixture: its annotation count, each annotation's line, and each
@@ -44,7 +41,7 @@ func TestInvalidSourceCorpusIsGradedPerAnnotation(t *testing.T) {
 	const rel = "examples/sources/invalid/broken_intent_spec.rb"
 
 	schema := conformanceSchema(t)
-	text := readRepoFile(t, filepath.Join("examples", "sources", "invalid", "broken_intent_spec.rb"))
+	text := readRepoFile(t, rel)
 	findings := CheckSourceText(text, schema)
 
 	// Every annotation in the fixture, in source order. The kinds are not
@@ -101,18 +98,34 @@ func TestInvalidSourceCorpusIsGradedPerAnnotation(t *testing.T) {
 		}
 
 		// And it must say WHY. A rejection with no diagnostic is a verdict an
-		// adopter cannot act on; the two kinds carry it in different fields.
+		// adopter cannot act on, and the kinds carry it in different fields:
+		// the pre-validation refusals (KindExtraction, KindParse) in Problem,
+		// a schema refusal in Errors.
+		//
+		// THE `default` IS PART OF THE POINT, not defensive boilerplate. This
+		// file exists because a grading path that can silently skip is a check
+		// that verifies nothing; a switch with no default is that same shape,
+		// one level up. Source mode can produce a third rejection kind here —
+		// KindParse, source.go:418-425, reachable from this very fixture with a
+		// malformed payload — so without a default, adding such a row to
+		// broken_intent_spec.rb would silently buy no diagnostic assertion at
+		// all. Fatalf rather than Errorf: an ungraded kind means the grader is
+		// incomplete, which is a defect in this test, not in the fixture.
 		switch tc.kind {
-		case KindExtraction:
+		case KindExtraction, KindParse:
 			if finding.Problem == "" {
-				t.Errorf("%s:%d was rejected by extraction with an empty Problem (%s)",
-					rel, tc.line, tc.why)
+				t.Errorf("%s:%d was rejected with kind %q but an empty Problem (%s)",
+					rel, tc.line, tc.kind, tc.why)
 			}
 		case KindSchema:
 			if len(finding.Errors) == 0 {
 				t.Errorf("%s:%d was rejected by the schema with no errors listed (%s)",
 					rel, tc.line, tc.why)
 			}
+		default:
+			t.Fatalf("%s:%d expects kind %q, which this test has no diagnostic "+
+				"assertion for — extend the switch so the new kind is graded on "+
+				"more than its name (%s)", rel, tc.line, tc.kind, tc.why)
 		}
 	}
 }
