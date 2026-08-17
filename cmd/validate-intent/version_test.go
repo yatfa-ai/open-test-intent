@@ -409,9 +409,15 @@ func TestExistingSurfacesAreUndisturbed(t *testing.T) {
 		wantOut  string // in stdout when non-empty...
 		wantErr  string // ...in stderr when non-empty
 	}{
-		// Slice 3 (SPGD-107) implemented stdin. `go test` gives this process an
-		// empty stdin, so the document is unparseable and the mode reports that
-		// on stdout rather than refusing on stderr.
+		// Slice 3 (SPGD-107) implemented stdin. The `-` argument routes to the
+		// mode, which finds an EMPTY document — set explicitly by the withStdin
+		// below, not inherited — and reports it as unparseable on stdout rather
+		// than refusing on stderr.
+		//
+		// This row asserts DISPATCH: that `-` reaches stdin mode at all. It says
+		// nothing about the renderer, whose verdicts stdin_mode_test.go drives
+		// directly. Reading a passing row here as coverage of RunStdin is what
+		// kept that function at 37.5% while looking exercised (SPGD-683).
 		{[]string{"-"}, 1, "could not read/parse JSON", ""},
 		// Slice 3 also implemented adopter `--json`. From this package's working
 		// directory the path matches nothing, which the JSON renderer reports as
@@ -426,7 +432,16 @@ func TestExistingSurfacesAreUndisturbed(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(strings.Join(testCase.argv, " "), func(t *testing.T) {
-			code, stdout, stderr := captureRun(t, testCase.argv...)
+			// Every row runs against a stdin this test OWNS. Only the `-` row
+			// reads the stream, and until SPGD-683 it read whatever the harness
+			// happened to leave there — so the row's verdict was a property of
+			// `go test`, not of the code. An explicit empty document keeps the
+			// row's meaning fixed under any runner that pipes something in.
+			var code int
+			var stdout, stderr string
+			withStdin(t, nil, func() {
+				code, stdout, stderr = captureRun(t, testCase.argv...)
+			})
 			if code != testCase.wantCode {
 				t.Errorf("run(%q) = %d, want %d", testCase.argv, code, testCase.wantCode)
 			}

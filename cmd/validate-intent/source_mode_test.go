@@ -3,13 +3,20 @@ package main
 // The `--source` mode, driven through its own entry points.
 //
 // Three of the validator's four modes had a test that actually RAN them —
-// stdin_mode_test.go reaches RunStdin/RunStdinJSON and RunAdopterJSON,
+// stdin_mode_test.go reaches RunStdinJSON and RunAdopterJSON,
 // selftest_embed_test.go reaches RunSelfTest. `--source` did not. The four
 // argv cases naming `--source` elsewhere in this tree all short-circuit before
 // main.go dispatches (a bare `--source` is a usage error; `--version` and
 // `--schema-source` are handled ahead of the mode), and source_test.go /
 // source_corpus_test.go exercise the layer BELOW the mode — CheckSourceText,
 // never CheckSourceFile and never RunSource.
+//
+// An earlier revision of this paragraph credited stdin_mode_test.go with
+// reaching RunStdin as well. It did not: no test named that function, and the
+// 37.5% the coverage tool reported for it was an argv row in version_test.go
+// riding the empty stdin `go test` supplies. Both TEXT renderers were unpinned
+// for the same reason `--source` was, one mode over — SPGD-683 closed that half
+// and stdin_mode_test.go now drives RunStdin and RunAdopter directly.
 //
 // The sharpest consequence was in render_test.go, which builds a
 // `&JSONReport{Mode: "source", Files: 2, Annotations: 3}` LITERAL and checks
