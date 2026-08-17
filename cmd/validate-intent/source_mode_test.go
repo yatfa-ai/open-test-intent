@@ -41,10 +41,10 @@ import (
 // emDash is the U+2014 the text renderer puts between a location and its
 // problem. RunSource (source_mode.go) calls it "load-bearing output, not
 // decoration": it is what a consumer splits a FAIL line on, so a hyphen or an
-// en dash in that position is a format change wearing a typo's clothes. Written as an
-// escape rather than pasted, because the two neighbouring characters are
-// indistinguishable in most editors — which is exactly why nothing caught it
-// before.
+// en dash in that position is a format change wearing a typo's clothes.
+// Written as an escape rather than pasted, because the two neighbouring
+// characters are indistinguishable in most editors — which is exactly why
+// nothing caught it before.
 const emDash = "\u2014"
 
 // continuation is the prefix on each schema error under a FAIL headline

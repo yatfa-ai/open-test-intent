@@ -124,8 +124,8 @@ func runStdinText(t *testing.T, input []byte, schema *Schema) (string, int) {
 // The read and parse failures share one prose line on purpose (RunStdin,
 // stdin_mode.go): text mode has nowhere to put the `kind` its --json twin
 // carries, so the distinction TestRunStdinJSON_readParseSplit pins is
-// deliberately invisible
-// here. That is why both rows below want the same prefix.
+// deliberately invisible here. That is why both rows below want the same
+// prefix.
 func TestRunStdin_verdictLinesAreTheWholeOutput(t *testing.T) {
 	schema := repoSchema(t)
 	valid, err := os.ReadFile(filepath.Join("..", "..", "examples", "unit-order-total.json"))
@@ -197,8 +197,7 @@ func TestRunStdin_verdictLinesAreTheWholeOutput(t *testing.T) {
 // schema violation prints a bare `FAIL` and puts one indented `-> ` line under
 // it per error (RunStdin, stdin_mode.go). Collapsing the two — always
 // inlining, or always indenting — is a change no exit-code assertion can see,
-// and it is the
-// same distinction source_mode_test.go pins for `--source`.
+// and it is the same distinction source_mode_test.go pins for `--source`.
 //
 // The diagnostics' wording is deliberately not pinned; validator_test.go grades
 // that. This is about prefix, headline and indent.
@@ -236,9 +235,9 @@ func TestRunStdin_schemaViolationHeadlineIsBareAndErrorsAreIndented(t *testing.T
 //
 // readStdin (stdin_mode.go) states the rule — "a caller piping into this mode
 // gets a finding, not a stack". Nothing exercised it, so the recovery was as
-// unpinned as the panic it prevents. An already-closed descriptor is the cheapest real
-// I/O error available; withStdin cannot supply one, since it hands over an open
-// file by construction.
+// unpinned as the panic it prevents. An already-closed descriptor is the
+// cheapest real I/O error available; withStdin cannot supply one, since it
+// hands over an open file by construction.
 func TestRunStdin_streamIOFailureIsAFindingNotAPanic(t *testing.T) {
 	schema := repoSchema(t)
 

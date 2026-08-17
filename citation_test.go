@@ -37,6 +37,39 @@ package opentestintent
 // of the six rotted citations lived in scripts/install.sh, where nothing at all
 // was watching.
 //
+// The set of extensions a citation may POINT AT is wider than the set of files
+// scanned FOR citations: a comment may cite a .md, .json or .yml, but only .go
+// and .sh files are read looking for one. A rotted coordinate inside a README
+// is therefore invisible to this test. The asymmetry is deliberate — this
+// repo's prose lives in code comments — but it is the kind of thing that
+// should be stated outright rather than left to be inferred from a switch.
+//
+// # Keeping the guard itself honest
+//
+// A scanner that silently stops scanning reports zero failures, which looks
+// exactly like clean prose. That is the vacuous-green shape this repo keeps
+// writing files to argue against, and this file has to survive its own
+// argument, so the liveness check is made in two places — because one was not
+// enough.
+//
+// The obvious canary is "at least one citation was checked". It is a canary
+// over the SUM of the two scanners, and the sum is dominated by Go. The
+// migration this file ships with left NO .sh file carrying a citation at all,
+// so the entire shell scanner could be replaced with `return nil, nil` and the
+// suite would still report the same three Go citations and pass. That is not a
+// suspicion: it was tried during review, and it passed.
+//
+// So the liveness canary is over COMMENTS FOUND, per language, rather than
+// citations checked. Every .sh file here has comments, so asserting the shell
+// scanner returns some is an assertion about the SCANNER, and it stays true
+// however tidy the prose gets. Asserting shell CITATIONS instead would amount
+// to asserting that the rot is never cleaned up — the opposite of the point.
+//
+// And because the shell half is the one with a hand-rolled quoting rule and now
+// no live input to exercise it, TestTrailingCommentIndex and TestShellComments
+// pin that rule directly against literal lines. The rule is stated in prose
+// below; those tests are what make it executable.
+//
 // # What is NOT checked, and why saying so matters
 //
 // THIS TEST CATCHES EXISTENCE AND RANGE ROT ONLY. It cannot catch the failure
@@ -113,6 +146,10 @@ func TestInCommentCitationsResolve(t *testing.T) {
 	}
 
 	checked := 0
+	// commentsByExt counts what each scanner actually returned, which is what
+	// the liveness canary below is asserted over. See the header: counting
+	// citations instead would let the shell scanner die unnoticed.
+	commentsByExt := map[string]int{}
 	err := filepath.WalkDir(".", func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -125,7 +162,8 @@ func TestInCommentCitationsResolve(t *testing.T) {
 		}
 
 		var comments []commentLine
-		switch filepath.Ext(path) {
+		ext := filepath.Ext(path)
+		switch ext {
 		case ".go":
 			comments, err = goComments(path)
 			if err != nil {
@@ -139,6 +177,7 @@ func TestInCommentCitationsResolve(t *testing.T) {
 		default:
 			return nil
 		}
+		commentsByExt[ext] += len(comments)
 
 		for _, c := range comments {
 			for _, m := range citation.FindAllStringSubmatch(c.text, -1) {
@@ -181,14 +220,23 @@ func TestInCommentCitationsResolve(t *testing.T) {
 		t.Fatalf("walking the tree: %v", err)
 	}
 
-	// A walk that silently stopped matching would report zero failures, which
-	// is indistinguishable from a clean tree. The repo has always carried at
-	// least the examples/sources fixture citations, so zero means the scanner
-	// broke, not that the prose got tidy.
+	// Liveness, asserted of each scanner separately. A walk that silently
+	// stopped matching would report zero failures, which is indistinguishable
+	// from a clean tree — and a canary over the two scanners' SUM cannot tell
+	// which one went quiet. Every .go and .sh file in this repo carries
+	// comments, so a zero here means that scanner broke, and it stays a valid
+	// assertion even when a language's prose carries no citations at all,
+	// which is exactly the state shell is in today.
+	for _, ext := range []string{".go", ".sh"} {
+		if commentsByExt[ext] == 0 {
+			t.Errorf("no comments were found in any %s file — the %s scanner is not scanning", ext, ext)
+		}
+	}
 	if checked == 0 {
 		t.Fatal("no in-comment citations were found at all — the scanner is not scanning")
 	}
-	t.Logf("checked %d in-comment citation(s)", checked)
+	t.Logf("checked %d in-comment citation(s); scanned %d Go and %d shell comment(s)",
+		checked, commentsByExt[".go"], commentsByExt[".sh"])
 }
 
 // commentLine is one comment and the line it starts on, so a failure names
@@ -263,4 +311,121 @@ func trailingCommentIndex(line string) int {
 		}
 	}
 	return -1
+}
+
+// TestTrailingCommentIndex makes the shell quoting rule executable.
+//
+// The Go scanner is exercised by this repo's own prose on every run. The shell
+// scanner is not: after the migration no .sh file here carries a citation, so
+// this rule — the one piece of hand-rolled language modelling in the file —
+// could be broken, or deleted outright, with nothing to notice. These cases are
+// its input. They are literal lines rather than lines taken from the tree
+// precisely so that tidying the prose cannot quietly retire them.
+//
+// Each case is a line and the comment text expected on it, "" meaning none.
+// Asserting the TEXT rather than the index keeps the case table readable as the
+// rule it encodes, and a shifted index still fails it.
+func TestTrailingCommentIndex(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want string
+	}{{
+		name: "trailing comment after balanced double quotes",
+		line: `run "$x"   # see foo.sh:12`,
+		want: `# see foo.sh:12`,
+	}, {
+		name: "a tab separates a trailing comment too",
+		line: "echo hi\t# see foo.sh:12",
+		want: `# see foo.sh:12`,
+	}, {
+		name: "hash inside a double-quoted string is not a comment",
+		line: `echo "a # b"`,
+		want: ``,
+	}, {
+		name: "hash inside a single-quoted string is not a comment",
+		line: `echo 'a # b'`,
+		want: ``,
+	}, {
+		name: "parameter expansion has no space before its hash",
+		line: `echo ${var#prefix}`,
+		want: ``,
+	}, {
+		name: "an escaped hash is not a comment",
+		line: `echo \# not-a-comment`,
+		want: ``,
+	}, {
+		name: "a backslash inside single quotes is literal, so the quote still closes",
+		line: `echo 'a\' # see foo.sh:12`,
+		want: `# see foo.sh:12`,
+	}, {
+		name: "quotes may close and reopen before the comment",
+		line: `echo 'it'\''s' # see foo.sh:12`,
+		want: `# see foo.sh:12`,
+	}, {
+		// The deliberate false negative named in this file's header. Recorded
+		// as a test so that it stays a decision rather than becoming a
+		// surprise: a line whose quoting never closes is skipped, because the
+		// alternative is a hand-rolled shell parser flagging live code.
+		name: "an unbalanced line is skipped rather than guessed at",
+		line: `echo "unbalanced # see foo.sh:12`,
+		want: ``,
+	}, {
+		// Whole-line comments are shellComments' job, not this function's —
+		// it requires a separator BEFORE the hash, and column zero has none.
+		name: "a whole-line comment is not this function's to find",
+		line: `# see foo.sh:12`,
+		want: ``,
+	}}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ""
+			if idx := trailingCommentIndex(tc.line); idx >= 0 {
+				got = tc.line[idx:]
+			}
+			if got != tc.want {
+				t.Errorf("trailingCommentIndex(%q)\n produced %q\n wanted   %q", tc.line, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestShellComments pins the whole-file half of the shell scanner: that
+// whole-line and indented comments are found, that a quoted hash still is not,
+// and that the reported line numbers are the ones a failure message will send a
+// reader to. A scanner that finds the right text at the wrong line sends people
+// hunting, which is the failure this file exists to stop.
+func TestShellComments(t *testing.T) {
+	const script = `#!/bin/sh
+# a whole-line comment citing a.go:1
+echo "a # b"
+	# an indented comment citing b.go:2
+run "$x"  # a trailing comment citing c.go:3
+echo ${v#p}
+`
+	path := filepath.Join(t.TempDir(), "sample.sh")
+	if err := os.WriteFile(path, []byte(script), 0o600); err != nil {
+		t.Fatalf("writing the sample script: %v", err)
+	}
+
+	got, err := shellComments(path)
+	if err != nil {
+		t.Fatalf("scanning the sample script: %v", err)
+	}
+	want := []commentLine{
+		{line: 1, text: `#!/bin/sh`},
+		{line: 2, text: `# a whole-line comment citing a.go:1`},
+		{line: 4, text: `# an indented comment citing b.go:2`},
+		{line: 5, text: `# a trailing comment citing c.go:3`},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("scanned %d comment(s), wanted %d:\n got %q\n want %q", len(got), len(want), got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("comment %d:\n got  line %d %q\n want line %d %q",
+				i, got[i].line, got[i].text, want[i].line, want[i].text)
+		}
+	}
 }

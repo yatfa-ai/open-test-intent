@@ -184,20 +184,20 @@
 # compiled-in one, because the schema is the half it substituted for.
 #
 # What the probe does NOT do is refuse. scripts/build-release.sh's check 4 dies
-# on these same two paths and is right to — it builds a fresh mktemp prefix for the
-# sole purpose of proving the embedded copies work, so a tree there is its own
-# bug. This script does not own $PREFIX: the adopter chose it, installing into a
-# checkout's bin/ is a legitimate thing to want, and dying there would turn a
-# working install into a hard error to protect the accuracy of a sentence. The
-# exit status is identical on both branches and the three codes below are
-# untouched — the probe informs the message and nothing else.
+# on these same two paths and is right to — it builds a fresh mktemp prefix
+# for the sole purpose of proving the embedded copies work, so a tree there is
+# its own bug. This script does not own $PREFIX: the adopter chose it,
+# installing into a checkout's bin/ is a legitimate thing to want, and dying
+# there would turn a working install into a hard error to protect the accuracy
+# of a sentence. The exit status is identical on both branches and the three
+# codes below are untouched — the probe informs the message and nothing else.
 #
 # tests/cross/run_cross_build.sh's "prefix A: no schema on disk" case keeps its
 # own version of this claim and should stay. It still says something neither
-# branch here can: it CONSTRUCTS a
-# prefix with no schemas/ on disk and then requires the run to pass, so a
-# fallback that stopped working is a failure there. This script reports which
-# branch fired; that harness requires a particular one to.
+# branch here can: it CONSTRUCTS a prefix with no schemas/ on disk and then
+# requires the run to pass, so a fallback that stopped working is a failure
+# there. This script reports which branch fired; that harness requires a
+# particular one to.
 #
 # That harness probes the schemas/ DIRECTORY where this script probes the file
 # under it, and both are correct, for the reason the difference is easy to get

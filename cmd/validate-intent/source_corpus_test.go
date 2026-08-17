@@ -110,8 +110,8 @@ func TestInvalidSourceCorpusIsGradedPerAnnotation(t *testing.T) {
 		// this very fixture with a malformed payload — so without a default,
 		// adding such a row to broken_intent_spec.rb would silently buy no
 		// diagnostic assertion at all. Fatalf rather than Errorf: an ungraded
-		// kind means the grader is
-		// incomplete, which is a defect in this test, not in the fixture.
+		// kind means the grader is incomplete, which is a defect in this test,
+		// not in the fixture.
 		switch tc.kind {
 		case KindExtraction, KindParse:
 			if finding.Problem == "" {
