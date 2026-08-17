@@ -854,8 +854,8 @@ exit 1
 const selfTestEmbeddedClaim = "embedded fixture corpus"
 
 // schemaFileName is the one filename under schemas/ that the binary's schema
-// half actually opens — cmd/validate-intent/fileio.go:130-137 builds
-// root/schemas/open-test-intent.v1.json, and loadSchemaFrom (fileio.go:262-273)
+// half actually opens — SchemaPath (cmd/validate-intent/fileio.go) builds
+// root/schemas/open-test-intent.v1.json, and loadSchemaFrom in that same file
 // substitutes the compiled-in copy when reading THAT FILE returns
 // fs.ErrNotExist. The directory is never stat'd.
 //
@@ -1003,8 +1003,8 @@ func TestTheSelfTestLineNamesTheCorpusThatRunActuallyRead(t *testing.T) {
 		// corpusFromDisk / schemaFromDisk are what that layout makes the binary
 		// read, worked out from the two rules independently rather than from one
 		// notion of "a tree is there": examples/ is a DIRECTORY stat
-		// (selftest.go:133-140), the schema is a FILE read of
-		// schemas/open-test-intent.v1.json (fileio.go:262-273).
+		// (newFixtureSource, selftest.go), the schema is a FILE read of
+		// schemas/open-test-intent.v1.json (loadSchemaFrom, fileio.go).
 		corpusFromDisk bool
 		schemaFromDisk bool
 	}{
@@ -1994,8 +1994,9 @@ func TestUsageReportsTheDefaultPrefixItActuallyUses(t *testing.T) {
 // `--version` is answered and returned above cmd/validate-intent's LoadSchema()
 // call, so a real artifact answers it without ever loading a schema. The
 // fallback on a bare prefix is checked end to end by
-// tests/cross/run_cross_build.sh:298-319, which asserts the installed prefix has
-// no schemas/ and then runs a real fixture through the installed binary.
+// tests/cross/run_cross_build.sh's "prefix A: no schema on disk" case, which
+// asserts the installed prefix has no schemas/ and then runs a real fixture
+// through the installed binary.
 //
 // Skipped under -short because it cross-compiles four targets. It is not skipped
 // when the toolchain is merely absent from PATH: `go test` is running, so a Go

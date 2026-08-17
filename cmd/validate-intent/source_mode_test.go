@@ -39,16 +39,16 @@ import (
 )
 
 // emDash is the U+2014 the text renderer puts between a location and its
-// problem. source_mode.go:37 calls it "load-bearing output, not decoration":
-// it is what a consumer splits a FAIL line on, so a hyphen or an en dash in
-// that position is a format change wearing a typo's clothes. Written as an
-// escape rather than pasted, because the two neighbouring characters are
-// indistinguishable in most editors — which is exactly why nothing caught it
-// before.
+// problem. RunSource (source_mode.go) calls it "load-bearing output, not
+// decoration": it is what a consumer splits a FAIL line on, so a hyphen or an
+// en dash in that position is a format change wearing a typo's clothes.
+// Written as an escape rather than pasted, because the two neighbouring
+// characters are indistinguishable in most editors — which is exactly why
+// nothing caught it before.
 const emDash = "\u2014"
 
 // continuation is the prefix on each schema error under a FAIL headline
-// (source_mode.go:43): eight spaces, an arrow, one space.
+// (RunSource, source_mode.go): eight spaces, an arrow, one space.
 const continuation = "        -> "
 
 // sourceFixture resolves a shipped fixture, repo-relative.
@@ -147,7 +147,7 @@ func TestRunSource_passLinesAreTheWholeOutputOfACleanRun(t *testing.T) {
 // are the point: a schema failure prints a bare `FAIL file:line` headline with
 // one indented `-> ` line per error, while an extraction failure prints its
 // problem inline after the em dash and has no continuation lines at all
-// (source_mode.go:36-44). Collapsing the two — always inlining, or always
+// (RunSource, source_mode.go). Collapsing the two — always inlining, or always
 // indenting — is a change no exit-code assertion can see.
 //
 // The diagnostics themselves are deliberately NOT pinned here (their wording is
@@ -227,7 +227,7 @@ func TestRunSource_failLinesCarryTheEmDashAndContinuationPrefix(t *testing.T) {
 // TestRunSource_fileWithNoAnnotationsIsReportedAndDoesNotFail is the rule the
 // mode exists in its own shape for, and nothing asserted either half of it.
 //
-// source_mode.go:11-17 states it twice over: a file with no annotations is
+// RunSource's doc comment states it twice over: a file with no annotations is
 // "reported and skipped, not failed", and the `----` line is "the absence of
 // anything to report, not a result" — the reason `--source` cannot be collapsed
 // into adopter mode's one-finding-per-file shape. Both halves are asserted
@@ -268,14 +268,15 @@ func TestRunSource_fileWithNoAnnotationsIsReportedAndDoesNotFail(t *testing.T) {
 
 // TestRunSource_unreadableFileFailsTheRun is the other side of the same rule:
 // nothing to report exits 0, but nothing READABLE is a failure
-// (source_mode.go:21-24).
+// (RunSource, source_mode.go).
 //
 // The unreadable file here is one holding undecodable bytes rather than one
 // chmod'd to 000. That is not a stylistic choice: the suite routinely runs as
 // root, where chmod 000 does not make a file unreadable at all — the adopter
 // equivalent in stdin_mode_test.go has to SKIP itself there, leaving the rule
-// unexercised on exactly the machines CI uses. fileio.go:83 refuses undecodable
-// bytes for every user, so this reaches the same branch unconditionally.
+// unexercised on exactly the machines CI uses. decodeSourceText (fileio.go)
+// refuses undecodable bytes for every user, so this reaches the same branch
+// unconditionally.
 func TestRunSource_unreadableFileFailsTheRun(t *testing.T) {
 	schema := repoSchema(t)
 	// The first line is a well-formed annotation. It must NOT be reported: the
@@ -338,7 +339,8 @@ func TestRunSourceJSON_derivesFilesAndAnnotationSites(t *testing.T) {
 
 	// The file with no annotations contributes to `files` and to NOTHING else.
 	// Text mode's `----` line is the absence of a result; emitting it as a
-	// finding would hand consumers a row to filter back out (report.go:224-227).
+	// finding would hand consumers a row to filter back out (RunSourceJSON,
+	// report.go).
 	if strings.Contains(out, plain) {
 		t.Errorf("the file with no annotations must not appear in findings:\n%s", out)
 	}
@@ -358,7 +360,8 @@ func TestRunSourceJSON_derivesFilesAndAnnotationSites(t *testing.T) {
 	}
 }
 
-// TestRunSourceJSON_normalizesProblemIntoTheErrorsList pins report.go:245-248.
+// TestRunSourceJSON_normalizesProblemIntoTheErrorsList pins RunSourceJSON's
+// Problem/Errors normalization (report.go).
 //
 // A SourceFinding carries its diagnostic in one of two fields — `Problem` for
 // an extraction or parse failure, `Errors` for a schema one — and text mode
@@ -407,15 +410,16 @@ func TestRunSourceJSON_normalizesProblemIntoTheErrorsList(t *testing.T) {
 // The two renderers are meant to be the SAME checks behind a different
 // presentation — Emit takes the exit code the text path would have produced
 // rather than recomputing one from the findings, precisely so they cannot
-// disagree (report.go:83-87). Nothing tested that for `--source`, and a
-// consumer that switches to `--json` for machine readability inherits the
+// disagree (JSONReport.Emit, report.go). Nothing tested that for `--source`,
+// and a consumer that switches to `--json` for machine readability inherits the
 // verdict, not just the format. The `ok` field is checked alongside the code
 // because a document that says `"ok": true` while exiting 1 is worse than
 // either being wrong on its own.
 //
-// The no-match case writes its text-mode diagnostic to STDERR (main.go:244),
-// so that one line appears in the test log; the assertion is on the exit code
-// and on the JSON document, both of which are captured.
+// The no-match case writes its text-mode diagnostic to STDERR
+// (runOverPatterns, main.go), so that one line appears in the test log; the
+// assertion is on the exit code and on the JSON document, both of which are
+// captured.
 func TestRunSource_renderersAgreeOnTheExitCode(t *testing.T) {
 	schema := repoSchema(t)
 	valid := sourceFixture(t, "examples/sources/order_spec.rb")
