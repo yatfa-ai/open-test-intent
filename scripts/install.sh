@@ -165,12 +165,12 @@
 # The two halves share a root and NOT a question, which is the detail worth
 # spelling out because collapsing them is the easy mistake:
 #
-#   - fixtures — newFixtureSource (selftest.go:133-140) stats root/examples, the
-#     DIRECTORY, and takes the embedded branch on fs.ErrNotExist and on nothing
-#     else. So the tree is the thing to ask about.
-#   - schema — loadSchemaFrom (fileio.go:262-273) os.ReadFile's the FILE
-#     root/schemas/open-test-intent.v1.json, built by SchemaPath()
-#     (fileio.go:130-137), and substitutes the embedded copy on fs.ErrNotExist
+#   - fixtures — newFixtureSource (cmd/validate-intent/selftest.go) stats
+#     root/examples, the DIRECTORY, and takes the embedded branch on
+#     fs.ErrNotExist and on nothing else. So the tree is the thing to ask about.
+#   - schema — loadSchemaFrom (cmd/validate-intent/fileio.go) os.ReadFile's the
+#     FILE root/schemas/open-test-intent.v1.json, built by SchemaPath() in that
+#     same file, and substitutes the embedded copy on fs.ErrNotExist
 #     OF THAT FILE. The directory is never stat'd. A schemas/ holding anything
 #     else — another project's JSON schemas, a partial checkout — is a run that
 #     read the compiled-in schema, so asking about the directory here would
@@ -183,8 +183,8 @@
 # schema file there is named even on a run whose corpus really was the
 # compiled-in one, because the schema is the half it substituted for.
 #
-# What the probe does NOT do is refuse. scripts/build-release.sh:600-612 dies on
-# these same two paths and is right to — it builds a fresh mktemp prefix for the
+# What the probe does NOT do is refuse. scripts/build-release.sh's check 4 dies
+# on these same two paths and is right to — it builds a fresh mktemp prefix for the
 # sole purpose of proving the embedded copies work, so a tree there is its own
 # bug. This script does not own $PREFIX: the adopter chose it, installing into a
 # checkout's bin/ is a legitimate thing to want, and dying there would turn a
@@ -192,8 +192,9 @@
 # exit status is identical on both branches and the three codes below are
 # untouched — the probe informs the message and nothing else.
 #
-# tests/cross/run_cross_build.sh:298-319 keeps its own version of this claim and
-# should stay. It still says something neither branch here can: it CONSTRUCTS a
+# tests/cross/run_cross_build.sh's "prefix A: no schema on disk" case keeps its
+# own version of this claim and should stay. It still says something neither
+# branch here can: it CONSTRUCTS a
 # prefix with no schemas/ on disk and then requires the run to pass, so a
 # fallback that stopped working is a failure there. This script reports which
 # branch fired; that harness requires a particular one to.
@@ -909,9 +910,10 @@ probe_root="${PREFIX%/*}"
 # tests/cross/run_cross_build.sh is right to be coarser than this one.
 #
 # The filename is spelled here rather than derived because nothing on this host
-# can be asked for it: the path is built in Go, at fileio.go:130-137, and this
-# script has only the compiled artifact. It is pinned by the schemas-beside-the-
-# prefix cases in tests/cross/install/install_test.go, which seed a real one.
+# can be asked for it: the path is built in Go, by SchemaPath() in
+# cmd/validate-intent/fileio.go, and this script has only the compiled
+# artifact. It is pinned by the schemas-beside-the-prefix cases in
+# tests/cross/install/install_test.go, which seed a real one.
 have_schema=""
 have_examples=""
 if [ -e "$probe_root/schemas/open-test-intent.v1.json" ]; then have_schema=yes; fi

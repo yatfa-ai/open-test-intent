@@ -111,8 +111,8 @@ func runStdinText(t *testing.T, input []byte, schema *Schema) (string, int) {
 }
 
 // TestRunStdin_verdictLinesAreTheWholeOutput drives the TEXT renderer of the
-// mode stdin_mode.go:5-7 calls the one "where a wrong answer costs the most:
-// the caller has no filename to sanity-check the verdict against".
+// mode stdin_mode.go's file header calls the one "where a wrong answer costs
+// the most: the caller has no filename to sanity-check the verdict against".
 //
 // Whole-output equality rather than Contains, because what rots here is what a
 // substring assertion cannot see: a stray summary line beneath PASS, a verdict
@@ -121,9 +121,10 @@ func runStdinText(t *testing.T, input []byte, schema *Schema) (string, int) {
 // PAIR (what it printed, what it returned), and the two can drift apart one at
 // a time.
 //
-// The read and parse failures share one prose line on purpose (stdin_mode.go:45-49):
-// text mode has nowhere to put the `kind` its --json twin carries, so the
-// distinction TestRunStdinJSON_readParseSplit pins is deliberately invisible
+// The read and parse failures share one prose line on purpose (RunStdin,
+// stdin_mode.go): text mode has nowhere to put the `kind` its --json twin
+// carries, so the distinction TestRunStdinJSON_readParseSplit pins is
+// deliberately invisible
 // here. That is why both rows below want the same prefix.
 func TestRunStdin_verdictLinesAreTheWholeOutput(t *testing.T) {
 	schema := repoSchema(t)
@@ -194,8 +195,9 @@ func TestRunStdin_verdictLinesAreTheWholeOutput(t *testing.T) {
 //
 // A read/parse failure inlines its prose after the em dash on the headline; a
 // schema violation prints a bare `FAIL` and puts one indented `-> ` line under
-// it per error (stdin_mode.go:61-68). Collapsing the two — always inlining, or
-// always indenting — is a change no exit-code assertion can see, and it is the
+// it per error (RunStdin, stdin_mode.go). Collapsing the two — always
+// inlining, or always indenting — is a change no exit-code assertion can see,
+// and it is the
 // same distinction source_mode_test.go pins for `--source`.
 //
 // The diagnostics' wording is deliberately not pinned; validator_test.go grades
@@ -232,9 +234,9 @@ func TestRunStdin_schemaViolationHeadlineIsBareAndErrorsAreIndented(t *testing.T
 // exists for: io.ReadAll failing on the stream ITSELF, as opposed to returning
 // bytes that then fail to decode.
 //
-// stdin_mode.go:27-29 states the rule — "a caller piping into this mode gets a
-// finding, not a stack". Nothing exercised it, so the recovery was as unpinned
-// as the panic it prevents. An already-closed descriptor is the cheapest real
+// readStdin (stdin_mode.go) states the rule — "a caller piping into this mode
+// gets a finding, not a stack". Nothing exercised it, so the recovery was as
+// unpinned as the panic it prevents. An already-closed descriptor is the cheapest real
 // I/O error available; withStdin cannot supply one, since it hands over an open
 // file by construction.
 func TestRunStdin_streamIOFailureIsAFindingNotAPanic(t *testing.T) {
@@ -561,8 +563,8 @@ func TestRunAdopter_rowVocabulary(t *testing.T) {
 // code, so either one may stop contributing and the aggregate stays 1 — a
 // checkOne branch that renders the right row and then returns false is
 // invisible there. It is also the branch most easily lost, since the two
-// failure shapes return true from different places (main.go:208 and :218) while
-// the pass returns false between them.
+// failure shapes return true from different places inside RunAdopter
+// (main.go) while the pass returns false between them.
 //
 // One file per run is the only arrangement in which each shape's contribution
 // is observable on its own. The passing case doubles as the proof that 0 is

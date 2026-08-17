@@ -5,9 +5,9 @@ package main
 // examples/sources/invalid/broken_intent_spec.rb opens by stating its own
 // contract: "every @intent annotation in this file MUST be rejected, each
 // reported at its own file:line." The self-test cannot grade that. It walks the
-// findings asserting one bit each (`finding.Valid == expectValid`,
-// selftest.go:264) and guards structure only with `len(findings) == 0` — so the
-// COUNT is unpinned and so are Line and Kind.
+// findings asserting one bit each (`finding.Valid == expectValid`, in
+// selfTestSourceFixture, selftest.go) and guards structure only with
+// `len(findings) == 0` — so the COUNT is unpinned and so are Line and Kind.
 //
 // WHY ONE BIT IS NOT ENOUGH, in the same terms conformance_test.go states for
 // adopter mode. If extraction regressed so that the two malformed annotations
@@ -106,10 +106,11 @@ func TestInvalidSourceCorpusIsGradedPerAnnotation(t *testing.T) {
 		// file exists because a grading path that can silently skip is a check
 		// that verifies nothing; a switch with no default is that same shape,
 		// one level up. Source mode can produce a third rejection kind here —
-		// KindParse, source.go:418-425, reachable from this very fixture with a
-		// malformed payload — so without a default, adding such a row to
-		// broken_intent_spec.rb would silently buy no diagnostic assertion at
-		// all. Fatalf rather than Errorf: an ungraded kind means the grader is
+		// KindParse, produced in CheckSourceText (source.go), reachable from
+		// this very fixture with a malformed payload — so without a default,
+		// adding such a row to broken_intent_spec.rb would silently buy no
+		// diagnostic assertion at all. Fatalf rather than Errorf: an ungraded
+		// kind means the grader is
 		// incomplete, which is a defect in this test, not in the fixture.
 		switch tc.kind {
 		case KindExtraction, KindParse:
