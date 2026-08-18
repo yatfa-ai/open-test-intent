@@ -308,19 +308,6 @@ func osByteTree(t *testing.T) string {
 	return root
 }
 
-// expandBases runs ExpandFiles against a flat tree and returns the matched
-// basenames, sorted, so an expectation reads as the set of files a user would
-// see named.
-func expandBases(t *testing.T, root, pattern string) []string {
-	t.Helper()
-	out := []string{}
-	for _, match := range ExpandFiles(root + "/" + pattern) {
-		out = append(out, filepath.Base(match))
-	}
-	sort.Strings(out)
-	return out
-}
-
 // The matcher must keep two undecodable BYTES apart, not only the renderer.
 //
 // glob.go:pathRunes exists solely for this: plain []rune maps every byte of an
@@ -378,7 +365,10 @@ func TestMatcherKeepsPathsWithOSBytesApart(t *testing.T) {
 			// byte-bearing names.
 			name:    "a negated class excludes only the named byte",
 			pattern: "a[!\xe9].json",
-			want:    []string{"a\xfe.json", "a\xff.json", "ab.json"},
+			// Byte order, not eye order: 'b' is 0x62, so ab.json sorts BEFORE
+			// the two names carrying a 0xfe/0xff byte. expandRelative returns
+			// sorted matches, so every want here is written pre-sorted.
+			want: []string{"ab.json", "a\xfe.json", "a\xff.json"},
 		},
 		{
 			// Not a class at all: a `*` on either side of a literal byte. The
@@ -389,12 +379,8 @@ func TestMatcherKeepsPathsWithOSBytesApart(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		sort.Strings(tc.want)
-	}
-
-	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := expandBases(t, root, tc.pattern); !reflect.DeepEqual(got, tc.want) {
+			if got := expandRelative(t, root, tc.pattern); !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("ExpandFiles(%q):\n got  %q\n want %q", tc.pattern, got, tc.want)
 			}
 		})
@@ -416,13 +402,13 @@ func TestMatcherKeepsPathsWithOSBytesApart(t *testing.T) {
 func TestOSByteSentinelsNeverFallInsideACharacterClassRange(t *testing.T) {
 	root := osByteTree(t)
 
-	if got := expandBases(t, root, "a[\xe9-\xff].json"); len(got) != 0 {
+	if got := expandRelative(t, root, "a[\xe9-\xff].json"); len(got) != 0 {
 		t.Errorf("ExpandFiles(%q) = %q, want no matches: a range must not span undecodable bytes",
 			"a[\xe9-\xff].json", got)
 	}
 
 	// The control. Same file set, same class-with-range shape, ASCII members.
-	if got, want := expandBases(t, root, "a[a-c].json"), []string{"ab.json"}; !reflect.DeepEqual(got, want) {
+	if got, want := expandRelative(t, root, "a[a-c].json"), []string{"ab.json"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("the control ExpandFiles(%q) = %q, want %q — ranges are not working at all, "+
 			"so the empty result above proves nothing", "a[a-c].json", got, want)
 	}
@@ -434,14 +420,19 @@ func TestOSByteSentinelsNeverFallInsideACharacterClassRange(t *testing.T) {
 //
 // Stated honestly: this case does NOT discriminate the collapsing mutant — it
 // returns 4 there too, because U+FFFD is also one character. It is here for the
-// mutations it does catch, the ones that change a byte's WIDTH: emitting the
-// byte's two-rune escape, or advancing i by the DecodeRuneInString size rather
-// than by one, both make `a?.json` miss files the user can name.
+// mutation that changes a byte's WIDTH, run and recorded rather than argued:
+// appending the sentinel TWICE per undecodable byte fails this test, because
+// `a?.json` then misses the three files whose one byte spends two characters.
+//
+// Not on that list, though it looks like it belongs: advancing by the
+// DecodeRuneInString size instead of by one. Inside this branch the guard is
+// `r == utf8.RuneError && size == 1`, so size IS one and `i += size` is a
+// no-op refactor — applied, the suite stays green. No test can catch it, so it
+// would overstate what this one is worth.
 func TestOSByteCountsAsOneCharacter(t *testing.T) {
 	root := osByteTree(t)
-	want := []string{"a\xe9.json", "a\xfe.json", "a\xff.json", "ab.json"}
-	sort.Strings(want)
-	if got := expandBases(t, root, "a?.json"); !reflect.DeepEqual(got, want) {
+	want := []string{"ab.json", "a\xe9.json", "a\xfe.json", "a\xff.json"}
+	if got := expandRelative(t, root, "a?.json"); !reflect.DeepEqual(got, want) {
 		t.Errorf("ExpandFiles(%q):\n got  %q\n want %q", "a?.json", got, want)
 	}
 }
