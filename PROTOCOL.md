@@ -156,8 +156,8 @@ hence a URL under `open-test-intent` rather than under any one consumer's produc
 
 **The identifier names one revision of this document, not the major version.** It is pinned to the
 git tag **`schema-v1.0`** — not to a branch — cut once at the commit that published exactly these
-bytes, and never moved or deleted. A consumer who pins this identifier therefore cannot have
-different bytes returned to them later.
+bytes. **It must never be moved or deleted:** that rule is what makes this identifier safe to pin,
+and what backs it today is stated below.
 
 That scoping is deliberate, and §5 is the reason for it. §5 permits *additive* changes — a new
 optional field, as `preconditions` once was — without bumping the major version, so
