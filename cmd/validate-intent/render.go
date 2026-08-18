@@ -52,18 +52,25 @@ import (
 // ['unit', ...]` included. A change on the GEM's side of that comparison
 // therefore goes red at once, while a change HERE goes red only once someone
 // re-records that corpus. No spec in the gem executes this binary: that one
-// replays the recorded stdout through a four-line shell stub, and the gem's
+// replays the recorded stdout through a shell stub, and the gem's
 // spec/specguard/rspec/message_parity_spec.rb pins less than its name suggests
 // — four payloads through the gem's own `Schema#violations`, asserted against
 // strings hand-copied from here — with a header explicit that reading four
 // hand-copied strings as a proof about two programs is a misreading.
 //
 // Which is exactly why changing the quoting here breaks the agreement
-// SILENTLY: nothing runs this function on the gem's behalf, so the DISAGREEMENT
-// surfaces at the next re-recording, or in a CI log diff, and nowhere earlier.
-// This repo's own tests are no help there — a quoting change reds TestRenderValue
-// and TestValidateMessages immediately, but that is this binary asserted against
-// itself, and it stays green when the gem is the side that drifted.
+// SILENTLY. Not because the gem never runs this function — it does: its
+// `ValidatorBackend` shells out to this binary when `SPECGUARD_VALIDATE_INTENT`
+// names one, and hands the strings rendered here straight out as its own
+// findings. But that arm SUBSTITUTES this binary's text for the gem's renderer
+// rather than checking one against the other. Per the gem's `CLI`, the backend
+// and the in-gem linter are alternative arms returning the same result objects,
+// so exactly one spelling is produced on any given run and no run has both to
+// compare. The DISAGREEMENT therefore surfaces at the next re-recording, or in
+// a CI log diff, and nowhere earlier. This repo's own tests are no help there —
+// a quoting change reds TestRenderValue and TestValidateMessages immediately,
+// but that is this binary asserted against itself, and it stays green when the
+// gem is the side that drifted.
 //
 // Escaping: a printable character stays literal, including a non-ASCII one, so
 // a `behavior` sentence keeps its em dash; C0 controls and DEL become visible

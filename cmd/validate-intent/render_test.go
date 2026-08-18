@@ -299,7 +299,10 @@ func TestCharCount(t *testing.T) {
 // shapes below the gem can actually reach — a string (`'x'`) and an array of
 // them (the enum list) — but only one way round: a change on the GEM's side
 // goes red at once, a change HERE goes red once those snapshots are re-taken.
-// Nothing in the gem executes this binary.
+// No spec in the gem executes this binary. The gem itself does, on the opt-in
+// `ValidatorBackend` arm, but that arm reports this binary's rendered strings
+// INSTEAD of running its own renderer, so it substitutes one spelling for the
+// other rather than comparing them.
 // The remaining cases below are unreachable from the gem in any event: the
 // annotation schema types every property `string` (or an array of strings), so
 // a null/bool/number/object value produces a type-mismatch line and the only
