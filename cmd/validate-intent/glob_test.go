@@ -9,6 +9,13 @@ package main
 // skips a directory reports a clean pass over a smaller set of files, which
 // looks exactly like a clean pass over all of them.
 //
+// The one exception is the OS-BYTE group at the end, which is about name
+// identity rather than the walk. It lives here because it is only observable
+// through a real directory: a filename holding an undecodable byte cannot be
+// typed as a literal argument and reach the matcher at all — globPath resolves
+// a magic-free pattern through lexists — so the property has to be driven by
+// expanding a pattern over files that actually exist on disk.
+//
 // The tree is built here rather than committed, so a reader can see the whole
 // input beside the expectation instead of holding two files in their head.
 
@@ -274,5 +281,167 @@ func TestExpandFilesSorts(t *testing.T) {
 	second := expandRelative(t, root, "spec/**/*.json")
 	if strings.Join(first, ",") != strings.Join(second, ",") {
 		t.Errorf("two identical expansions disagreed:\n %v\n %v", first, second)
+	}
+}
+
+// osByteTree writes four files whose names differ only in one undecodable byte,
+// and returns its root.
+//
+//	a\xe9.json
+//	a\xfe.json
+//	a\xff.json
+//	ab.json     <- the ASCII control, so a class can be shown EXCLUDING a byte
+//
+// These names are legal on Linux and refused by filesystems that require valid
+// UTF-8 (APFS, NTFS). The repo runs a genuine cross-platform matrix, so a
+// filesystem that cannot host the input skips — asserting nothing there is
+// correct, and asserting nothing on Linux is not, which is why the skip is per
+// tree and not per case.
+func osByteTree(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	for _, name := range []string{"a\xe9.json", "a\xfe.json", "a\xff.json", "ab.json"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("{}\n"), 0o644); err != nil {
+			t.Skipf("this filesystem will not host a non-UTF-8 filename (%q): %v", name, err)
+		}
+	}
+	return root
+}
+
+// expandBases runs ExpandFiles against a flat tree and returns the matched
+// basenames, sorted, so an expectation reads as the set of files a user would
+// see named.
+func expandBases(t *testing.T, root, pattern string) []string {
+	t.Helper()
+	out := []string{}
+	for _, match := range ExpandFiles(root + "/" + pattern) {
+		out = append(out, filepath.Base(match))
+	}
+	sort.Strings(out)
+	return out
+}
+
+// The matcher must keep two undecodable BYTES apart, not only the renderer.
+//
+// glob.go:pathRunes exists solely for this: plain []rune maps every byte of an
+// ill-formed sequence to U+FFFD, so `a\xe9.json`, `a\xfe.json` and `a\xff.json`
+// would compare equal to each other, and each undecodable byte becomes a
+// distinct negative sentinel instead. render_test.go pins the DISPLAY half of
+// that guarantee over these same three paths — a quiet merge into one `"file"`
+// value. This is the PRODUCING half: which files are validated in the first
+// place. Without it, `--source 'a[\xe9].json'` validates three files when the
+// user named one, and the renderer faithfully reports all three under correctly
+// distinguished names, so nothing downstream can notice the widening.
+//
+// MUTATION, run and recorded rather than asserted: replacing pathRunes' body
+// with a bare `return []rune(s)` leaves the ENTIRE repo suite green — that is
+// the gap this test closes. Under that mutant the five discriminating cases
+// below return 3, 3, 3, 1 and 3 respectively.
+//
+// The cases have to be CHARACTER CLASSES (or a `*` around a literal byte). The
+// obvious alternatives are all vacuous here and were checked:
+//
+//   - a literal `a\xe9.json` never reaches the matcher at all — globPath
+//     short-circuits on !hasMagic and resolves through lexists;
+//   - `a*.json` and `a?.json` return 4 in both worlds, because every one of
+//     these names has exactly one character in that position.
+//
+// Sets are asserted, not counts: a count of 1 does not say WHICH file, and the
+// defect is a substitution as much as a widening.
+func TestMatcherKeepsPathsWithOSBytesApart(t *testing.T) {
+	root := osByteTree(t)
+
+	cases := []struct {
+		name    string
+		pattern string
+		want    []string
+	}{
+		{
+			// The headline. One byte named, one file matched.
+			name:    "a class naming one undecodable byte matches only that file",
+			pattern: "a[\xe9].json",
+			want:    []string{"a\xe9.json"},
+		},
+		{
+			// Two members, two files — and NOT the third, which differs from
+			// both only in that byte.
+			name:    "a class naming two bytes matches exactly those two",
+			pattern: "a[\xe9\xff].json",
+			want:    []string{"a\xe9.json", "a\xff.json"},
+		},
+		{
+			// The negated form, which fails in the opposite direction: a
+			// collapsing matcher NARROWS here rather than widening (1 file, not
+			// 3), so a guard that only ever looked for over-matching would miss
+			// it. The ASCII name is in the expectation because a negated class
+			// must admit everything it did not name, not merely the two other
+			// byte-bearing names.
+			name:    "a negated class excludes only the named byte",
+			pattern: "a[!\xe9].json",
+			want:    []string{"a\xfe.json", "a\xff.json", "ab.json"},
+		},
+		{
+			// Not a class at all: a `*` on either side of a literal byte. The
+			// byte still has to compare equal only to itself.
+			name:    "a `*` around a literal undecodable byte matches only the file holding it",
+			pattern: "*\xe9*",
+			want:    []string{"a\xe9.json"},
+		},
+	}
+	for _, tc := range cases {
+		sort.Strings(tc.want)
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := expandBases(t, root, tc.pattern); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("ExpandFiles(%q):\n got  %q\n want %q", tc.pattern, got, tc.want)
+			}
+		})
+	}
+}
+
+// The documented range contract: a sentinel "can never ... fall inside a
+// character-class range".
+//
+// `a[\xe9-\xff].json` matches NOTHING. The sentinels are negative, so the span
+// runs from -0xe9 down to -0xff and is empty — there is no ordering in which a
+// user's range over raw bytes silently selects files. Under the collapsing
+// mutant the same pattern is a range over U+FFFD..U+FFFD and matches all three.
+//
+// A correct answer of zero is the one shape that reads like a test which found
+// nothing, so it carries its own positive control: the identical `a[x-y].json`
+// shape over ASCII must still match, or the zero above proves only that ranges
+// have stopped working.
+func TestOSByteSentinelsNeverFallInsideACharacterClassRange(t *testing.T) {
+	root := osByteTree(t)
+
+	if got := expandBases(t, root, "a[\xe9-\xff].json"); len(got) != 0 {
+		t.Errorf("ExpandFiles(%q) = %q, want no matches: a range must not span undecodable bytes",
+			"a[\xe9-\xff].json", got)
+	}
+
+	// The control. Same file set, same class-with-range shape, ASCII members.
+	if got, want := expandBases(t, root, "a[a-c].json"), []string{"ab.json"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("the control ExpandFiles(%q) = %q, want %q — ranges are not working at all, "+
+			"so the empty result above proves nothing", "a[a-c].json", got, want)
+	}
+}
+
+// `?` counts an undecodable byte as exactly ONE character, which is the other
+// half of pathRunes' contract and the reason a sentinel is a rune rather than
+// an escape expanded into several.
+//
+// Stated honestly: this case does NOT discriminate the collapsing mutant — it
+// returns 4 there too, because U+FFFD is also one character. It is here for the
+// mutations it does catch, the ones that change a byte's WIDTH: emitting the
+// byte's two-rune escape, or advancing i by the DecodeRuneInString size rather
+// than by one, both make `a?.json` miss files the user can name.
+func TestOSByteCountsAsOneCharacter(t *testing.T) {
+	root := osByteTree(t)
+	want := []string{"a\xe9.json", "a\xfe.json", "a\xff.json", "ab.json"}
+	sort.Strings(want)
+	if got := expandBases(t, root, "a?.json"); !reflect.DeepEqual(got, want) {
+		t.Errorf("ExpandFiles(%q):\n got  %q\n want %q", "a?.json", got, want)
 	}
 }
