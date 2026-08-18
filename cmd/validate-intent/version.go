@@ -219,7 +219,7 @@ func VersionString() string {
 // cross-compiled release artifact and "which build of it is this" is half the
 // question anyone asking for --version is actually asking:
 //
-//	validate-intent 1.4.0 (go1.22.12 linux/arm64) schema sha256:6535d9ba…
+//	validate-intent 1.4.0 (go1.22.12 linux/arm64) schema sha256:3760d8f7…
 //
 // The identity token is the part that must be identical across the four release
 // targets; the parenthesised half is the part that must differ.
