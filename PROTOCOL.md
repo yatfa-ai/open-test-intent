@@ -170,9 +170,20 @@ whose file carries `…/schema-v1.1/…` as its `$id`, while `schema-v1.0` goes 
 bytes it always did. Every identifier this protocol has ever published stays valid and stays
 constant. A *breaking* change is the v2 case in §5, and changes the filename as well as the tag.
 
-The immutability is enforced rather than promised: a repository ruleset over `refs/tags/schema-v*`
-blocks updates and deletions of these tags, so the guarantee above does not rest on anyone
-remembering it.
+Immutability is a rule about this repository, and the revision scoping above is what makes it
+costless to keep: there is no change to v1 that would ever require `schema-v1.0` to move, so moving
+it is never the convenient option. What backs the rule today is detection — this repository's own
+suite fetches the `$id` out of the schema and compares what it serves against the digest pinned in
+`schema_test.go`, so a tag that moved is caught rather than merely regretted:
+
+```
+OTI_CHECK_PUBLISHED_SCHEMA=1 go test -run TestPublishedSchemaMatchesTheCanonicalFile -count=1 .
+```
+
+Prevention is the other half and is **not yet in place**: a repository ruleset over
+`refs/tags/schema-v*` blocking updates and deletions requires repository-admin rights that the
+automation maintaining these tags does not hold. Until an administrator configures it, someone with
+write access can still move one of these tags, and the check above is what would tell you.
 
 The identifier is an identifier first and an address second. This schema contains no `$ref`, so no
 validator has to dereference it to validate an annotation, and every implementation here (the
