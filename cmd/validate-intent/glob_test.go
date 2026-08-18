@@ -322,8 +322,11 @@ func osByteTree(t *testing.T) string {
 //
 // MUTATION, run and recorded rather than asserted: replacing pathRunes' body
 // with a bare `return []rune(s)` leaves the ENTIRE repo suite green — that is
-// the gap this test closes. Under that mutant the five discriminating cases
-// below return 3, 3, 3, 1 and 3 respectively.
+// the gap this test closes. Every case below fails under that mutant, and each
+// one records the count the mutant returns for it beside the case itself. That
+// is deliberately not written here as one sequence: the discriminating cases
+// span two test functions, so an ordered list has no unambiguous referent and
+// drifts off its cases silently the moment one is reordered or added.
 //
 // The cases have to be CHARACTER CLASSES (or a `*` around a literal byte). The
 // obvious alternatives are all vacuous here and were checked:
@@ -344,23 +347,27 @@ func TestMatcherKeepsPathsWithOSBytesApart(t *testing.T) {
 		want    []string
 	}{
 		{
-			// The headline. One byte named, one file matched.
+			// The headline. One byte named, one file matched. Collapsing
+			// mutant: 3 — every undecodable byte answers to the class.
 			name:    "a class naming one undecodable byte matches only that file",
 			pattern: "a[\xe9].json",
 			want:    []string{"a\xe9.json"},
 		},
 		{
 			// Two members, two files — and NOT the third, which differs from
-			// both only in that byte.
+			// both only in that byte. Collapsing mutant: 3, the third included.
 			name:    "a class naming two bytes matches exactly those two",
 			pattern: "a[\xe9\xff].json",
 			want:    []string{"a\xe9.json", "a\xff.json"},
 		},
 		{
 			// The negated form, which fails in the opposite direction: a
-			// collapsing matcher NARROWS here rather than widening (1 file, not
-			// 3), so a guard that only ever looked for over-matching would miss
-			// it. The ASCII name is in the expectation because a negated class
+			// collapsing matcher NARROWS here rather than widening — collapsing
+			// mutant: 1, where every other DISCRIMINATING case returns 3 — so a
+			// guard that only ever looked for over-matching would miss it. Being
+			// the one case that pulls the other way, it is also why these counts
+			// are recorded per case rather than as one sequence.
+			// The ASCII name is in the expectation because a negated class
 			// must admit everything it did not name, not merely the two other
 			// byte-bearing names.
 			name:    "a negated class excludes only the named byte",
@@ -372,7 +379,8 @@ func TestMatcherKeepsPathsWithOSBytesApart(t *testing.T) {
 		},
 		{
 			// Not a class at all: a `*` on either side of a literal byte. The
-			// byte still has to compare equal only to itself.
+			// byte still has to compare equal only to itself. Collapsing
+			// mutant: 3, all three bytes being U+FFFD there.
 			name:    "a `*` around a literal undecodable byte matches only the file holding it",
 			pattern: "*\xe9*",
 			want:    []string{"a\xe9.json"},
@@ -393,7 +401,8 @@ func TestMatcherKeepsPathsWithOSBytesApart(t *testing.T) {
 // `a[\xe9-\xff].json` matches NOTHING. The sentinels are negative, so the span
 // runs from -0xe9 down to -0xff and is empty — there is no ordering in which a
 // user's range over raw bytes silently selects files. Under the collapsing
-// mutant the same pattern is a range over U+FFFD..U+FFFD and matches all three.
+// mutant the same pattern is a range over U+FFFD..U+FFFD and matches all three
+// (collapsing mutant: 3, against a correct answer of 0).
 //
 // A correct answer of zero is the one shape that reads like a test which found
 // nothing, so it carries its own positive control: the identical `a[x-y].json`
