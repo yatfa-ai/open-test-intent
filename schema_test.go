@@ -36,7 +36,7 @@ import (
 // It is the SAME constant specguard-rspec pins as CANONICAL_V1_SHA256 for its
 // vendored copy. If you change one you are changing the contract for both, and
 // the two pins disagreeing is the signal that a copy has drifted.
-const CanonicalV1SHA256 = "861c82e5dacd8858ef441a505818c503ea289858c62bcb6788ff27dd148508c6"
+const CanonicalV1SHA256 = "3760d8f7c6694aa19ca53cd39c323d7c096ae1140be08c435cd433e77db618ee"
 
 const canonicalPath = "schemas/open-test-intent.v1.json"
 

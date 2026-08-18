@@ -130,7 +130,7 @@ serving its own `$id`; SpecGuard ships with draft-07.
 ```json
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://raw.githubusercontent.com/yatfa-ai/open-test-intent/schema-v1/schemas/open-test-intent.v1.json",
+  "$id": "https://raw.githubusercontent.com/yatfa-ai/open-test-intent/schema-v1.0/schemas/open-test-intent.v1.json",
   "title": "OpenTestIntent v1",
   "type": "object",
   "additionalProperties": false,
@@ -154,10 +154,25 @@ The `$id` above is a real, fetchable address: an unauthenticated `GET` returns e
 `schemas/open-test-intent.v1.json` as published from this repository, which is vendor-neutral —
 hence a URL under `open-test-intent` rather than under any one consumer's product domain.
 
-It is pinned to the git tag **`schema-v1`**, not to a branch, and that tag is immutable: it is cut
-once and never moved. A consumer who pins this identifier therefore cannot have different bytes
-returned to them later. Should v1's constraint set ever need to change, §5 makes that a *new major
-version* with a new filename and a new identifier — `schema-v1` keeps answering with v1 forever.
+**The identifier names one revision of this document, not the major version.** It is pinned to the
+git tag **`schema-v1.0`** — not to a branch — cut once at the commit that published exactly these
+bytes, and never moved or deleted. A consumer who pins this identifier therefore cannot have
+different bytes returned to them later.
+
+That scoping is deliberate, and §5 is the reason for it. §5 permits *additive* changes — a new
+optional field, as `preconditions` once was — without bumping the major version, so
+`schemas/open-test-intent.v1.json` can legitimately gain bytes while remaining v1 and keeping its
+`.v1.json` filename. A tag scoped to the major version would have no honest answer at that moment.
+Move it, and everyone who pinned the identifier silently receives a document they never pinned;
+leave it, and the new file's own `$id` names an address serving the *previous* file. Scoping the tag
+to the revision dissolves that dilemma instead of picking a side: such a change cuts **`schema-v1.1`**,
+whose file carries `…/schema-v1.1/…` as its `$id`, while `schema-v1.0` goes on answering with the
+bytes it always did. Every identifier this protocol has ever published stays valid and stays
+constant. A *breaking* change is the v2 case in §5, and changes the filename as well as the tag.
+
+The immutability is enforced rather than promised: a repository ruleset over `refs/tags/schema-v*`
+blocks updates and deletions of these tags, so the guarantee above does not rest on anyone
+remembering it.
 
 The identifier is an identifier first and an address second. This schema contains no `$ref`, so no
 validator has to dereference it to validate an annotation, and every implementation here (the
@@ -196,7 +211,9 @@ and system — don't add another."*
   `$id`. SpecGuard keeps accepting the prior version for one release cycle.
 - Additive changes (a new optional field like `preconditions`) do **not** bump the major version;
   `additionalProperties: false` means a v1 linter rejects unknown keys, so additions are still
-  an explicit, versioned choice — not silent forward-compatibility.
+  an explicit, versioned choice — not silent forward-compatibility. They do publish a new
+  identifier: the `$id` is scoped to a document revision, so an additive change cuts the next
+  `schema-v1.x` tag and carries it in the file. See §3.
 
 ## 6. What is intentionally *not* in the protocol
 
