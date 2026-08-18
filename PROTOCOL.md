@@ -130,7 +130,7 @@ serving its own `$id`; SpecGuard ships with draft-07.
 ```json
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://specguard.dev/schemas/open-test-intent.v1.json",
+  "$id": "https://raw.githubusercontent.com/yatfa-ai/open-test-intent/schema-v1/schemas/open-test-intent.v1.json",
   "title": "OpenTestIntent v1",
   "type": "object",
   "additionalProperties": false,
@@ -147,6 +147,22 @@ serving its own `$id`; SpecGuard ships with draft-07.
 
 `additionalProperties: false` means typos like `{ entiity: ... }` fail loudly instead of being
 silently dropped.
+
+### The `$id`, and what it guarantees
+
+The `$id` above is a real, fetchable address: an unauthenticated `GET` returns exactly the bytes of
+`schemas/open-test-intent.v1.json` as published from this repository, which is vendor-neutral —
+hence a URL under `open-test-intent` rather than under any one consumer's product domain.
+
+It is pinned to the git tag **`schema-v1`**, not to a branch, and that tag is immutable: it is cut
+once and never moved. A consumer who pins this identifier therefore cannot have different bytes
+returned to them later. Should v1's constraint set ever need to change, §5 makes that a *new major
+version* with a new filename and a new identifier — `schema-v1` keeps answering with v1 forever.
+
+The identifier is an identifier first and an address second. This schema contains no `$ref`, so no
+validator has to dereference it to validate an annotation, and every implementation here (the
+`validate-intent` binary, SpecGuard's ingest path, the `specguard-rspec` linter) reads the schema
+from a local copy and never reaches the network to do it.
 
 ## 4. Worked examples (by layer)
 
