@@ -39,11 +39,38 @@ import (
 // The style — single quotes, switching to double only when the string contains
 // a `\'` and no `"` — is THE ECOSYSTEM'S MESSAGE VOCABULARY, not a stylistic
 // preference and not this file's to change. `specguard-rspec` renders the same
-// violations from its own structured fields and its
-// spec/specguard/rspec/message_parity_spec.rb pins the resulting text against
-// this binary's, so that two tools reporting the same verdict describe it the
-// same way — the client-gem spec's criterion 7. Changing the quoting here
-// silently breaks that agreement in a place only a CI log diff would show.
+// violations from its own structured fields, and the two tools spell them the
+// same way BY CONVENTION — the client-gem spec's criterion 7 — rather than
+// because either program is generated from the other.
+//
+// The convention IS pinned, but in ONE DIRECTION ONLY, and it is not the
+// direction that protects an edit made here. The gem's
+// spec/specguard/rspec/validator_backend_spec.rb asserts its own rendered
+// stdout byte-for-byte against reports RECORDED from this binary and committed
+// as its spec/fixtures/validator/source-corpus.json — a fixture carrying this
+// binary's rendered text verbatim, `layer: value 'model' is not one of
+// ['unit', ...]` included. A change on the GEM's side of that comparison
+// therefore goes red at once, while a change HERE goes red only once someone
+// re-records that corpus. No spec in the gem executes this binary: that one
+// replays the recorded stdout through a shell stub, and the gem's
+// spec/specguard/rspec/message_parity_spec.rb pins less than its name suggests
+// — four payloads through the gem's own `Schema#violations`, asserted against
+// strings hand-copied from here — with a header explicit that reading four
+// hand-copied strings as a proof about two programs is a misreading.
+//
+// Which is exactly why changing the quoting here breaks the agreement
+// SILENTLY. Not because the gem never runs this function — it does: its
+// `ValidatorBackend` shells out to this binary when `SPECGUARD_VALIDATE_INTENT`
+// names one, and hands the strings rendered here straight out as its own
+// findings. But that arm SUBSTITUTES this binary's text for the gem's renderer
+// rather than checking one against the other. Per the gem's `CLI`, the backend
+// and the in-gem linter are alternative arms returning the same result objects,
+// so exactly one spelling is produced on any given run and no run has both to
+// compare. The DISAGREEMENT therefore surfaces at the next re-recording, or in
+// a CI log diff, and nowhere earlier. This repo's own tests are no help there —
+// a quoting change reds TestRenderValue and TestValidateMessages immediately,
+// but that is this binary asserted against itself, and it stays green when the
+// gem is the side that drifted.
 //
 // Escaping: a printable character stays literal, including a non-ASCII one, so
 // a `behavior` sentence keeps its em dash; C0 controls and DEL become visible
