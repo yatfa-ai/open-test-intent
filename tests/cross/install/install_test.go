@@ -66,6 +66,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yatfa-ai/open-test-intent/tests/cross/internal/crosstest"
 )
 
 // manifestName is the file install.sh verifies against — the same constant
@@ -98,19 +100,9 @@ func hostArtifact() string {
 	return fmt.Sprintf("%s-%s-%s", installedName, runtime.GOOS, runtime.GOARCH)
 }
 
-// repoRoot is three levels up from tests/cross/install, where go test runs.
-func repoRoot(t *testing.T) string {
-	t.Helper()
-	root, err := filepath.Abs(filepath.Join("..", "..", ".."))
-	if err != nil {
-		t.Fatalf("could not resolve the repository root: %v", err)
-	}
-	return root
-}
-
 func installScript(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(repoRoot(t), "scripts", "install.sh")
+	path := filepath.Join(crosstest.RepoRoot(t), "scripts", "install.sh")
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("scripts/install.sh is not there: %v", err)
@@ -849,6 +841,285 @@ exit 1
 	requireNothingInstalled(t, prefix, map[string]string{})
 }
 
+// --- what the self-test read ------------------------------------------------
+
+// selfTestEmbeddedClaim is the sentence install.sh prints when it is in a
+// position to say the copy compiled into the binary is what ran.
+//
+// It is spelled once, here, because both halves of the test below turn on this
+// exact claim — the bare-parent case REQUIRES it, the examples-beside-the-prefix
+// case FORBIDS it — and two copies of the string could drift into a pair no
+// implementation has to satisfy at the same time, which is the shape of a test
+// that cannot fail.
+const selfTestEmbeddedClaim = "embedded fixture corpus"
+
+// schemaFileName is the one filename under schemas/ that the binary's schema
+// half actually opens — SchemaPath (cmd/validate-intent/fileio.go) builds
+// root/schemas/open-test-intent.v1.json, and loadSchemaFrom in that same file
+// substitutes the compiled-in copy when reading THAT FILE returns
+// fs.ErrNotExist. The directory is never stat'd.
+//
+// It is a named constant because the difference between this and the directory
+// holding it is the whole point of two of the cases below: a schemas/ tree that
+// does not contain this file is a run that read the EMBEDDED schema, and an
+// install.sh probing the directory reports that run backwards.
+const schemaFileName = "open-test-intent.v1.json"
+
+// selfTestReport returns the block install.sh prints about the bare self-test:
+// the line naming it plus every continuation line, up to the blank line that
+// ends the section.
+//
+// The assertions below are on THAT block rather than on the whole output,
+// because the prefix path appears in the install line and the wiring line too.
+// "the output mentions the probe root" is therefore satisfied by an installer
+// that never probed anything — the vacuous version of this test, and one that
+// would pass today against the unconditional line this test exists to replace.
+func selfTestReport(t *testing.T, output string) string {
+	t.Helper()
+	lines := strings.Split(output, "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.Contains(line, "self-tested") {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("install.sh exited 0 without reporting the bare self-test at all:\n%s", output)
+	}
+	end := start + 1
+	for end < len(lines) && strings.TrimSpace(lines[end]) != "" {
+		end++
+	}
+	return strings.Join(lines[start:end], "\n")
+}
+
+// TestTheSelfTestLineNamesTheCorpusThatRunActuallyRead is the non-vacuousness
+// proof for the WORDING of the check TestAnArtifactThatPassesVersionAndFailsIts
+// SelfTestIsRefused proves the existence of.
+//
+// That check runs the artifact bare and requires exit 0. install.sh then said,
+// unconditionally, that the binary had self-tested its EMBEDDED fixture corpus —
+// a claim about which corpus was read, made without reading anything.
+//
+// It can be false. cmd/validate-intent/selftest.go's RepoRoot() and
+// cmd/validate-intent/fileio.go's SchemaPath() are both dirname(dirname(exe)),
+// and newFixtureSource takes the embedded branch on fs.ErrNotExist and on
+// nothing else — an examples/ tree at that root WINS. The binary under test runs
+// from inside the prefix, so the root is the prefix's PARENT, and this
+// repository's own layout (bin/ beside examples/ and schemas/) is the triggering
+// one: `--prefix <checkout>/bin` is a supported, ordinary invocation that sends
+// the self-test straight back to reading a disk while the line reported the
+// compiled-in copy.
+//
+// Both directions are asserted, because either alone is satisfied by a constant.
+// An installer that always claims the embedded corpus passes the bare-parent
+// case; one that never claims it passes the examples case. Only the pair
+// requires a probe.
+//
+// The schema half is asserted separately from the corpus half, and at the path
+// its own rule keys on, because the two rules are NOT the same question through
+// the same root. newFixtureSource stats the examples/ DIRECTORY; loadSchemaFrom
+// reads the FILE schemas/open-test-intent.v1.json and falls back on THAT being
+// absent. So a schemas/ directory holding some other project's JSON is a run
+// that read the compiled-in schema, and the case for it below is the one that
+// falsifies a probe of the directory — which is a real implementation, not a
+// hypothetical one: it is what the first pass at this shipped, and it announced
+// a schema file that did not exist.
+//
+// What is deliberately NOT asserted is a refusal. scripts/build-release.sh dies
+// on these same two paths, and it owns its prefix; this script does not. Every
+// case below requires exit 0 AND an installed, executable binary, so an
+// implementation that borrowed build-release.sh's `die` fails here rather than
+// silently regressing a working install into a hard error.
+//
+// REACH, stated because the fixture makes it easy to overread: stageSource
+// installs workingArtifactBody, a shell stub, so these cases pin what install.sh
+// SAYS, never what the binary DID. The seeded files exist to be stat'd by the
+// script, not validated by anything. That the sentences below correspond to the
+// binary's real behaviour is established elsewhere — by the rules cited above
+// and by cmd/validate-intent/selftest_embed_test.go in-process — and the
+// expectation table here is written in terms of those rules so the two can be
+// compared by reading. A real binary would additionally require these fixtures
+// to be VALID, which is a stronger fixture than this harness needs or has.
+func TestTheSelfTestLineNamesTheCorpusThatRunActuallyRead(t *testing.T) {
+	requireSupportedHost(t)
+
+	// The prefix is a SUBDIRECTORY of the temp dir, not the temp dir itself,
+	// because the root the binary resolves from is the prefix's parent — the
+	// trees have to go somewhere this subtest controls exclusively, and a
+	// t.TempDir() shared with sibling subtests is not that. It is named bin/
+	// because that is the layout an adopter has when this fires: a checkout.
+	install := func(t *testing.T, seed ...string) (result, string, string) {
+		t.Helper()
+		parent := t.TempDir()
+		for _, rel := range seed {
+			// Seeded as FILES at exact paths, not as trees, because the two
+			// halves key on different depths and a helper that only knew how to
+			// make a directory could not express the case that matters: a
+			// schemas/ that exists without the schema in it.
+			path := filepath.Join(parent, filepath.FromSlash(rel))
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatalf("seeding %s beside the prefix: %v", rel, err)
+			}
+			if err := os.WriteFile(path, []byte("{}\n"), 0o644); err != nil {
+				t.Fatalf("seeding %s beside the prefix: %v", rel, err)
+			}
+		}
+
+		// Resolved the way install.sh resolves it (`cd && pwd -P`) rather than
+		// restated from t.TempDir()'s spelling: /tmp is a symlink on some hosts,
+		// and the path the script prints is the physical one.
+		resolvedParent, err := filepath.EvalSymlinks(parent)
+		if err != nil {
+			t.Fatalf("resolving the probe root the way install.sh does: %v", err)
+		}
+
+		prefix := filepath.Join(parent, "bin")
+		got := run(t, "--from", stageSource(t, sourceOptions{}), "--prefix", prefix)
+		if got.code != 0 {
+			t.Fatalf("installing into %s exited %d, want 0 — the probe informs the wording and must never refuse:\n%s",
+				prefix, got.code, got.output)
+		}
+		// The half of criterion 3 an exit code alone does not carry: a
+		// repo-shaped prefix is still a WORKING install.
+		installed := filepath.Join(prefix, installedName)
+		info, err := os.Stat(installed)
+		if err != nil {
+			t.Fatalf("install.sh exited 0 but installed nothing at %s: %v\n%s", installed, err, got.output)
+		}
+		if info.Mode()&0o111 == 0 {
+			t.Errorf("%s was installed without an executable bit (mode %v)", installed, info.Mode())
+		}
+		return got, resolvedParent, prefix
+	}
+
+	cases := []struct {
+		name string
+		// seed is the set of files created beside the prefix, relative to the
+		// parent — i.e. at the root the installed binary resolves its schema and
+		// its fixtures from.
+		seed []string
+		// corpusFromDisk / schemaFromDisk are what that layout makes the binary
+		// read, worked out from the two rules independently rather than from one
+		// notion of "a tree is there": examples/ is a DIRECTORY stat
+		// (newFixtureSource, selftest.go), the schema is a FILE read of
+		// schemas/open-test-intent.v1.json (loadSchemaFrom, fileio.go).
+		corpusFromDisk bool
+		schemaFromDisk bool
+	}{
+		{
+			name: "a bare parent, so neither half could have been substituted",
+		},
+		{
+			name:           "an examples/ tree beside the prefix",
+			seed:           []string{"examples/unit-order-total.json"},
+			corpusFromDisk: true,
+		},
+		{
+			name:           "the schema file beside the prefix",
+			seed:           []string{"schemas/" + schemaFileName},
+			schemaFromDisk: true,
+		},
+		{
+			// The falsifier for a probe of the DIRECTORY. Both halves are
+			// embedded here: the schemas/ exists, the file the binary opens does
+			// not, so os.ReadFile returns fs.ErrNotExist and the compiled-in
+			// schema is what answered. A `schemas/` holding other JSON is an
+			// ordinary thing for a prefix's parent to have — a project's own
+			// schemas, /usr/local/schemas, a partial checkout — and naming it
+			// here would tell an adopter the embedded copy went unexercised on
+			// the one run that exercised it.
+			name: "a schemas/ tree that does not hold the schema the binary opens",
+			seed: []string{"schemas/some-other-project.json"},
+		},
+		{
+			name:           "both, as a checkout has",
+			seed:           []string{"examples/unit-order-total.json", "schemas/" + schemaFileName},
+			corpusFromDisk: true,
+			schemaFromDisk: true,
+		},
+		{
+			// The halves are independent in BOTH directions, so the mixed case
+			// that is not simply "one of each" is worth pinning too: fixtures off
+			// disk while the schema is still the compiled-in one.
+			name:           "an examples/ tree, and a schemas/ without the schema",
+			seed:           []string{"examples/unit-order-total.json", "schemas/some-other-project.json"},
+			corpusFromDisk: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, probeRoot, _ := install(t, tc.seed...)
+			report := selfTestReport(t, got.output)
+
+			// The paths the binary's own two rules resolve. Everything below is
+			// stated in terms of these rather than of tc.seed, so the guard and
+			// the assertions are asking the same question the binary asks.
+			examplesDir := filepath.Join(probeRoot, "examples")
+			schemaFile := filepath.Join(probeRoot, "schemas", schemaFileName)
+
+			// Guard, not decoration: every case is a claim about what is and is
+			// not at that root. If the fixture did not take, the assertions below
+			// pass or fail for reasons that have nothing to do with install.sh.
+			for _, probe := range []struct {
+				path     string
+				wantHere bool
+			}{
+				{examplesDir, tc.corpusFromDisk},
+				{schemaFile, tc.schemaFromDisk},
+			} {
+				_, err := os.Stat(probe.path)
+				if probe.wantHere && err != nil {
+					t.Fatalf("the fixture did not put anything at %s, but this case is about it being read: %v", probe.path, err)
+				}
+				if !probe.wantHere && !errors.Is(err, fs.ErrNotExist) {
+					t.Fatalf("%s exists but this case is about its absence (%v)", probe.path, err)
+				}
+			}
+
+			// --- the corpus half ---
+			claimedEmbedded := strings.Contains(report, selfTestEmbeddedClaim)
+			if claimedEmbedded == tc.corpusFromDisk {
+				if tc.corpusFromDisk {
+					t.Errorf("the fixture tree at %s is what that run read, and the self-test report still claims %q:\n%s",
+						examplesDir, selfTestEmbeddedClaim, report)
+				} else {
+					t.Errorf("nothing at %s could have supplied fixtures, but the self-test report does not say the compiled-in corpus is what ran:\n%s",
+						probeRoot, report)
+				}
+			}
+			if named := strings.Contains(report, examplesDir); named != tc.corpusFromDisk {
+				if tc.corpusFromDisk {
+					t.Errorf("a fixture tree at %s was what that run read and the self-test report never names it:\n%s", examplesDir, report)
+				} else {
+					t.Errorf("the self-test report names %s, but nothing is there and the compiled-in corpus is what ran:\n%s", examplesDir, report)
+				}
+			}
+
+			// --- the schema half, asserted at the FILE, not the directory ---
+			//
+			// The negative is the one that matters and the one the directory
+			// probe fails: it is checked against the schemas/ directory rather
+			// than the file, so an implementation that names the tree it found is
+			// caught even though the file it implies was never there.
+			schemaDir := filepath.Join(probeRoot, "schemas")
+			if named := strings.Contains(report, schemaDir); named != tc.schemaFromDisk {
+				if tc.schemaFromDisk {
+					t.Errorf("the schema at %s is what that run read and the self-test report never names it:\n%s", schemaFile, report)
+				} else {
+					t.Errorf("the self-test report points at %s, but there is no %s there — that run read the schema compiled into the binary, and this says it did not:\n%s",
+						schemaDir, schemaFileName, report)
+				}
+			}
+			if tc.schemaFromDisk && !strings.Contains(report, schemaFile) {
+				t.Errorf("the self-test report names the schemas/ tree but not %s, so it does not say which file was read:\n%s", schemaFile, report)
+			}
+		})
+	}
+}
+
 // --- could not check: exit 2 ------------------------------------------------
 
 // TestCouldNotCheckIsAlwaysTwoAndNeverAnInstall pins the half of the contract
@@ -1149,7 +1420,7 @@ func runUnder(t *testing.T, shell []string, path string, stdin string, args ...s
 	}
 
 	cmd := exec.CommandContext(ctx, shell[0], argv...)
-	cmd.Dir = repoRoot(t)
+	cmd.Dir = crosstest.RepoRoot(t)
 	cmd.Env = append(os.Environ(), "no_proxy=*", "NO_PROXY=*")
 	if path != "" {
 		cmd.Env = append(cmd.Env, "PATH="+path)
@@ -1544,65 +1815,23 @@ func TestADirectoryOnTheInstallNameIsRefused(t *testing.T) {
 
 // --- the lists and defaults that have to agree ------------------------------
 
-// shellTargets reads the `TARGETS=( ... )` block out of a shell script.
-//
-// Every failure here is a t.Fatal rather than a skip or an empty result, because
-// the whole value of TestTheFourTargetListsAgree is that it FAILS when the lists
-// diverge — and a parser that quietly returned nothing would make four empty
-// lists agree perfectly while the scripts disagreed.
-func shellTargets(t *testing.T, rel string) []string {
-	t.Helper()
-	path := filepath.Join(repoRoot(t), rel)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("reading %s: %v", rel, err)
-	}
-
-	lines := strings.Split(string(data), "\n")
-	start := -1
-	for i, line := range lines {
-		if strings.TrimSpace(line) != "TARGETS=(" {
-			continue
-		}
-		if start != -1 {
-			t.Fatalf("%s holds more than one `TARGETS=(` block, so which one describes the release is a guess", rel)
-		}
-		start = i
-	}
-	if start == -1 {
-		t.Fatalf("%s holds no `TARGETS=(` block. This test can no longer see the list it compares, which is not the same as the lists agreeing — re-point it rather than deleting it", rel)
-	}
-
-	var targets []string
-	for _, line := range lines[start+1:] {
-		entry := strings.TrimSpace(line)
-		if entry == ")" {
-			if len(targets) == 0 {
-				t.Fatalf("%s: the TARGETS block is empty", rel)
-			}
-			return targets
-		}
-		if entry == "" || strings.HasPrefix(entry, "#") {
-			continue
-		}
-		if len(entry) < 3 || !strings.HasPrefix(entry, `"`) || !strings.HasSuffix(entry, `"`) {
-			t.Fatalf("%s: cannot read %q as a target entry; this test parses one quoted \"goos/goarch\" per line", rel, entry)
-		}
-		targets = append(targets, strings.Trim(entry, `"`))
-	}
-	t.Fatalf("%s: the `TARGETS=(` block is never closed", rel)
-	return nil
-}
-
 // TestTheFourTargetListsAgree is the check that makes the duplication of TARGETS
 // safe to have.
 //
-// The list of release targets is written out FOUR times in this repository:
-// scripts/build-release.sh builds them, scripts/install.sh maps a host onto one
-// of them, tests/cross/run_cross_build.sh walks them, and this file names the
-// artifacts they produce. install.sh cannot read the producer's copy at runtime
-// — it runs on a host with no clone, which is the entire premise of the script —
-// so the copy is unavoidable, and only an agreement check makes it honest.
+// FOUR of the repository's copies of the release target list are the ones this
+// test joins: scripts/build-release.sh builds them, scripts/install.sh maps a
+// host onto one of them, tests/cross/run_cross_build.sh walks them, and this
+// file names the artifacts they produce. install.sh cannot read the producer's
+// copy at runtime — it runs on a host with no clone, which is the entire premise
+// of the script — so the copy is unavoidable, and only an agreement check makes
+// it honest.
+//
+// They are not the only copies. tests/cross/sha256sums/main_test.go writes the
+// list out three more times, with three DIFFERENT order semantics, and those are
+// joined to the same authority by TestTheseThreeListsAgreeWithBuildRelease over
+// there rather than here — a set-wise check in this file would silently accept
+// the reordering that makes that file's sortedness assertion vacuous. This test
+// deliberately compares four lists, not seven.
 //
 // Nothing else in the suite can catch a divergence. Every other test here runs
 // on ONE machine and therefore only ever exercises the single target that
@@ -1633,17 +1862,17 @@ func TestTheFourTargetListsAgree(t *testing.T) {
 	// build-release.sh is the authority: it is the script that decides what a
 	// release contains. Everything else is a consumer of that decision.
 	const authorityName = "scripts/build-release.sh"
-	authority := shellTargets(t, authorityName)
+	authority := crosstest.ShellTargets(t, authorityName)
 
 	for _, other := range []struct {
 		name    string
 		targets []string
 	}{
-		{"scripts/install.sh", shellTargets(t, "scripts/install.sh")},
-		{"tests/cross/run_cross_build.sh", shellTargets(t, "tests/cross/run_cross_build.sh")},
+		{"scripts/install.sh", crosstest.ShellTargets(t, "scripts/install.sh")},
+		{"tests/cross/run_cross_build.sh", crosstest.ShellTargets(t, "tests/cross/run_cross_build.sh")},
 		{"tests/cross/install/install_test.go's releaseArtifacts", fromThisFile},
 	} {
-		if missing, extra := setDiff(authority, other.targets); len(missing) > 0 || len(extra) > 0 {
+		if missing, extra := crosstest.SetDiff(authority, other.targets); len(missing) > 0 || len(extra) > 0 {
 			t.Errorf("%s does not name the same release targets as %s:\n  missing from %s: %v\n  named only by %s: %v\n"+
 				"A release built from %s would not contain what %s asks for.",
 				other.name, authorityName,
@@ -1652,29 +1881,6 @@ func TestTheFourTargetListsAgree(t *testing.T) {
 				authorityName, other.name)
 		}
 	}
-}
-
-// setDiff reports what is in want but not got, and what is in got but not want.
-func setDiff(want, got []string) (missing, extra []string) {
-	index := func(items []string) map[string]bool {
-		m := make(map[string]bool, len(items))
-		for _, item := range items {
-			m[item] = true
-		}
-		return m
-	}
-	wantSet, gotSet := index(want), index(got)
-	for _, item := range want {
-		if !gotSet[item] {
-			missing = append(missing, item)
-		}
-	}
-	for _, item := range got {
-		if !wantSet[item] {
-			extra = append(extra, item)
-		}
-	}
-	return missing, extra
 }
 
 // TestPrefixInTheEnvironmentDoesNotRedirectTheInstall pins where the binary is
@@ -1788,8 +1994,9 @@ func TestUsageReportsTheDefaultPrefixItActuallyUses(t *testing.T) {
 // `--version` is answered and returned above cmd/validate-intent's LoadSchema()
 // call, so a real artifact answers it without ever loading a schema. The
 // fallback on a bare prefix is checked end to end by
-// tests/cross/run_cross_build.sh:298-319, which asserts the installed prefix has
-// no schemas/ and then runs a real fixture through the installed binary.
+// tests/cross/run_cross_build.sh's "prefix A: no schema on disk" case, which
+// asserts the installed prefix has no schemas/ and then runs a real fixture
+// through the installed binary.
 //
 // Skipped under -short because it cross-compiles four targets. It is not skipped
 // when the toolchain is merely absent from PATH: `go test` is running, so a Go
@@ -1802,7 +2009,7 @@ func TestAgainstARealReleaseBuild(t *testing.T) {
 	}
 	requireSupportedHost(t)
 
-	root := repoRoot(t)
+	root := crosstest.RepoRoot(t)
 	dist := filepath.Join(t.TempDir(), "release")
 
 	build := exec.Command(filepath.Join(root, "scripts", "build-release.sh"), "1.4.0")
@@ -1882,13 +2089,13 @@ func TestReleaseGateRefusesAThinnedEmbed(t *testing.T) {
 	requireSupportedHost(t)
 
 	// Read back out of the script rather than restated, so this test asserts
-	// agreement with the gate instead of holding a third copy of a literal
-	// tests/parity/run_parity.sh already pins. It also means a check 4 that
+	// agreement with the gate instead of holding a second copy of the literal.
+	// It also means a check 4 that
 	// stopped requiring a tally at all fails here by name, rather than leaving
 	// this test quietly comparing against a string nothing emits.
 	fullTally := pinnedSelfTestTally(t)
 
-	tree := stageTreeForBuild(t, repoRoot(t))
+	tree := stageTreeForBuild(t, crosstest.RepoRoot(t))
 	thinTheEmbeddedCorpus(t, filepath.Join(tree, "corpus.go"))
 
 	dist := filepath.Join(t.TempDir(), "release")
@@ -1954,7 +2161,7 @@ func TestReleaseGateRefusesAThinnedEmbed(t *testing.T) {
 func pinnedSelfTestTally(t *testing.T) string {
 	t.Helper()
 
-	script, err := os.ReadFile(filepath.Join(repoRoot(t), "scripts", "build-release.sh"))
+	script, err := os.ReadFile(filepath.Join(crosstest.RepoRoot(t), "scripts", "build-release.sh"))
 	if err != nil {
 		t.Fatalf("reading scripts/build-release.sh: %v", err)
 	}
@@ -1976,9 +2183,12 @@ func pinnedSelfTestTally(t *testing.T) string {
 // The subset is chosen so all four of the self-test's globs still match
 // something. runSelfTest refuses an EMPTY set outright and exits 1 — a real
 // defect, but one the bare run's exit status already catches, and not the one
-// this test is for. Dropping three of the four examples/invalid/*.json leaves
-// every glob populated, so the artifact exits 0 and simply counts lower, with
-// its ability to REJECT very nearly unexercised.
+// this test is for. Keeping exactly ONE of the examples/invalid/*.json and
+// dropping the rest leaves every glob populated, so the artifact exits 0 and
+// simply counts lower, with its ability to REJECT very nearly unexercised.
+// Stated as "keep one" rather than as a count of what is dropped: the corpus
+// grows, and a sentence naming how many are dropped is stale the next time it
+// does.
 func thinTheEmbeddedCorpus(t *testing.T, corpus string) {
 	t.Helper()
 
@@ -2051,9 +2261,8 @@ func stageTreeForBuild(t *testing.T, root string) string {
 		case entry.IsDir():
 			return os.MkdirAll(target, info.Mode().Perm())
 		case info.Mode()&os.ModeSymlink != 0:
-			// Reproduced as a link rather than followed: tests/parity carries one
-			// deliberately, and resolving it would stage a tree that differs from
-			// the one being copied.
+			// Reproduced as a link rather than followed: resolving it would stage
+			// a tree that differs from the one being copied.
 			dest, err := os.Readlink(path)
 			if err != nil {
 				return err
@@ -2095,10 +2304,9 @@ func stageTreeForBuild(t *testing.T, root string) string {
 // ================
 //
 // README.md is this repo's only adoption surface, and its prose is the one part
-// of it that nothing checks. tests/parity/run_parity.sh executes the README's
-// quickstart INVOCATIONS against both implementations, which is why the mode
-// list stays true; the framing sentences around them are read by no test at
-// all. That is how the section came to carry "(in progress)" and to name
+// of it that nothing checks. This test executes the README's quickstart
+// INVOCATIONS, which is why the mode list stays true; the framing sentences
+// around them are read by no test at all. That is how the section came to carry "(in progress)" and to name
 // "cross-compiled release binaries" as what was left to do — twenty hours after
 // scripts/build-release.sh was committed, and eight after scripts/install.sh.
 // Both were sitting in the tree, tested by this very package, while the README
@@ -2118,7 +2326,7 @@ func stageTreeForBuild(t *testing.T, root string) string {
 // pairing that was false: naming the release binaries and marking them as
 // still-to-come IN THE SAME SENTENCE. Saying they shipped, in any words, passes.
 func TestTheReadmeDoesNotCallShippedPackagingUnfinished(t *testing.T) {
-	root := repoRoot(t)
+	root := crosstest.RepoRoot(t)
 
 	// The gate. These are the two things the stale sentence named as outstanding,
 	// so their presence is what makes the claim false — and their absence is what
@@ -2133,7 +2341,7 @@ func TestTheReadmeDoesNotCallShippedPackagingUnfinished(t *testing.T) {
 	if err != nil {
 		t.Fatalf("could not read README.md: %v", err)
 	}
-	heading, body := goPortSection(t, string(raw))
+	heading, body := binarySection(t, string(raw))
 
 	// 1. The heading. A chapter titled "in progress" is a status claim about the
 	// whole port, read before any of the qualifying prose below it.
@@ -2178,22 +2386,30 @@ func TestTheReadmeDoesNotCallShippedPackagingUnfinished(t *testing.T) {
 	}
 }
 
-// goPortSection returns the Go-port chapter's heading line and its body, up to
-// the next `## ` heading. It fails rather than skips when the chapter is absent:
-// a guard that quietly found nothing to read is the vacuous green this repo
-// keeps having to name.
-func goPortSection(t *testing.T, readme string) (heading, body string) {
+// binarySection returns the chapter describing the binary — its heading line and
+// its body, up to the next `## ` heading. It fails rather than skips when the
+// chapter is absent: a guard that quietly found nothing to read is the vacuous
+// green this repo keeps having to name.
+//
+// The chapter was called "The Go port" while there was something to be a port
+// OF. It is "The binary" now; the match below accepts either, so re-pointing it
+// was a one-line change and not a reason to delete the guard.
+func binarySection(t *testing.T, readme string) (heading, body string) {
 	t.Helper()
 	lines := strings.Split(readme, "\n")
 	start := -1
 	for i, line := range lines {
-		if strings.HasPrefix(line, "## ") && strings.Contains(strings.ToLower(line), "go port") {
+		lowered := strings.ToLower(line)
+		if strings.HasPrefix(line, "## ") &&
+			(strings.Contains(lowered, "the binary") || strings.Contains(lowered, "go port")) {
 			start = i
 			break
 		}
 	}
 	if start < 0 {
-		t.Fatalf("README.md has no `## ...Go port...` heading, so this guard read nothing. If the chapter was renamed, re-point this test at its new title rather than deleting it.")
+		t.Fatalf("README.md has no `## The binary` (or `## The Go port`) heading, so this " +
+			"guard read nothing. If the chapter was renamed again, re-point this test at its " +
+			"new title rather than deleting it.")
 	}
 	end := len(lines)
 	for i := start + 1; i < len(lines); i++ {

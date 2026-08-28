@@ -1,1 +1,0 @@
-{"entity": "Order", "action": "checkout", "behavior": "sums line item prices after the discount", "layer": "unit", "preconditions": ["ok", 5, true, null, 2.5]}

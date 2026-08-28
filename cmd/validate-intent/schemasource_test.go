@@ -18,7 +18,7 @@ package main
 //   - That the digest matches what an independent SHA-256 implementation says
 //     is NOT proven here: the expectation below is computed with the same
 //     algorithm and encoding the code uses, so it pins the choice rather than
-//     re-deriving it. tests/parity/run_parity.sh section 16c does the independent
+//     re-deriving it. TestSchemaSourceReportsTheEnforcedSchemaNotTheCarriedOne does the independent
 //     half, comparing against sha256sum/shasum over a real file.
 
 import (
@@ -197,10 +197,9 @@ func TestSchemaSourceFlagFromAnyPosition(t *testing.T) {
 }
 
 // --help wins over --schema-source in either order, exactly as it wins over
-// everything else. tests/parity/run_parity.sh compares this crossing against the
-// oracle — the reference's own --help loop pre-empts the flag before anything
+// everything else, so a caller who asks for both gets the documentation. That
 // reads it as a filename — so this is the early, package-local form of a claim
-// that is settled against Python.
+// ordering is settled here.
 func TestHelpWinsOverSchemaSource(t *testing.T) {
 	for _, argv := range [][]string{
 		{"--help", schemaSourceFlag},
@@ -282,8 +281,7 @@ func TestTheHelpTrailerDocumentsSchemaSource(t *testing.T) {
 			"a released artifact has", schemaSourceFlag)
 	}
 	if strings.Contains(usage, schemaSourceFlag) {
-		t.Errorf("the shared usage block names %s; it is compared byte-for-byte against "+
-			"a reference that has no such flag, and is printed on refusals that are "+
+		t.Errorf("the shared usage block names %s; it is printed on refusals that are "+
 			"compared too", schemaSourceFlag)
 	}
 }
@@ -359,7 +357,7 @@ func TestSchemaSourceReportsTheEnforcedSchemaNotTheCarriedOne(t *testing.T) {
 
 // Success criterion 3: a schema that EXISTS and cannot be loaded is not papered
 // over with the embedded copy, and does not become a clean report. It exits 2
-// with the diagnostic byte-for-byte identical to the one a verdict run emits on
+// with the diagnostic identical to the one a verdict run emits on
 // the same tree — asserted by RUNNING both rather than by observing that they
 // call the same function.
 func TestSchemaSourceFailsExactlyAsTheVerdictPathDoes(t *testing.T) {
@@ -374,7 +372,7 @@ func TestSchemaSourceFailsExactlyAsTheVerdictPathDoes(t *testing.T) {
 			"schema to report", schemaSourceFlag, stdout)
 	}
 	if !strings.HasPrefix(stderr, "error: could not load schema ") {
-		t.Errorf("run(%s) stderr = %q, want the reference's could-not-load diagnostic",
+		t.Errorf("run(%s) stderr = %q, want the could-not-load diagnostic",
 			schemaSourceFlag, stderr)
 	}
 

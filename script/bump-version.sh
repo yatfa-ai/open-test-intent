@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Bump the patch version in VERSION, commit, tag vX.Y.Z, and push to main.
+# Bump the patch version in VERSION, commit, push to main, and tag vX.Y.Z on
+# what landed.
 #
 # Mirrors yatfa's script/bump-version.sh (VERSION file, not package.json — this
 # is a Go repo) and warden's tag step (the GitHub Release attaches its assets to
@@ -63,21 +64,32 @@ echo "$NEW_VERSION" > VERSION
 git add VERSION
 git commit -m "bump: $CURRENT_VERSION -> $NEW_VERSION"
 
-# Tag the release. The GitHub Release attaches the four cross-compiled binaries
-# and their SHA256SUMS to this tag, and scripts/install.sh downloads from it.
-git tag "v$NEW_VERSION"
-
 # Pull with rebase to incorporate any commits that landed on main since checkout,
 # then push the branch and the tag. Retry up to 3 times to handle concurrent pushes.
+#
+# The tag is created INSIDE the loop, after `git push origin main` succeeds, and
+# never before the rebase. `git pull --rebase` replays the bump commit onto the
+# advanced main and gives it a new SHA; tags do not follow a rebase, so a tag
+# created beforehand would name an abandoned object that is not an ancestor of
+# main — while the release workflow builds the binaries from the post-rebase tree
+# and scripts/install.sh serves whatever that tag points at.
+#
+# `-f` makes a retry idempotent when an earlier attempt created the local tag but
+# failed to push it. It cannot clobber a published tag: the tag-reuse guard above
+# already refused that case before any work started.
 MAX_RETRIES=3
 RETRY_COUNT=0
 PUSH_SUCCESS=false
 
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
     if git pull --rebase origin main; then
-        if git push origin main && git push origin "v$NEW_VERSION"; then
-            PUSH_SUCCESS=true
-            break
+        # HEAD is now the rebased bump commit — the object the tag must name.
+        if git push origin main; then
+            git tag -f "v$NEW_VERSION" HEAD
+            if git push origin "v$NEW_VERSION"; then
+                PUSH_SUCCESS=true
+                break
+            fi
         fi
     fi
     RETRY_COUNT=$((RETRY_COUNT + 1))

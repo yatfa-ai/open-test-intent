@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/yatfa-ai/open-test-intent/tests/cross/internal/crosstest"
 )
 
 // Calibration for the manifest tool.
@@ -139,6 +141,21 @@ var releaseOrder = []string{
 	"validate-intent-darwin-arm64",
 }
 
+// manifestNames is the set of rows a manifest over stagedArtifacts must contain.
+//
+// Written in sorted order because that is what the emitted manifest looks like,
+// but read as a SET: the assertion using it is a per-entry strings.Contains, so
+// the order it happens to be written in carries no claim. It is kept separate
+// from releaseOrder rather than derived from it precisely BECAUSE their orders
+// are different claims — see releaseOrder's comment above for what deriving one
+// from the other would destroy.
+var manifestNames = []string{
+	"validate-intent-darwin-amd64",
+	"validate-intent-darwin-arm64",
+	"validate-intent-linux-amd64",
+	"validate-intent-linux-arm64",
+}
+
 // stagedOperands lists dir's files in releaseOrder, with anything else in dir
 // following in REVERSE name order — so this helper never hands emit an operand
 // list that is already sorted, whatever the fixture holds.
@@ -185,17 +202,6 @@ func emitFor(t *testing.T, dir string) string {
 	return manifest
 }
 
-// requireProblem fails unless some problem contains want.
-func requireProblem(t *testing.T, problems []string, want string) {
-	t.Helper()
-	for _, p := range problems {
-		if strings.Contains(p, want) {
-			return
-		}
-	}
-	t.Errorf("no problem mentioned %q; got %#v", want, problems)
-}
-
 func TestEmitWritesTheStandardFormatWithBasenamesOnly(t *testing.T) {
 	dir := stageWith(t, stagedArtifacts)
 
@@ -240,12 +246,7 @@ func TestEmitWritesTheStandardFormatWithBasenamesOnly(t *testing.T) {
 		}
 		names = append(names, line[66:])
 	}
-	for _, want := range []string{
-		"validate-intent-darwin-amd64",
-		"validate-intent-darwin-arm64",
-		"validate-intent-linux-amd64",
-		"validate-intent-linux-arm64",
-	} {
+	for _, want := range manifestNames {
 		if !strings.Contains(text, want+"\n") {
 			t.Errorf("the manifest does not list %s:\n%s", want, text)
 		}
@@ -315,7 +316,7 @@ func TestVerifyCatchesAnArtifactCorruptedAfterEmit(t *testing.T) {
 	if len(problems) == 0 {
 		t.Fatal("a staged artifact was corrupted between digesting and verifying and the manifest check PASSED")
 	}
-	requireProblem(t, problems, "validate-intent-darwin-arm64 does not match SHA256SUMS")
+	crosstest.RequireProblem(t, problems, "validate-intent-darwin-arm64 does not match SHA256SUMS")
 
 	// The three untouched artifacts must not be swept up in it: a check that
 	// failed everything on any change would be no more informative than one that
@@ -349,7 +350,7 @@ func TestVerifyCatchesAListedArtifactThatIsMissing(t *testing.T) {
 		// report half a release as "could not examine".
 		t.Fatalf("a missing listed file was reported as unexaminable: %v", err)
 	}
-	requireProblem(t, problems, "validate-intent-linux-arm64 is listed in SHA256SUMS but is not there")
+	crosstest.RequireProblem(t, problems, "validate-intent-linux-arm64 is listed in SHA256SUMS but is not there")
 }
 
 func TestVerifyCatchesAnArtifactThatNoRowDescribes(t *testing.T) {
@@ -367,7 +368,7 @@ func TestVerifyCatchesAnArtifactThatNoRowDescribes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
-	requireProblem(t, problems, "described by no row in SHA256SUMS: validate-intent-windows-amd64")
+	crosstest.RequireProblem(t, problems, "described by no row in SHA256SUMS: validate-intent-windows-amd64")
 }
 
 // abcRow is a WELL-FORMED row for the file every parse fixture's directory
@@ -622,5 +623,103 @@ func TestThePlatformToolReadsWhatWeWrite(t *testing.T) {
 				t.Fatalf("%s passed a tampered artifact:\n%s", tc.tool, out)
 			}
 		})
+	}
+}
+
+// --- the lists in this file, joined to the authority that decides them -------
+
+// artifactPrefix is the name every release artifact is built under, before its
+// -<goos>-<goarch> suffix. Same constant install.sh installs under and
+// tests/cross/install/install_test.go calls installedName.
+const artifactPrefix = "validate-intent"
+
+// TestTheseThreeListsAgreeWithBuildRelease joins this file's three copies of the
+// release target list to the script that decides it.
+//
+// This file writes the list out three times — stagedArtifacts' keys, releaseOrder,
+// and manifestNames — and until this test existed none of the three was joined to
+// anything. tests/cross/install/install_test.go's TestTheFourTargetListsAgree
+// joins four OTHER copies to the same authority and says why the duplication is
+// unavoidable; that check's reach is its selector, not its subject, and these
+// three sit outside it.
+//
+// Nothing else here can catch the divergence, because these tests stage their own
+// fixture files from these very lists: they are internally self-consistent by
+// construction, so a target renamed in build-release.sh leaves the whole package
+// green over a release it no longer describes.
+//
+// releaseOrder is the sharp one. Its comment above states, as an unexecuted claim
+// about another file, that build-release.sh appends in exactly its order and that
+// this is what makes the sortedness assertion in
+// TestEmitWritesTheStandardFormatWithBasenamesOnly able to fail at all. Let that
+// order drift and the assertion goes vacuous — emit's sort could be deleted with
+// this package fully green. So releaseOrder is compared as an ORDERED list while
+// the other two are compared as SETS, matching what each one actually claims.
+// They are deliberately NOT collapsed into one list: their different orders are
+// the point.
+func TestTheseThreeListsAgreeWithBuildRelease(t *testing.T) {
+	// build-release.sh is the authority: it is the script that decides what a
+	// release contains. Everything in this file is a consumer of that decision.
+	//
+	// crosstest.ShellTargets fatals rather than returning nothing when it cannot
+	// find the TARGETS=( block — a parser that quietly returned an empty list
+	// would let this whole test pass over a script it can no longer read, which
+	// is not the same thing as the lists agreeing.
+	const authorityName = "scripts/build-release.sh"
+	authority := crosstest.ShellTargets(t, authorityName)
+
+	// Converted into this file's vocabulary: the authority names goos/goarch,
+	// these lists name artifacts. Order preserved, because one of the three
+	// comparisons below is about order.
+	wantOrdered := make([]string, 0, len(authority))
+	for _, target := range authority {
+		goos, goarch, ok := strings.Cut(target, "/")
+		if !ok || goos == "" || goarch == "" {
+			t.Fatalf("%s names %q, which is not a <goos>/<goarch> target", authorityName, target)
+		}
+		wantOrdered = append(wantOrdered, fmt.Sprintf("%s-%s-%s", artifactPrefix, goos, goarch))
+	}
+
+	// SET comparisons. stagedArtifacts is a map, so it has no order to check;
+	// manifestNames is read entry-by-entry with strings.Contains, so its order
+	// is not a claim either. What must not differ is WHICH artifacts are named.
+	staged := make([]string, 0, len(stagedArtifacts))
+	for name := range stagedArtifacts {
+		staged = append(staged, name)
+	}
+	for _, set := range []struct {
+		name  string
+		names []string
+	}{
+		{"stagedArtifacts' keys", staged},
+		{"manifestNames", manifestNames},
+	} {
+		missing, extra := crosstest.SetDiff(wantOrdered, set.names)
+		if len(missing) > 0 || len(extra) > 0 {
+			t.Errorf("%s does not name the same release artifacts as %s:\n  missing from %s: %v\n  named only by %s: %v\n"+
+				"These tests would be staging a release that %s does not build.",
+				set.name, authorityName,
+				set.name, missing,
+				set.name, extra,
+				authorityName)
+		}
+	}
+
+	// ORDERED comparison. releaseOrder claims to BE build-release.sh's build
+	// order, and that claim is load-bearing: it is the only reason the operand
+	// list handed to emit is not already sorted.
+	if len(releaseOrder) != len(wantOrdered) {
+		t.Fatalf("releaseOrder has %d entries and %s builds %d:\n  releaseOrder: %v\n  %s: %v",
+			len(releaseOrder), authorityName, len(wantOrdered), releaseOrder, authorityName, wantOrdered)
+	}
+	for i := range wantOrdered {
+		if releaseOrder[i] != wantOrdered[i] {
+			t.Errorf("releaseOrder is not the order %s builds in — entry %d is %q there and %q here:\n  releaseOrder: %v\n  %s: %v\n"+
+				"releaseOrder exists to be build-release.sh's NON-lexicographic order. If the two have\n"+
+				"converged on a sorted order, the sortedness assertion in\n"+
+				"TestEmitWritesTheStandardFormatWithBasenamesOnly can no longer fail and emit's sort is\n"+
+				"untested — re-point releaseOrder at the real order rather than editing the assertion.",
+				authorityName, i, wantOrdered[i], releaseOrder[i], releaseOrder, authorityName, wantOrdered)
+		}
 	}
 }

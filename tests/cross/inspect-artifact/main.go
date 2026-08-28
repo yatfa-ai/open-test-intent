@@ -72,6 +72,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+
+	"github.com/yatfa-ai/open-test-intent/tests/cross/internal/report"
 )
 
 // darwinBaselineDylibs is the set of dynamic libraries a darwin Go binary is
@@ -105,26 +107,10 @@ func main() {
 	}
 	path := flag.Arg(0)
 
+	// The 0/1/2 translation lives in report because sha256sums makes the same
+	// one, and the scripts that read these codes discriminate all three.
 	problems, notes, err := inspect(path, *goos, *goarch)
-	if err != nil {
-		// Could not examine the file at all. This is "could not check", which
-		// is a distinct outcome from "checked and found wrong" and gets a
-		// distinct exit code, so a caller can never read it as either a pass
-		// or a substantive failure.
-		fmt.Fprintf(os.Stderr, "inspect-artifact: %v\n", err)
-		os.Exit(2)
-	}
-
-	for _, n := range notes {
-		fmt.Println(n)
-	}
-	if len(problems) > 0 {
-		for _, p := range problems {
-			fmt.Fprintln(os.Stderr, "  FAIL  "+p)
-		}
-		os.Exit(1)
-	}
-	os.Exit(0)
+	report.Exit("inspect-artifact", problems, notes, err)
 }
 
 // inspect returns the list of failed assertions and the list of observations

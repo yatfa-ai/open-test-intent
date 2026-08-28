@@ -1,6 +1,0 @@
-{
-  "entity": "Order",
-  "action": "capture",
-  "behavior": "reached twice: by its real path and through the spec/linked symlink",
-  "layer": "unit"
-}

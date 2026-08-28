@@ -6,8 +6,8 @@ package main
 // WHY THESE EXIST AS UNIT TESTS AND NOT ONLY AS HARNESS CASES
 // ===========================================================
 //
-// tests/parity/run_parity.sh checks the present-but-unreadable case by running
-// chmod 000 and comparing against Python. Under root, chmod 000 does not make a
+// A CLI-level check of the present-but-unreadable case runs chmod 000 and
+// inspects the diagnostic. Under root, chmod 000 does not make a
 // file unreadable, so that case SKIPs — it prints a red SKIP line and moves on.
 // A skipped case cannot go red, so "the fix does not fall back past a broken
 // schema" would be established by watching a check that never ran fail to
@@ -54,7 +54,7 @@ func writeSchema(t *testing.T, dir, content string) string {
 	return path
 }
 
-// mustDecode lives in port_test.go — this file reuses it rather than keeping a
+// mustDecode lives in validator_test.go — this file reuses it rather than keeping a
 // second decoder helper that could drift from it.
 
 // ABSENT — the release-asset case, and the only behaviour this slice changes.
@@ -113,7 +113,7 @@ func TestLoadSchemaFromPrefersAPresentFileOverTheEmbeddedCopy(t *testing.T) {
 	}
 }
 
-// The 34 custom-schema assertions in the parity harness depend on exactly the
+// The custom-schema assertions in this file depend on exactly the
 // property above, through the executable-relative path rather than a direct
 // call. This is that path, end to end, minus the subprocess.
 func TestLoadSchemaPrefersASchemaBesideTheExecutable(t *testing.T) {
@@ -230,8 +230,12 @@ func TestLoadSchemaFromDoesNotFallBackPastAPresentButBrokenSchema(t *testing.T) 
 		if source.SHA256 != "" {
 			t.Errorf("SHA256 = %q after a failed read; want empty", source.SHA256)
 		}
-		if !strings.Contains(err.Error(), "Permission denied") {
-			t.Errorf("diagnostic lost the errno: %q", err.Error())
+		// The diagnostic must still name WHY the file could not be had. A
+		// "could not load schema <path>" with no cause sends the reader to a
+		// file that looks fine to them, because they are not the user the
+		// permission bits denied.
+		if !strings.Contains(err.Error(), "permission denied") {
+			t.Errorf("diagnostic lost the cause: %q", err.Error())
 		}
 	})
 }

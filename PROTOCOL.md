@@ -2,8 +2,13 @@
 
 The **OpenTestIntent** protocol is a tiny, language-agnostic annotation that declares *what a
 test verifies*. It is "open" because any tool — not just SpecGuard — can read it. The canonical schema
-and this specification live in the **`open-test-intent`** repository (vendor-neutral); SpecGuard
-is the reference implementation and first consumer.
+and this specification live in the **`open-test-intent`** repository (vendor-neutral); SpecGuard is
+its first consumer.
+
+**This document is normative.** Together with `schemas/open-test-intent.v1.json` (§3) it defines
+what a valid annotation is. No implementation is the arbiter: the `validate-intent` binary shipped
+from this repository is the canonical *validator*, and where it and this document disagree, the
+document is right and the binary has a bug.
 
 A test that carries an `@intent` is **annotated**; one that doesn't is **unannotated**. Both are
 ingested (so the annotated ratio is measurable), but only annotated tests participate in
@@ -33,6 +38,66 @@ All of the following parse to the same intent and are valid:
 # @intent: { entity: 'Order', action: 'checkout', behavior: 'returns 402 payment required on expired card', layer: 'request' }
 # @intent: {entity:"Order",action:"checkout",behavior:"returns 402 payment required on expired card",layer:"request"}
 ```
+
+### 1.1 The accepted JSON language (normative)
+
+The key words **MUST**, **MUST NOT**, **SHOULD** and **MAY** in this section are to be interpreted
+as described in RFC 2119.
+
+Normalization is a *surface-syntax* step and nothing more: it rewrites unquoted keys, single quotes
+and a trailing comma, and it rewrites nothing inside a quoted string. **The result of normalizing an
+annotation payload MUST be a JSON text as defined by RFC 8259.** Everything below is a property of
+that normalized text; a payload already written in strict JSON is normalized to itself, so the rules
+apply to it unchanged.
+
+A conforming validator MUST reject a payload that is not such a JSON text, and MUST report the
+rejection as a parse failure rather than as a schema violation.
+
+**Encoding.** A payload MUST be well-formed UTF-8 (RFC 8259 §8.1). Input that is not well-formed
+UTF-8 is not a JSON text, and a validator MUST NOT repair it — substituting U+FFFD for an
+undecodable byte silently changes the value being validated.
+
+RFC 8259 leaves three points to the implementation. Until now each was settled, de facto, by
+whichever parser a given tool happened to use. They are settled by this document instead. None of
+the three is a change of protocol *behaviour* — see "Why this states rather than narrows" below.
+
+**(a) Surrogate escapes MUST be paired.** A `\uXXXX` escape naming a high surrogate (U+D800–U+DBFF)
+MUST be immediately followed by a `\uXXXX` escape naming a low surrogate (U+DC00–U+DFFF), and a
+low-surrogate escape MUST NOT appear except as the second half of such a pair. An unpaired
+surrogate escape MUST be rejected. RFC 8259 §8.2 makes an unpaired surrogate non-conformant and
+directs implementations aiming at interoperability to reject it; a lone surrogate also has no UTF-8
+encoding, so a payload carrying one cannot cross a transport that requires well-formed UTF-8 —
+which every consumer of this protocol does.
+
+```jsonc
+"\ud83d\ude80"  // valid — a surrogate pair, one astral character (U+1F680)
+"\ud800"        // REJECTED — lone high surrogate
+"\udc00"        // REJECTED — lone low surrogate
+"\ud800\ud800"  // REJECTED — a high surrogate not followed by a low one
+```
+
+**(b) Non-finite literals are not JSON and MUST be rejected.** `NaN`, `Infinity` and `-Infinity`
+are not values in RFC 8259 §6's number grammar. A parser that accepts them accepts a superset of
+JSON; a conforming validator MUST NOT.
+
+**(c) The maximum nesting depth is 100.** RFC 8259 §9 makes depth limits explicitly
+implementation-defined, so this document fixes one. An array or object is one level of nesting; the
+outermost object of an annotation payload is level 1. A payload nested more than **100** levels deep
+MUST be rejected. Any conforming payload is far below this bound — the schema in §3 admits exactly
+two levels — so the limit exists to bound a parser's work, not to constrain an author.
+
+**Duplicate names.** RFC 8259 §4 says the names within an object SHOULD be unique. A payload
+repeating a name is accepted, and the *last* value for that name is the one validated; the name
+keeps the position of its first occurrence for the purposes of diagnostic ordering. Authors SHOULD
+NOT rely on this.
+
+**Why this states rather than narrows.** §3's schema sets `additionalProperties: false` and admits
+only `string` and `array`-of-`string` values, so a non-finite number and a deep nest can never
+occupy a schema-legal slot: refusing them changes which diagnostic is printed, never whether a
+payload passes. A surrogate escape lives inside a string and so is the only one of the three that
+could move a verdict — and the payload it moves is one no consumer could carry. Accepting any of
+the three was never a documented capability of this protocol. Stating them costs no field, no type,
+no constraint and no enum, so it is not a breaking change under §5 and does not bump the version.
 
 ## 2. Fields
 
@@ -65,7 +130,7 @@ serving its own `$id`; SpecGuard ships with draft-07.
 ```json
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://specguard.dev/schemas/open-test-intent.v1.json",
+  "$id": "https://raw.githubusercontent.com/yatfa-ai/open-test-intent/schema-v1.0/schemas/open-test-intent.v1.json",
   "title": "OpenTestIntent v1",
   "type": "object",
   "additionalProperties": false,
@@ -82,6 +147,48 @@ serving its own `$id`; SpecGuard ships with draft-07.
 
 `additionalProperties: false` means typos like `{ entiity: ... }` fail loudly instead of being
 silently dropped.
+
+### The `$id`, and what it guarantees
+
+The `$id` above is a real, fetchable address: an unauthenticated `GET` returns exactly the bytes of
+`schemas/open-test-intent.v1.json` as published from this repository, which is vendor-neutral —
+hence a URL under `open-test-intent` rather than under any one consumer's product domain.
+
+**The identifier names one revision of this document, not the major version.** It is pinned to the
+git tag **`schema-v1.0`** — not to a branch — cut once at the commit that published exactly these
+bytes. **It must never be moved or deleted:** that rule is what makes this identifier safe to pin,
+and what backs it today is stated below.
+
+That scoping is deliberate, and §5 is the reason for it. §5 permits *additive* changes — a new
+optional field, as `preconditions` once was — without bumping the major version, so
+`schemas/open-test-intent.v1.json` can legitimately gain bytes while remaining v1 and keeping its
+`.v1.json` filename. A tag scoped to the major version would have no honest answer at that moment.
+Move it, and everyone who pinned the identifier silently receives a document they never pinned;
+leave it, and the new file's own `$id` names an address serving the *previous* file. Scoping the tag
+to the revision dissolves that dilemma instead of picking a side: such a change cuts **`schema-v1.1`**,
+whose file carries `…/schema-v1.1/…` as its `$id`, while `schema-v1.0` goes on answering with the
+bytes it always did. Every identifier this protocol has ever published stays valid and stays
+constant. A *breaking* change is the v2 case in §5, and changes the filename as well as the tag.
+
+Immutability is a rule about this repository, and the revision scoping above is what makes it
+costless to keep: there is no change to v1 that would ever require `schema-v1.0` to move, so moving
+it is never the convenient option. What backs the rule today is detection — this repository's own
+suite fetches the `$id` out of the schema and compares what it serves against the digest pinned in
+`schema_test.go`, so a tag that moved is caught rather than merely regretted:
+
+```
+OTI_CHECK_PUBLISHED_SCHEMA=1 go test -run TestPublishedSchemaMatchesTheCanonicalFile -count=1 .
+```
+
+Prevention is the other half and is **not yet in place**: a repository ruleset over
+`refs/tags/schema-v*` blocking updates and deletions requires repository-admin rights that the
+automation maintaining these tags does not hold. Until an administrator configures it, someone with
+write access can still move one of these tags, and the check above is what would tell you.
+
+The identifier is an identifier first and an address second. This schema contains no `$ref`, so no
+validator has to dereference it to validate an annotation, and every implementation here (the
+`validate-intent` binary, SpecGuard's ingest path, the `specguard-rspec` linter) reads the schema
+from a local copy and never reaches the network to do it.
 
 ## 4. Worked examples (by layer)
 
@@ -115,7 +222,9 @@ and system — don't add another."*
   `$id`. SpecGuard keeps accepting the prior version for one release cycle.
 - Additive changes (a new optional field like `preconditions`) do **not** bump the major version;
   `additionalProperties: false` means a v1 linter rejects unknown keys, so additions are still
-  an explicit, versioned choice — not silent forward-compatibility.
+  an explicit, versioned choice — not silent forward-compatibility. They do publish a new
+  identifier: the `$id` is scoped to a document revision, so an additive change cuts the next
+  `schema-v1.x` tag and carries it in the file. See §3.
 
 ## 6. What is intentionally *not* in the protocol
 

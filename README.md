@@ -22,64 +22,61 @@ SpecGuard is the **reference consumer**; this repo is intentionally SpecGuard-in
 test frameworks — pytest, jest, Go, … — can adopt the same annotation without coupling to the
 SpecGuard platform.
 
+**[PROTOCOL.md](PROTOCOL.md) is normative.** Together with `schemas/open-test-intent.v1.json` it
+defines what a valid annotation is, down to the JSON: §1.1 states that a payload is an RFC 8259
+JSON text and resolves the three points that RFC leaves to the implementation. No implementation is
+the arbiter — where `validate-intent` and the document disagree, the document is right.
+
 ## How to validate
 
-Two implementations of the same validator, held to each other byte for byte. Pick by what the
-machine you are running on already has:
+**`validate-intent`** is the canonical validator: a single static binary, no runtime to install on
+any host. One line acquires and verifies it, needing neither a clone of this repository nor a Go
+toolchain — the installer itself is fetched over the network and piped, so there is nothing to
+check out first:
 
-- **`bin/validate-intent`** — the reference implementation, Python 3 standard library only. On a
-  host that already has `python3` there is nothing to install. That qualifier is the whole of it:
-  a `node:alpine`, `golang` or `scratch` image has no `python3` at all, so on those this script is
-  not a zero-install path but an impossible one.
-- **`validate-intent`** — the Go port, a single static binary with no runtime to install anywhere.
-  One line acquires and verifies it, needing neither a clone of this repository nor a Go toolchain
-  — the installer itself is fetched over the network and piped, so there is nothing to check out
-  first:
+```sh
+curl -fsSL https://host/owner/repo/raw/v1.4.0/scripts/install.sh | bash -s -- --from https://host/owner/repo/releases/download/v1.4.0
+```
 
-  ```sh
-  curl -fsSL https://host/owner/repo/raw/v1.4.0/scripts/install.sh | bash -s -- --from https://host/owner/repo/releases/download/v1.4.0
-  ```
+Pipe it into **`bash`**, not `sh`: arriving on stdin is the one case the script cannot re-exec
+itself out of. On a host that *does* have this repository, the same script runs from the
+checkout — `scripts/install.sh --from dist/release --prefix /usr/local/bin`. Both URLs above
+name a **published release, which this repository deliberately does not produce**: it builds
+and verifies release assets, but tagging them and uploading them is out of its scope.
 
-  Pipe it into **`bash`**, not `sh`: arriving on stdin is the one case the script cannot re-exec
-  itself out of. On a host that *does* have this repository, the same script runs from the
-  checkout — `scripts/install.sh --from dist/release --prefix /usr/local/bin`. Both URLs above
-  name a **published release, which this repository deliberately does not produce**: it builds
-  and verifies release assets, but tagging them and uploading them is out of its scope.
+See [Installing a built artifact, and verifying it](#installing-a-built-artifact-and-verifying-it)
+for what is checked before anything lands, and [The binary](#the-binary) for the mode matrix and
+what is genuinely still open.
 
-  See [Installing a built artifact, and verifying it](#installing-a-built-artifact-and-verifying-it)
-  for what is checked before anything lands, and [The Go port](#the-go-port) for the mode matrix
-  and what is genuinely still open.
-
-Either one checks an annotation against `schemas/open-test-intent.v1.json`, either as parsed JSON
-or straight out of your test source. The commands below invoke the Python script; the binary takes
-the same arguments and prints the same bytes.
+It checks an annotation against `PROTOCOL.md` and `schemas/open-test-intent.v1.json`, either as
+parsed JSON or straight out of your test source.
 
 ```sh
 # Self-test the in-repo fixtures (no arguments): every examples/*.json must pass
 # and every examples/invalid/*.json must fail, and every @intent in
 # examples/sources/* must pass while every one in examples/sources/invalid/*
 # must fail. Exits 0 only if all match.
-./bin/validate-intent
+validate-intent
 
 # Validate a single annotation from stdin (the `-` sentinel) — the programmatic
 # path for scripts and AI agents. Prints PASS/FAIL and exits 0/1 accordingly.
 echo '{ "entity": "Order", "action": "checkout", "behavior": "returns 402 on expired card", "layer": "request" }' \
-  | ./bin/validate-intent -
+  | validate-intent -
 
 # Validate your own annotation file(s) or glob — exits 0 if every file conforms,
 # non-zero with the specific violated rule otherwise.
-./bin/validate-intent path/to/intent.json
-./bin/validate-intent 'specs/**/*.json'
+validate-intent path/to/intent.json
+validate-intent 'specs/**/*.json'
 
 # Validate @intent annotations *in place* inside test source files (--source,
 # or -s). Each finding is reported at its file:line — the location the other
 # modes can't give you. Exits 0 if every annotation found conforms.
-./bin/validate-intent --source spec/models/order_spec.rb
-./bin/validate-intent --source 'spec/**/*_spec.rb' 'tests/**/*.py'
+validate-intent --source spec/models/order_spec.rb
+validate-intent --source 'spec/**/*_spec.rb' 'tests/**/*.py'
 
 # Any of the three above, as one JSON document on stdout instead of prose
 # (--json goes anywhere on the line). Same checks, same exit code.
-./bin/validate-intent --json --source 'spec/**/*_spec.rb'
+validate-intent --json --source 'spec/**/*_spec.rb'
 ```
 
 The first three paths take **strict JSON**. `--source` is the one that reads the
@@ -90,7 +87,7 @@ object literal that follows it, and normalizes the protocol's permissive syntax
 Capture is string-aware, so a brace or apostrophe inside a `behavior` sentence is safe.
 
 ```
-$ ./bin/validate-intent --source spec/models/order_spec.rb
+$ validate-intent --source spec/models/order_spec.rb
 PASS  spec/models/order_spec.rb:10
 FAIL  spec/models/order_spec.rb:24
         -> <root>: additional property 'entiity' is not allowed
@@ -113,7 +110,7 @@ script, a CI job, or an AI agent gets *which file, which line, which rule* as da
 rather than having to parse prose. The flag can go anywhere on the command line.
 
 ```sh
-$ ./bin/validate-intent --json --source spec/models/order_spec.rb
+$ validate-intent --json --source spec/models/order_spec.rb
 ```
 ```json
 {
@@ -178,32 +175,32 @@ Two things worth knowing:
 
 ## Running the tests
 
-The validator's own regression suite is zero-dependency too — stdlib `unittest`, no
-pytest, no `requirements.txt`. It covers the pure validation core (`validate` and its
-type helpers), including the draft-07 keywords the shipped schema does not yet use.
+Two instruments, and they check different things — run both.
 
 ```sh
-python3 tests/test_validate_intent.py     # or: python3 -m unittest discover -s tests
+validate-intent      # the fixture corpus: do the shipped examples still get the expected verdict?
+go test ./...        # the code: the pieces the corpus cannot reach, plus the SHA256 pin on the
+                     # embedded schema (note the `./...`, not `./cmd/...`)
 ```
 
-Note that `./bin/validate-intent` (self-test mode) and this suite check different things:
-the self-test verifies the **fixtures** still match their expected outcome, while the
-suite verifies the **validator logic** — run both.
+The **self-test** is the conformance instrument. Every `examples/*.json` must validate, every
+`examples/invalid/*.json` must be rejected, and the same both ways for the annotations in
+`examples/sources/`. A fixture set that matches *nothing* is a failure rather than a vacuous pass,
+so a corpus someone deleted half of goes red instead of reporting a smaller, greener tally.
 
-## The Go port
+The **Go suite** covers what a verdict cannot show: PROTOCOL.md §1.1 conformance clause by clause
+(`cmd/validate-intent/conformance_test.go`), the draft-07 keywords the shipped schema does not
+declare, the glob's directory walk, and the encoders.
 
-`cmd/validate-intent` is a Go port of the same validator: a single static binary adopters can drop
-in without a Python 3 runtime. Python remains the reference implementation; the Go build is held to
-it byte for byte.
+## The binary
 
-**Implemented so far:** adopter (`FILE...`) mode, `-h`/`--help`, self-test mode,
-`--source`, `--source --json`, recursive `**` globs, stdin (`-`), and `--json` for
-adopter (`FILE...`) mode.
+`cmd/validate-intent` is the validator: a single static binary adopters can drop in with no runtime
+at all. It is graded against `PROTOCOL.md`, `schemas/open-test-intent.v1.json` and the fixture
+corpus under `examples/` — those three are the source of truth, and the binary is held to them.
 
-**Not yet:** nothing.
-
-The mode matrix is complete — every surface the reference exposes is implemented
-rather than refused. Packaging shipped with it: `scripts/build-release.sh` cross-compiles the four
+**The mode matrix is complete:** adopter (`FILE...`), `-h`/`--help`, self-test, `--source`,
+recursive `**` globs, stdin (`-`), `--json` for all three input modes, plus `--version` and
+`--schema-source`. Packaging shipped with it: `scripts/build-release.sh` cross-compiles the four
 stamped artifacts and `scripts/install.sh` puts one on a host and checks it against the manifest
 before it lands, both described below and both calibrated under `tests/cross/`.
 
@@ -220,84 +217,49 @@ is no release to depend on" — so the hand-rolled Ruby validator it is meant to
 place beside it. Both are downstream of the same published release rather than of a missing
 capability here.
 
-What still *refuses* with exit `2` and a diagnostic naming itself, rather than answering,
-is the schema's `pattern` keyword, and two environment settings this port cannot
-reproduce (both below). Python's
-`re` and Go's RE2 are not the same regex language even where both accept the same source
-text — Python's `$` also matches before a trailing newline, `\d`/`\w`/`\s`/`\b` are
-Unicode-aware in Python and ASCII-only in RE2, `[[:alpha:]]` and `\p{L}` are RE2-only,
-and `{,n}` means `{0,n}` to Python and four literal characters to RE2. Some constructs
-are worse than merely different: `\p{L}`, or a quantifier on a bare `^`/`\A` (`^*`),
-compile under RE2 and are outright parse errors in Python, so accepting one would have
-the port answering a question the reference raises an exception on — and `^*` answers it
-vacuously, matching every input. The port accepts only the constructs that provably
-agree (rewriting a trailing `$` to `(?:\n?\z)`, its exact equivalent) and refuses the
-whole schema with exit `2` otherwise, naming the construct. The shipped schema declares
-no patterns, so this affects schema growth rather than current behaviour — see
-`cmd/validate-intent/pypattern.go`.
+### The accepted JSON language
 
-One environment note, because it changes the answer rather than the wording.
-`PYTHONIOENCODING` is `ENCODING:HANDLER`, and it configures **both** `sys.stdin` and
-`sys.stdout`. Both fields matter, and both change verdicts rather than phrasing.
+`PROTOCOL.md` §1.1 is normative for what the binary parses, and it resolves the three points
+RFC 8259 leaves open. Each is refused with a diagnostic naming the clause it enforces, so a reader
+can look the rule up rather than guess whether the tool or the payload is wrong:
 
-The **handler** is `surrogateescape` under the C/POSIX locale and `strict` when the
-variable names an encoding. The two give *different verdicts* for the same input, in both
-directions: on the way in, undecodable bytes are a `read` finding with no annotation site
-under `strict` and a parsed-then-rejected one under `surrogateescape`; on the way out, a
-lone surrogate (from those bytes, or from a literal `"\udc82"` escape in a file) is written
-back as its original byte under `surrogateescape` and raises `UnicodeEncodeError` mid-report
-under `strict`.
+| refused | why | clause |
+| ------- | --- | ------ |
+| an unpaired surrogate escape (`"\ud800"`) | RFC 8259 §8.2 makes it non-conformant, and it has no UTF-8 encoding, so no consumer can carry it | §1.1(a) |
+| `NaN` / `Infinity` / `-Infinity` | RFC 8259 §6's number grammar has no non-finite literals; a parser taking them accepts a superset of JSON | §1.1(b) |
+| nesting deeper than **100** levels | RFC 8259 §9 makes depth limits implementation-defined, so the specification fixes one | §1.1(c) |
 
-The **encoding** decides which bytes decode at all. Under `latin-1` every byte decodes, so
-input that UTF-8 rejects never reaches the read failure: the document parses and is rejected
-on *schema* instead — a different `kind`, a different `summary.annotations`, and the same
-exit code. Under `ascii` the reference cannot even encode the em dash in its own report and
-dies mid-write with a truncated stdout.
+Input that is not well-formed UTF-8 is a `read` failure and is never repaired: substituting U+FFFD
+for an undecodable byte would validate text nobody wrote.
 
-The port reproduces UTF-8 and both handlers in both directions
-(`cmd/validate-intent/pyioerrors.go`), and **refuses anything else in every mode** — not
-only for stdin, and not only the handler half. `replace` and `ignore` succeed in both
-directions and produce different bytes; `latin-1`, `cp1252`, `ascii` and `utf-16` carry the
-reproducible `strict` handler but a codec the port does not implement. In each case
-answering would be a confident verdict about a string the reference never saw. The six
-CPython aliases of UTF-8 (`utf8`, `utf_8`, `U8`, `utf`, `cp65001`, …) are *not* refused —
-they resolve to the same codec, and the port compares byte-for-byte under each.
+None of the three is a narrowing. `additionalProperties: false` and the schema's string-only value
+types mean a non-finite number and a deep nest have no legal slot to occupy, so refusing them
+changes which diagnostic is printed and never whether a payload passes. An unpaired surrogate is
+the one that could move a verdict — and it moves it away from a payload that could not survive
+transport in the first place.
 
-`--help` is still answered under an unreproducible **handler** — the usage block is
-UTF-8-representable, so no handler can change a byte of it — and is **refused** under an
-unreproducible **encoding**, because that block is not ASCII: the em dash in it kills the
-reference outright under `latin-1` and comes back as different bytes under `utf-16`.
+`examples/invalid/` carries a fixture per clause. Two of the three would still be rejected by the
+*schema* if the rule were deleted, so `conformance_test.go` grades them on the failure's `kind` and
+on the clause its diagnostic cites, not merely on rejection.
 
-The same question is asked once more, one level down, by the **locale**. When
-`PYTHONIOENCODING` names no codec, CPython takes one from the locale — and uses that same
-codec for `sys.getfilesystemencoding()`, which is what decodes `sys.argv` and every
-directory listing. `PYTHONUTF8=0 LC_ALL=C` makes all of them `ascii`, with nothing in
-`PYTHONIOENCODING` set at all, and the reference then dies on its own `--help`. The port
-refuses any environment it cannot *prove* resolves to UTF-8
-(`cmd/validate-intent/pylocale.go`). That whitelist is knowingly wider than CPython's
-rule, which is libc's `nl_langinfo(CODESET)` for a locale that may or may not be
-installed — unanswerable from a static Go binary — so `PYTHONUTF8=0` is refused even
-alongside a genuinely UTF-8 locale. An over-refusal is a visible exit `2`; the other
-direction is a clean report in a codec the reference never used.
+### The schema's `pattern` keyword
 
-Filenames go through that codec too, which is why the port carries CPython's
-`surrogateescape` on the argv and filesystem channel as well as on stdin
-(`cmd/validate-intent/pyfspath.go`): a byte that is not valid UTF-8 in a *filename* has to
-reach the report as `U+DC00+byte`, the way Python spells it, and not as `U+FFFD` — which
-is lossy, and would collapse several distinct files onto one `file` key in `--json` while
-`summary.files` still counted them all.
+`pattern` is compiled with Go's `regexp` (RE2: draft-07's ECMA-262 syntax, minus backreferences and
+lookaround), and it is compiled **at schema-load time**. A pattern that will not compile fails the
+whole schema with exit `2` and the engine's own message, rather than being skipped mid-verdict and
+leaving a rule silently unenforced. The shipped schema declares no patterns, so this governs a
+schema an adopter supplies.
 
 ```sh
 go build -o bin/validate-intent-go ./cmd/validate-intent
 ./bin/validate-intent-go 'examples/*.json'
 ```
 
-Build it into `bin/`. Like the Python script, the binary looks for
-`schemas/open-test-intent.v1.json` relative to its own directory's parent, and that copy
-wins whenever it is there — which is what lets the parity harness point both
-implementations at a schema of its choosing.
+Build it into `bin/`. The binary looks for `schemas/open-test-intent.v1.json` relative to
+its own directory's parent, and that copy wins whenever it is there — which is what lets a
+test plant a schema of its choosing beside the binary and have it enforced.
 
-Unlike the Python script, a binary that finds **no such file** falls back to a copy of the
+A binary that finds **no such file** falls back to a copy of the
 canonical schema compiled into it (`schema.go`), so a released binary works from
 `/usr/local/bin/` or anywhere else. The fallback is narrow on purpose: it fires only when
 the file is *absent*. A schema that is present but unreadable or malformed still fails
@@ -310,7 +272,7 @@ copies of the contract to drift. That guard runs under `go test ./...` — note 
 not `./cmd/...`.
 
 The *fixture corpus* is embedded on the same terms, so a bare `validate-intent` outside
-the repo self-tests the compiled-in `examples/` and prints `12/12 fixtures matched
+the repo self-tests the compiled-in `examples/` and prints `15/15 fixtures matched
 expectation.` — byte for byte what the same command prints inside a checkout. An
 `examples/` tree beside the executable still wins when there is one.
 
@@ -322,80 +284,6 @@ red, which is the empty-fixture guard working in reverse.
 
 `corpus_test.go` pins the embedded corpus against the files on disk, file for file and
 byte for byte, the way `schema_test.go` pins the schema.
-
-```sh
-tests/parity/run_parity.sh   # the acceptance test for the port
-```
-
-The parity harness runs both implementations over the same arguments and requires
-identical **stdout, stderr and exit code** — any single byte of difference fails the run.
-It also asserts that the three refused surfaces still refuse, that every implemented mode
-has *stopped* refusing, and that the Python reference has no local modifications (a port
-"made to pass" by editing its own oracle would otherwise look green). Cases excluded from
-the comparison are listed at the top of the script with the reason for each.
-
-```sh
-tests/parity/run_ruby_parity.sh   # the second oracle: the specguard-rspec gem
-```
-
-A third participant, run as the last section of `run_parity.sh` and also standalone. The
-[specguard-rspec](https://github.com/yatfa-ai/specguard-rspec) gem's `specguard-lint` is
-an independent implementation of the same protocol — written against `PROTOCOL.md`, not
-against this port — so its agreement is evidence the Python↔Go comparison cannot give on
-its own. It compares the surface the two tools share, normalising out the four report
-differences a CI linter is ratified to have against a fixture self-test, and cross-checks
-the annotation counts carried by the normalised-away lines so a clean corpus cannot pass
-by comparing nothing to nothing.
-
-It is a separate script because it must stay runnable **without a Go toolchain**, where
-`run_parity.sh` (which rebuilds the port first) cannot. Point it at a gem checkout with
-`SPECGUARD_RSPEC=/path/to/specguard-rspec`; without one it exits 2 and says nothing was
-compared, rather than passing. Four differences between the gem and the port are ratified
-rather than fixed — with the reasons and the assertions in the script's header.
-
-Three of them are wording: two read failures and one parse diagnostic, each a case of the
-gem declining to re-port a CPython error string. The fourth is not a wording difference at
-all, and it is the one that explains the third: the two tools parse with two different JSON
-parsers, and **those parsers do not accept the same language**. CPython's is strictly the
-more permissive — it takes `NaN`/`Infinity`/`-Infinity`, a lone high surrogate escape, and
-nesting past Ruby's `max_nesting: 100`. That list is exhaustive and was derived by sweeping
-89,108 documents (this repo's own `pyjson_fuzz_test.go` corpus, plus every one of the 65,536
-single `\uXXXX` escapes) through both parsers, not by collecting fixtures one at a time.
-
-Its section 8 compares a third pair: the gem against **itself**, once on its Ruby path and
-once with `SPECGUARD_VALIDATE_INTENT` pointing at this binary — the gem's opt-in Go backend.
-For every payload both parsers accept, everything structural is required to be identical byte
-for byte: the selection line, the summary line, which annotation failed and where, stderr and
-the exit code. **Six differences are enumerated**, and each is asserted to *still* differ, so
-closing one retires the entry instead of leaving it to rot.
-
-Three of the six are read failures — the gem cannot name an errno the binary never gave it.
-The fourth is a payload that survives normalisation and still is not JSON: it gets **CPython's**
-parser diagnostic through the backend and **Ruby's** through the Ruby path. That is an ordinary
-typo in an `@intent`, not an exotic input, so it is the difference a user flipping the variable
-on will actually see.
-
-The fifth and sixth are the acceptance-set difference from inside the gem, and neither is about
-prose. On a payload only CPython parses, the backend does not word the failure differently — it
-does not have the same failure. It reports a **schema** violation where the Ruby path reports a
-**parse** failure; and where such a payload is otherwise schema-valid, the backend finds nothing
-wrong and **exits 0 where the Ruby path exits 1**. That last case is the only known input on
-which flipping the variable changes whether the run passes.
-
-Both of those went unenumerated for a review cycle each, for the same reason twice: the corpus
-was grown from guesses about inputs rather than from the generator of divergence. Section 4b
-built the first payload the normalizer cannot rescue; section 4c sweeps the acceptance set and
-pins its boundary, including the members that do **not** diverge (a lone *low* surrogate is fine
-on both).
-
-A gem checkout predating that backend ignores the variable rather than failing on it, which
-would compare the Ruby path against itself and report perfect agreement — so the preflight
-probes for the refusal first and exits 2 when it does not come.
-
-```sh
-go test ./...                # unit coverage for the Python-emulation layer,
-                             # plus the SHA256 pin on the embedded schema
-```
 
 ```sh
 tests/cross/run_cross_build.sh   # the four release targets, built and verified

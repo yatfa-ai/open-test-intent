@@ -2,8 +2,8 @@ package main
 
 // Unit tests for the extraction/normalization scanner (source.go).
 //
-// The parity harness proves the CLI output matches Python. These tests assert
-// the things a byte-identical CLI comparison cannot: what the scanner actually
+// The self-test grades the CLI's verdicts against the corpus. These tests assert
+// the things a verdict cannot show: what the scanner actually
 // captured, and what the normalizer actually produced. A port that swallowed
 // the wrong substring but still validated it would sail through the harness.
 
@@ -75,9 +75,10 @@ func TestExtractIntents_shippedCorpusLineNumbers(t *testing.T) {
 // TestExtractIntents_stringLiteralDefectIsReproduced is success criterion 5.
 //
 // extract_intents cannot distinguish an @intent: inside a string literal from
-// one in a real comment. That is a LIVE DEFECT in the reference, and byte-for-
-// byte parity means the port must INHERIT it — "fixing" it here would fail the
-// parity harness, and changing the behaviour is a protocol-level decision for
+// one in a real comment. That is an ACCEPTED LIMITATION rather than a bug to
+// fix here: telling the two apart needs a parser for every language a test can
+// be written in, which is the framework coupling PROTOCOL.md §6 rules out. See
+// ExtractIntents. Changing the behaviour is a protocol-level decision for
 // bin/validate-intent first.
 //
 // The real-comment positive control runs in the same test on purpose. Without
@@ -103,6 +104,61 @@ func TestExtractIntents_stringLiteralDefectIsReproduced(t *testing.T) {
 	if phantom[0].Raw != real[0].Raw {
 		t.Errorf("the port began distinguishing a string literal from a comment\n phantom: %s\n real:    %s",
 			phantom[0].Raw, real[0].Raw)
+	}
+}
+
+// TestExtractIntents_payloadSearchIsBoundedByTheNextToken pins the bound in
+// extractFromLine: a malformed @intent: token followed by a well-formed one
+// must NOT adopt its neighbour's object literal.
+//
+// Unbounded, the first token captured the second's literal and reported
+// problem-free, and the resume position then jumped past the real annotation —
+// a false green carrying an intent its author never wrote, plus a silent skip.
+// The gem's scanner bounds the same search; this is the port of that guard.
+//
+// The Raw assertion is the sharp end and is deliberately separate from the
+// "the site failed" one: a fix that declined the line for some OTHER reason
+// would satisfy the first assertion while still having read the neighbour's
+// payload. Revert the bound and it is the malformed[0].Raw check — via the
+// Problem check immediately above it — that dies first.
+func TestExtractIntents_payloadSearchIsBoundedByTheNextToken(t *testing.T) {
+	const neighbour = `{"entity":"Order","action":"ship","behavior":"ships the order to the customer","layer":"unit"}`
+
+	malformed := ExtractIntents(
+		"# @intent: (entity: Order) - superseded by @intent: " + neighbour + "\n")
+
+	// LINE ABANDONMENT, PRESERVED. The no-payload path returns rather than
+	// resuming, so the line yields ONE site, not one per token. The gem
+	// declined to change this and so does the port; continuing the scan past
+	// the token would be a behaviour change riding along with a bug fix.
+	if len(malformed) != 1 {
+		t.Fatalf("expected exactly 1 site for the two-token line, got %d (%+v)", len(malformed), malformed)
+	}
+	if malformed[0].Problem != "no '{...}' object literal follows the @intent: token" {
+		t.Errorf("the malformed token did not take the no-payload path: problem=%q raw=%q",
+			malformed[0].Problem, malformed[0].Raw)
+	}
+	// THE SHARP END: the neighbour's literal must never surface as any site's
+	// payload. Asserting only that the line fails would pass on a fix that
+	// failed it for the wrong reason.
+	if malformed[0].Raw != "" {
+		t.Errorf("the malformed token adopted a payload it does not own: %q", malformed[0].Raw)
+	}
+
+	// POSITIVE CONTROL: the bound is INERT when each token owns the brace that
+	// follows it. Without this, a "fix" that refused every line carrying two
+	// tokens would read as a pass.
+	const a = `{"entity":"Order","action":"create","behavior":"creates an order","layer":"unit"}`
+	const b = `{"entity":"Order","action":"ship","behavior":"ships an order","layer":"unit"}`
+	wellFormed := ExtractIntents("# @intent: " + a + " and @intent: " + b + "\n")
+
+	if len(wellFormed) != 2 {
+		t.Fatalf("positive control: expected 2 sites for two well-formed tokens, got %d (%+v)",
+			len(wellFormed), wellFormed)
+	}
+	if wellFormed[0].Raw != a || wellFormed[1].Raw != b {
+		t.Errorf("positive control: the bound changed which brace a token owns\n got[0]: %s\n got[1]: %s",
+			wellFormed[0].Raw, wellFormed[1].Raw)
 	}
 }
 
@@ -173,7 +229,7 @@ func TestScanObject_problems(t *testing.T) {
 // no continuation byte can be mistaken for a quote, a brace or a backslash —
 // meaning a consistently byte-indexed scanner would return byte offsets that
 // slice to the same substring. The divergence is genuinely LIVE one layer down,
-// in the JSON decoder's character offsets, which the parity harness compares
+// in the JSON parser's character offsets, which are reported to the reader
 // directly (`café` vs `ascii` before the same syntax error).
 //
 // The test is kept regardless. "Latent" is a property of today's inputs and
@@ -227,22 +283,25 @@ func TestNormalizePayload(t *testing.T) {
 		// `<` and `>`, so they stay bare.
 		{"divergence 3: a<b>&c quotes only c", `{a<b>&c: "y"}`, `{a<b>&"c": "y"}`},
 
-		// DIVERGENCE 2. U+001F is whitespace to str.isspace() and NOT to Go's
-		// unicode.IsSpace. It is the ONLY character in that delta that can reach
-		// here: U+001C/1D/1E are also str.splitlines() terminators, so they never
-		// survive inside a single line. With the wrong set, `entity` below is not
-		// recognised as a key and is left bare.
-		{"divergence 2: U+001F before the colon still makes it a key",
-			"{entity\u001f: \"x\"}", "{\"entity\"\u001f: \"x\"}"},
-		{"divergence 2: U+001F in the trailing-comma lookahead",
-			"{\"a\": 1,\u001f}", "{\"a\": 1\u001f}"},
-		// The characters Go and Python already agree on, as a control.
-		{"agreed whitespace: a plain space", `{entity : "x"}`, `{"entity" : "x"}`},
-		{"agreed whitespace: NBSP", "{entity\u00a0: \"x\"}", "{\"entity\"\u00a0: \"x\"}"},
+		// WHITESPACE IS THE UNICODE PROPERTY, and nothing wider. PROTOCOL.md §1
+		// says the keys are "whitespace-tolerant"; a C0 information separator is
+		// not whitespace under any Unicode definition, so it does not separate a
+		// bare key from its colon and the word is left unquoted. The payload
+		// then fails to parse, which is the loud answer — the quiet one would be
+		// normalizing a control character out of the middle of a key and
+		// validating whatever came out.
+		{"a unit separator does not make a bare word a key",
+			"{entity\u001f: \"x\"}", "{entity\u001f: \"x\"}"},
+		{"a unit separator does not reach the trailing-comma lookahead",
+			"{\"a\": 1,\u001f}", "{\"a\": 1,\u001f}"},
+		// Real whitespace, as the control.
+		{"whitespace: a plain space", `{entity : "x"}`, `{"entity" : "x"}`},
+		{"whitespace: NBSP", "{entity\u00a0: \"x\"}", "{\"entity\"\u00a0: \"x\"}"},
+		{"whitespace: a tab before the colon", "{entity\t: \"x\"}", "{\"entity\"\t: \"x\"}"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := NormalizePayload(pyRunes(tc.in))
+			got, err := NormalizePayload([]rune(tc.in))
 			if err != nil {
 				t.Fatalf("NormalizePayload(%q) errored: %v", tc.in, err)
 			}
@@ -255,7 +314,7 @@ func TestNormalizePayload(t *testing.T) {
 
 func TestNormalizePayload_unterminatedString(t *testing.T) {
 	for _, in := range []string{`{a: "b`, `{a: 'b`} {
-		if _, err := NormalizePayload(pyRunes(in)); err == nil {
+		if _, err := NormalizePayload([]rune(in)); err == nil {
 			t.Errorf("NormalizePayload(%q) should have reported an unterminated string", in)
 		}
 	}

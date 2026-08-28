@@ -1,0 +1,7 @@
+{
+  "entity": "Order",
+  "action": "checkout",
+  "behavior": "returns 402 payment required on expired card",
+  "layer": "request",
+  "confidence": NaN
+}

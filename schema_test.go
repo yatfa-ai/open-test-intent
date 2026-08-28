@@ -36,7 +36,7 @@ import (
 // It is the SAME constant specguard-rspec pins as CANONICAL_V1_SHA256 for its
 // vendored copy. If you change one you are changing the contract for both, and
 // the two pins disagreeing is the signal that a copy has drifted.
-const CanonicalV1SHA256 = "6535d9ba11b0936374d43e32a8bbc859f0adcf63d343a31df35f467113992924"
+const CanonicalV1SHA256 = "3760d8f7c6694aa19ca53cd39c323d7c096ae1140be08c435cd433e77db618ee"
 
 const canonicalPath = "schemas/open-test-intent.v1.json"
 
@@ -114,7 +114,7 @@ func TestSchemaSHA256DigestsTheEmbeddedBytes(t *testing.T) {
 	}
 
 	// Lowercase hex of exactly 32 bytes. The version line is parsed as text by
-	// tests/parity/run_parity.sh and by scripts/install.sh's caller, and an
+	// scripts/build-release.sh and by scripts/install.sh's caller, and an
 	// uppercase or truncated rendering would compare unequal against every other
 	// pin of this same contract while naming the same bytes.
 	if len(reported) != 64 {
