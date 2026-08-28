@@ -14,10 +14,20 @@ import (
 
 // CheckFile reads one path and returns the verdict for it.
 //
-// The 4-tuple shape is deliberate. `kind` is unused by adopter text mode
+// The 5-tuple shape is deliberate. `kind` is unused by adopter text mode
 // — it renders a parse failure and a read failure as the same prose — but a
-// consumer of the later --json slice needs to tell them apart, and once the
+// consumer of the --json slice needs to tell them apart, and once the
 // result has been flattened to text the distinction is gone for good.
+//
+// `instance` is carried for the same reason one step further on: it is the
+// decoded document, it exists only here, and the --json renderer reports it as
+// the `intent` key. Recovering it downstream would mean parsing the same bytes
+// a second time with a second parser — and a second parser is exactly what
+// PROTOCOL.md §1.1 exists to stop this ecosystem from having, since two of them
+// disagree about the acceptance set (jsontext.go's header records the case that
+// motivated it). Threading the value is what keeps "what the validator
+// accepted" and "what the consumer reads" the same object rather than two
+// answers that agree until they do not.
 //
 // The read is separated from the verdict (CheckJSONBytes below) for exactly one
 // caller: a self-test running on a host with no checkout, whose fixture bytes
@@ -25,10 +35,10 @@ import (
 // the verdict half rather than writing a second one is what makes an embedded
 // run and an in-checkout run produce the same answer by construction — see
 // fixtureSource in selftest.go.
-func CheckFile(path string, schema *Schema) (valid bool, errs []string, parseError string, kind string) {
+func CheckFile(path string, schema *Schema) (valid bool, errs []string, parseError string, kind string, instance Value) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return false, nil, "could not read/parse JSON: " + err.Error(), KindRead
+		return false, nil, "could not read/parse JSON: " + err.Error(), KindRead, nil
 	}
 	return CheckJSONBytes(data, schema)
 }
@@ -39,7 +49,13 @@ func CheckFile(path string, schema *Schema) (valid bool, errs []string, parseErr
 // It keeps the read-failure prefix even though it never opens anything, because
 // the undecodable-bytes case below IS a read failure — the file could not be
 // turned into text, so nothing was ever parsed.
-func CheckJSONBytes(data []byte, schema *Schema) (valid bool, errs []string, parseError string, kind string) {
+//
+// `instance` is nil on EVERY failure path here, and that is the honest answer
+// rather than a default: bytes that never decoded and a payload that never
+// parsed both leave nothing to report. It is non-nil only once DecodeJSON has
+// succeeded — INCLUDING when the schema then rejects the document, because at
+// that point the payload did parse and `valid` already carries the verdict.
+func CheckJSONBytes(data []byte, schema *Schema) (valid bool, errs []string, parseError string, kind string, instance Value) {
 	// PROTOCOL.md §1.1 makes UTF-8 part of the definition of a JSON text, and
 	// forbids repairing input that is not. Checked explicitly because []byte to
 	// string in Go is not a decode: the bytes would flow on and every
@@ -47,14 +63,14 @@ func CheckJSONBytes(data []byte, schema *Schema) (valid bool, errs []string, par
 	// iterated characters, turning a read failure into a successful parse of
 	// text the author never wrote.
 	if !utf8.Valid(data) {
-		return false, nil, "could not read/parse JSON: " + errNotUTF8, KindRead
+		return false, nil, "could not read/parse JSON: " + errNotUTF8, KindRead, nil
 	}
 	instance, err := DecodeJSON(data)
 	if err != nil {
-		return false, nil, "could not read/parse JSON: " + err.Error(), KindParse
+		return false, nil, "could not read/parse JSON: " + err.Error(), KindParse, nil
 	}
 	errs = schema.Validate(instance)
-	return len(errs) == 0, errs, "", ""
+	return len(errs) == 0, errs, "", "", instance
 }
 
 // readSourceText reads a test source file for --source mode.

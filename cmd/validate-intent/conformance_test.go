@@ -69,7 +69,7 @@ func TestProtocolSection11FixturesAreRefusedAtParseTime(t *testing.T) {
 				t.Fatalf("the §1.1 fixture is missing: %v", err)
 			}
 
-			valid, _, parseError, kind := CheckJSONBytes(data, schema)
+			valid, _, parseError, kind, intent := CheckJSONBytes(data, schema)
 			if valid {
 				t.Fatalf("%s validated; §1.1 requires it to be refused", tc.fixture)
 			}
@@ -85,6 +85,14 @@ func TestProtocolSection11FixturesAreRefusedAtParseTime(t *testing.T) {
 			if !strings.Contains(parseError, tc.clause) {
 				t.Errorf("%s: diagnostic %q does not cite %s",
 					tc.fixture, parseError, tc.clause)
+			}
+			// A refused payload carries NO intent. The `intent` key reports what
+			// a payload parsed to, and these three never parsed — so a non-nil
+			// value here would mean the --json document was reporting a value
+			// §1.1 says does not exist, which is worse than reporting nothing.
+			if intent != nil {
+				t.Errorf("%s: carried intent %#v, want nil — a payload refused "+
+					"by §1.1 parsed to nothing", tc.fixture, intent)
 			}
 		})
 	}

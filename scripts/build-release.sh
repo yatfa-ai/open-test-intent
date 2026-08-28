@@ -12,6 +12,45 @@
 # to match. Artifacts, and a SHA256SUMS manifest describing them, land in
 # dist/release/.
 #
+# BEFORE YOU PUBLISH WHAT THIS BUILDS: the gem ships first (SPGD-340)
+# ------------------------------------------------------------------------------
+# Since `--json` findings began carrying `intent` — what the payload PARSED to —
+# these binaries emit a report whose SHAPE is no longer bounded by this program.
+# Every other value in the document is composed from our own literals; `intent`
+# is author input echoed back. Publishing this repo AHEAD of the gem can
+# therefore regress `specguard-lint` for anyone who has both.
+#
+# WHAT THE RISK IS, MEASURED — and it is NOT what an earlier revision of this
+# comment said. That text claimed the document could carry non-finite literals
+# and lone surrogates, which Ruby's parser refuses. It cannot: PROTOCOL.md §1.1
+# is normative and this binary REFUSES both at parse time (§1.1(a), §1.1(b)),
+# so no such value survives to be reported. `intent` is null on every payload
+# that did not parse. Those two classes are dead as a landing hazard.
+#
+# The one that is REAL is nesting, and it is real because the protocol allows
+# more of it than Ruby's DEFAULT reader does. §1.1(c) admits a payload nested to
+# depth 100. A finding wraps it, so the emitted report nests two deeper than the
+# payload, and Ruby's JSON.parse defaults to max_nesting: 100. Measured, stdin
+# mode, `--json`:
+#
+#   payload depth 98   report nests 100   JSON.parse(default)  -> OK
+#   payload depth 99   report nests 101   JSON.parse(default)  -> JSON::NestingError
+#   payload depth 100  report nests 102   JSON.parse(default)  -> JSON::NestingError
+#
+# So depths 99 and 100 are PROTOCOL-LEGAL payloads whose report a default Ruby
+# reader cannot parse — it raises, and a caller that treats that as "the
+# validator broke" reports the tool as broken rather than the annotation as
+# deep. A reader that passes `max_nesting: false` parses all of them.
+#
+# Note which way round it is safe. A NEW gem reading an OLD binary is fine: the
+# key is simply absent, `intent` is null, and that is the same answer the gem
+# gave before the key existed. The constraint is one-directional — ship the gem
+# first, or ship both together. Never this repo alone.
+#
+# An ordinary annotation is unaffected in every combination; the break needs a
+# payload nested past 98. That is precisely why this is written here rather than
+# left to a release smoke test, which will not have one.
+#
 # Not dist/ itself, which is where tests/cross/run_cross_build.sh puts the
 # UNSTAMPED builds it verifies — and under exactly the same filenames. Sharing
 # the directory would let a cross-build run silently replace a release artifact
