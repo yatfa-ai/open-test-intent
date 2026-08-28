@@ -15,22 +15,32 @@
 # BEFORE YOU PUBLISH WHAT THIS BUILDS: the gem ships first (SPGD-340)
 # ------------------------------------------------------------------------------
 # Since `--json` findings began carrying `intent` — what the payload PARSED to —
-# these binaries emit a report that not every version of specguard-rspec can
-# read. Publishing this repo AHEAD of the gem regresses `specguard-lint` for
-# anyone who has both.
+# these binaries emit a report whose SHAPE is no longer bounded by this program.
+# Every other value in the document is composed from our own literals; `intent`
+# is author input echoed back. Publishing this repo AHEAD of the gem can
+# therefore regress `specguard-lint` for anyone who has both.
 #
-# The document now inherits the PAYLOAD's parser domain, and the two parsers do
-# not accept the same language. CPython (and this port after it) takes
-# non-finite literals, unbounded nesting and lone high surrogates; Ruby's takes
-# none of the three. A gem without SPGD-340's parse options and surrogate
-# recovery cannot read a document carrying one, so it reports the validator as
-# broken rather than the annotation as malformed. Measured on those payload
-# classes, backend on, `--json`:
+# WHAT THE RISK IS, MEASURED — and it is NOT what an earlier revision of this
+# comment said. That text claimed the document could carry non-finite literals
+# and lone surrogates, which Ruby's parser refuses. It cannot: PROTOCOL.md §1.1
+# is normative and this binary REFUSES both at parse time (§1.1(a), §1.1(b)),
+# so no such value survives to be reported. `intent` is null on every payload
+# that did not parse. Those two classes are dead as a landing hazard.
 #
-#   old gem + new binary   exit 2, NO document   <- the regression
-#   old gem + old binary   exit 1, valid document
-#   new gem + old binary   exit 1, valid document, "intent": null
-#   new gem + new binary   exit 1, valid document, "intent": populated
+# The one that is REAL is nesting, and it is real because the protocol allows
+# more of it than Ruby's DEFAULT reader does. §1.1(c) admits a payload nested to
+# depth 100. A finding wraps it, so the emitted report nests two deeper than the
+# payload, and Ruby's JSON.parse defaults to max_nesting: 100. Measured, stdin
+# mode, `--json`:
+#
+#   payload depth 98   report nests 100   JSON.parse(default)  -> OK
+#   payload depth 99   report nests 101   JSON.parse(default)  -> JSON::NestingError
+#   payload depth 100  report nests 102   JSON.parse(default)  -> JSON::NestingError
+#
+# So depths 99 and 100 are PROTOCOL-LEGAL payloads whose report a default Ruby
+# reader cannot parse — it raises, and a caller that treats that as "the
+# validator broke" reports the tool as broken rather than the annotation as
+# deep. A reader that passes `max_nesting: false` parses all of them.
 #
 # Note which way round it is safe. A NEW gem reading an OLD binary is fine: the
 # key is simply absent, `intent` is null, and that is the same answer the gem
@@ -38,8 +48,8 @@
 # first, or ship both together. Never this repo alone.
 #
 # An ordinary annotation is unaffected in every combination; the break needs a
-# payload from one of those classes. That is precisely why this is written here
-# rather than left to a release smoke test, which will not have one.
+# payload nested past 98. That is precisely why this is written here rather than
+# left to a release smoke test, which will not have one.
 #
 # Not dist/ itself, which is where tests/cross/run_cross_build.sh puts the
 # UNSTAMPED builds it verifies — and under exactly the same filenames. Sharing
