@@ -18,8 +18,8 @@
 # "beside the binary you downloaded" — and there was no download. specguard-rspec's
 # README tells the reader to point
 # SPECGUARD_VALIDATE_INTENT at a `validate-intent` binary, and its
-# validator_backend.rb names the reason its Go backend cannot be default-on:
-# "There is no release to depend on." Obtaining the binary meant cloning this
+# validator_backend.rb has made its Go backend default-on since SPGD-867,
+# resolving a binary on every run. Obtaining the binary meant cloning this
 # repository AND installing a Go toolchain, which is strictly more friction than
 # a linter is worth to anyone who only wants to run it.
 #
