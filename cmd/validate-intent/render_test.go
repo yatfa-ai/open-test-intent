@@ -289,20 +289,20 @@ func TestCharCount(t *testing.T) {
 }
 
 // The spelling here is the ecosystem's shared message vocabulary — a
-// CONVENTION specguard-rspec's renderer follows too. The gem pins that
-// convention in one direction only: its validator_backend_spec.rb asserts its
-// own rendered output against reports RECORDED from this binary, and its
-// message_parity_spec.rb asserts its `Schema#violations` output against four
-// strings hand-copied from here, under a header that refuses to be read as a
-// proof about two programs — rightly, since four strings are not a second
-// process. Both are snapshots of this binary's text, so they do cover the two
-// shapes below the gem can actually reach — a string (`'x'`) and an array of
-// them (the enum list) — but only one way round: a change on the GEM's side
-// goes red at once, a change HERE goes red once those snapshots are re-taken.
-// No spec in the gem executes this binary. The gem itself does, on the opt-in
-// `ValidatorBackend` arm, but that arm reports this binary's rendered strings
-// INSTEAD of running its own renderer, so it substitutes one spelling for the
-// other rather than comparing them.
+// CONVENTION specguard-rspec follows too, its findings carrying these strings
+// since the cutover (SPGD-867) removed the renderer that once derived them.
+// The gem pins that convention in one direction only: its
+// validator_backend_spec.rb asserts its own rendered output against reports
+// RECORDED from this binary. That is a snapshot of this binary's text, so it
+// does cover the two shapes below the gem can actually reach — a string
+// (`'x'`) and an array of them (the enum list) — but only one way round: a
+// change on the GEM's side goes red at once, a change HERE goes red once that
+// snapshot is re-taken. No spec in the gem executes this binary. The gem
+// itself does at run time: since the cutover its `ValidatorBackend` is the
+// only validator `specguard-lint` has — default-on, no Ruby fallback, exit 2
+// when no binary can be resolved — and it reports this binary's rendered
+// strings rather than running any renderer of its own, so a run has no second
+// renderer to disagree with.
 // The remaining cases below are unreachable from the gem in any event: the
 // annotation schema types every property `string` (or an array of strings), so
 // a null/bool/number/object value produces a type-mismatch line and the only
@@ -313,8 +313,8 @@ func TestCharCount(t *testing.T) {
 // TestValidateMessages and TestObjectDuplicateKeyKeepsFirstPosition as well as
 // this test, because both render numbers through it.
 // The spelling is not free to change regardless: `layer: value 'e2e' is not
-// one of [...]` is a line CI logs get diffed on, and the two tools build it
-// from different code.
+// one of [...]` is a line CI logs get diffed on — this binary's own wording,
+// which the gem's linter output carries verbatim.
 func TestRenderValue(t *testing.T) {
 	cases := []struct{ doc, want string }{
 		{`null`, `None`},

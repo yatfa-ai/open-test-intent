@@ -38,10 +38,11 @@ import (
 //
 // The style — single quotes, switching to double only when the string contains
 // a `\'` and no `"` — is THE ECOSYSTEM'S MESSAGE VOCABULARY, not a stylistic
-// preference and not this file's to change. `specguard-rspec` renders the same
-// violations from its own structured fields, and the two tools spell them the
-// same way BY CONVENTION — the client-gem spec's criterion 7 — rather than
-// because either program is generated from the other.
+// preference and not this file's to change, and the client-gem spec's
+// criterion 7 holds `specguard-rspec` to the same spelling. Since the cutover
+// (SPGD-867) the gem does not derive these strings at all: its findings CARRY
+// the text this binary renders, its own structured-fields renderer having been
+// removed.
 //
 // The convention IS pinned, but in ONE DIRECTION ONLY, and it is not the
 // direction that protects an edit made here. The gem's
@@ -52,22 +53,21 @@ import (
 // ['unit', ...]` included. A change on the GEM's side of that comparison
 // therefore goes red at once, while a change HERE goes red only once someone
 // re-records that corpus. No spec in the gem executes this binary: that one
-// replays the recorded stdout through a shell stub, and the gem's
-// spec/specguard/rspec/message_parity_spec.rb pins less than its name suggests
-// — four payloads through the gem's own `Schema#violations`, asserted against
-// strings hand-copied from here — with a header explicit that reading four
-// hand-copied strings as a proof about two programs is a misreading.
+// replays the recorded stdout through a shell stub.
 //
 // Which is exactly why changing the quoting here breaks the agreement
-// SILENTLY. Not because the gem never runs this function — it does: its
-// `ValidatorBackend` shells out to this binary when `SPECGUARD_VALIDATE_INTENT`
-// names one, and hands the strings rendered here straight out as its own
-// findings. But that arm SUBSTITUTES this binary's text for the gem's renderer
-// rather than checking one against the other. Per the gem's `CLI`, the backend
-// and the in-gem linter are alternative arms returning the same result objects,
-// so exactly one spelling is produced on any given run and no run has both to
-// compare. The DISAGREEMENT therefore surfaces at the next re-recording, or in
-// a CI log diff, and nowhere earlier. This repo's own tests are no help there —
+// SILENTLY. The gem does run this function — it has no alternative: since the
+// cutover its `ValidatorBackend` is the only validator `specguard-lint` has,
+// default-on with no Ruby fallback. `SPECGUARD_VALIDATE_INTENT` never gates
+// WHETHER a binary runs — blank means resolve the default (the first-run
+// auto-install of a prebuilt binary from this project's releases), and when
+// none can be resolved the run exits 2 — it only chooses WHICH one. Whatever it
+// resolves, the gem hands the strings that binary renders straight out as its
+// own findings. There is no second renderer for a run to check them against —
+// the gem's Ruby validation arm was removed (SPGD-867) — so exactly one
+// spelling is produced on any given run. The DISAGREEMENT therefore
+// surfaces at the next re-recording, or in a CI log diff, and nowhere
+// earlier. This repo's own tests are no help there —
 // a quoting change reds TestRenderValue and TestValidateMessages immediately,
 // but that is this binary asserted against itself, and it stays green when the
 // gem is the side that drifted.
@@ -134,7 +134,8 @@ func Quote(s string) string {
 //
 // Like Quote, the spelling is the ecosystem's shared message vocabulary rather
 // than a free choice — `layer: value 'e2e' is not one of ['unit', ...]` is a
-// line CI logs get diffed on, and specguard-rspec builds the same line from its
+// line CI logs get diffed on, and since SPGD-867 the gem's linter output
+// carries that line verbatim from this binary rather than building it from its
 // own fields. It is a rendering for reading and never has to round-trip.
 func RenderValue(v Value) string {
 	switch t := v.(type) {
