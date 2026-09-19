@@ -204,18 +204,17 @@ recursive `**` globs, stdin (`-`), `--json` for all three input modes, plus `--v
 stamped artifacts and `scripts/install.sh` puts one on a host and checks it against the manifest
 before it lands, both described below and both calibrated under `tests/cross/`.
 
-Two things are open, and neither is a behaviour of this binary. **Publishing** — tagging a version
+One thing is open here, and it is not a behaviour of this binary. **Publishing** — tagging a version
 and uploading the assets — is deliberately not in this repository: `scripts/install.sh` ("What this
 does NOT do: publish, tag, or upload anything") and `tests/cross/run_cross_build.sh` ("What this
 deliberately does not do") each record it in their own headers, `.agents/README.md` makes
 `.github/workflows/` human-owned here, and the release chapter below says the same. That is why the
 one-line install above takes a release-asset base URL somebody else published. **The wrapper gem**
-exists and is **opt-in** — not absent, and not finished: `specguard-rspec`'s
-`lib/specguard/rspec/validator_backend.rb` shells out to this binary when
-`SPECGUARD_VALIDATE_INTENT` names one, and stays off by default because, in its own words, "there
-is no release to depend on" — so the hand-rolled Ruby validator it is meant to replace is still in
-place beside it. Both are downstream of the same published release rather than of a missing
-capability here.
+is no longer open — the cutover closed it: `specguard-rspec`'s
+`lib/specguard/rspec/validator_backend.rb` resolves this binary on every run, default-on,
+obtaining a prebuilt one from the release assets when `SPECGUARD_VALIDATE_INTENT` does not name
+one, and `specguard-lint` validates through the Go `validate-intent` binary and only through it —
+the Ruby hand-rolled validation path was removed at SPGD-867, completing the SPGD-96 cutover.
 
 ### The accepted JSON language
 
