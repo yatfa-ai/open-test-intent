@@ -205,6 +205,50 @@ func schemaLoadError(source SchemaSource, err error) string {
 	return fmt.Sprintf("error: could not load schema %s: %s\n", source.Origin, err)
 }
 
+// noMatchDetail is the clause that tells the no-match situations APART, written
+// once and worn by both renderers.
+//
+// It returns "" for every situation that keeps the generic bytes — a
+// nonexistent path, the empty pattern, a magic glob that matched only
+// directories — and the discriminating clause for the one situation the
+// expansion can name: an argument it read as a DIRECTORY TO DESCEND, whose
+// descent found no file. That is the whole disambiguation, and the reason a
+// user can now tell "my argument is a typo" from "the tree I named holds
+// nothing".
+//
+// `quote` is the CALLER'S renderer, not a formatting knob. The text path quotes
+// a path for a human and the --json path carries it bare — inside a JSON string
+// a second layer of quoting is noise a consumer has to strip — so the two
+// renderers legitimately spell the same path differently. Passing the quoting
+// in keeps that the ONLY thing they differ by: one sentence, one condition, two
+// spellings. A second copy of the sentence in report.go is exactly the drift
+// the shared JSONReport type was written to prevent, and it would be invisible
+// to any test that checks one renderer at a time.
+//
+// It names the DESCENT rather than only the directory because that is the fact
+// the user cannot otherwise see: the tool did not refuse the argument, it
+// expanded it and walked it. A reader who is told the walk happened knows to
+// look at the tree rather than at their spelling.
+func noMatchDetail(pattern string, quote func(string) string) string {
+	if !readAsDirectoryArgument(pattern) {
+		return ""
+	}
+	return ": it is a directory, and the descent " +
+		quote(expandDirectoryArgument(pattern)) + " found no file to read"
+}
+
+// noMatchDiagnostic is the TEXT renderer's no-match line, including its
+// trailing newline.
+//
+// The generic bytes are unchanged, deliberately: every other no-match situation
+// still produces `error: no file(s) match 'X'` exactly as it did, so the pins
+// that assert those bytes stay green without being edited, and a user's grep
+// still finds them.
+func noMatchDiagnostic(pattern string) string {
+	return "error: no file(s) match " + Quote(pattern) +
+		noMatchDetail(pattern, Quote) + "\n"
+}
+
 // RunAdopter validates the given path(s)/glob(s) as valid intent JSON.
 func RunAdopter(patterns []string, schema *Schema) int {
 	checkOne := func(path string) bool {
@@ -248,8 +292,20 @@ func runOverPatterns(patterns []string, checkOne func(string) bool, onNoMatch fu
 			// what reaches here is a pattern that genuinely found nothing to
 			// read — a nonexistent path, an EMPTY directory, or a glob that
 			// matched only directories.
+			//
+			// Two of those three are told apart here. `pattern` is the ORIGINAL
+			// argument — the `DIR/**` rewrite happens inside ExpandFiles and
+			// feeds the matcher only — so readAsDirectoryArgument can ask the
+			// expansion itself which reading it used, and an argument that WAS
+			// descended gets a diagnostic saying so. Without it, "that path is
+			// not there" and "the tree you named holds no files" arrive as the
+			// same sentence with a different name in it, and a user cannot tell
+			// a typo from an empty tree. The third situation — a magic glob
+			// that matched only directories — keeps the generic bytes: it is
+			// not a directory ARGUMENT, and describing it as one would name an
+			// interpretation the tool did not use.
 			if onNoMatch == nil {
-				fmt.Fprintf(os.Stderr, "error: no file(s) match %s\n", Quote(pattern))
+				fmt.Fprint(os.Stderr, noMatchDiagnostic(pattern))
 			} else {
 				onNoMatch(pattern)
 			}

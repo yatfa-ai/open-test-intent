@@ -92,12 +92,49 @@ func ExpandFiles(pattern string) []string {
 //
 // An EMPTY directory is rewritten like any other and still errors, because
 // `emptydir/**` matches no file either: the never-silent-pass contract in
-// runOverPatterns is preserved on every input where this applies.
+// runOverPatterns is preserved on every input where this applies. Its
+// DIAGNOSTIC is no longer the nonexistent path's, though — the rewrite is the
+// fact that tells the two apart, and readAsDirectoryArgument below is how the
+// no-match branch reads it back.
 func expandDirectoryArgument(pattern string) string {
 	if pattern == "" || hasMagic(pattern) || !isDir(pattern) {
 		return pattern
 	}
 	return joinPath(pattern, "**")
+}
+
+// readAsDirectoryArgument reports whether ExpandFiles read this argument as a
+// DIRECTORY TO DESCEND — that is, whether expandDirectoryArgument rewrote it.
+//
+// It exists for the diagnostic, which is the other half of the defect the
+// rewrite was written for. `spec` used to die with the bytes a nonexistent path
+// produces; the rewrite fixed the tree that HAS files, and left the tree that
+// has none producing those same bytes — so `--source emptydir` and
+// `--source nope` were still indistinguishable, in both renderers.
+//
+// It is phrased as "did the rewrite apply" rather than as a second `isDir`
+// probe on purpose, and the choice is load-bearing twice over:
+//
+//   - The empty pattern is excluded WITHOUT a second copy of the exclusion.
+//     os.Stat("") reads ".", so a hand-rolled `pattern != "" && isDir(pattern)`
+//     has to remember that hazard here as well as there — two copies of one
+//     rule, which is how the two drift.
+//   - A pattern carrying magic is not a directory argument even when a
+//     directory of that literal name exists. `a*b` reaches the matcher as a
+//     PATTERN (see the magic-name expansion test in glob_dirarg_test.go), so
+//     calling its empty result "a directory holding no files" would describe an
+//     interpretation the tool did not use.
+//
+// Both of those are ASSERTED, not only argued here:
+// TestRunSource_noMatchExemptionsKeepTheGenericDiagnostic pins each of the two
+// inputs at the diagnostic layer, on both renderers. It exists because swapping
+// this expression for the isDir spelling above leaves every other test in the
+// package green while the binary starts naming a descent that never happened.
+//
+// So the diagnostic cannot disagree with the expansion about what the argument
+// meant: there is one decision, made once, read twice.
+func readAsDirectoryArgument(pattern string) bool {
+	return expandDirectoryArgument(pattern) != pattern
 }
 
 // Glob returns every path matching pattern, unsorted and unfiltered.
