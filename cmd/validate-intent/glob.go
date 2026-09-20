@@ -121,9 +121,15 @@ func expandDirectoryArgument(pattern string) string {
 //     rule, which is how the two drift.
 //   - A pattern carrying magic is not a directory argument even when a
 //     directory of that literal name exists. `a*b` reaches the matcher as a
-//     PATTERN (see the magic-name test in glob_dirarg_test.go), so calling its
-//     empty result "a directory holding no files" would describe an
+//     PATTERN (see the magic-name expansion test in glob_dirarg_test.go), so
+//     calling its empty result "a directory holding no files" would describe an
 //     interpretation the tool did not use.
+//
+// Both of those are ASSERTED, not only argued here:
+// TestRunSource_noMatchExemptionsKeepTheGenericDiagnostic pins each of the two
+// inputs at the diagnostic layer, on both renderers. It exists because swapping
+// this expression for the isDir spelling above leaves every other test in the
+// package green while the binary starts naming a descent that never happened.
 //
 // So the diagnostic cannot disagree with the expansion about what the argument
 // meant: there is one decision, made once, read twice.

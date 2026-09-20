@@ -31,6 +31,13 @@ package main
 // expansion layer is unchanged by that split, so the ExpandFiles cases below
 // still pin both arms as finding nothing.
 //
+// That split's guard is pinned the same way this rewrite is — by what it does
+// NOT touch. It fires on "the expansion read this argument as a directory to
+// descend", not on a second `isDir` probe, and the two inputs where those two
+// readings disagree (a magic-named directory, the empty pattern) are asserted
+// at the diagnostic layer beside the discrimination pins. Without them the
+// swap is a mutation the whole suite survives.
+//
 // Both glob-expanding modes are driven, not one: the rewrite lives at the
 // ExpandFiles chokepoint precisely so `--source` and adopter `FILE...` cannot
 // diverge, and a test of one mode would not notice if they did.
@@ -426,13 +433,12 @@ func TestRunSource_bareDirectoryFailsLoudlyOnUnreadableBytes(t *testing.T) {
 // without parsing the argument name back out of prose.
 //
 // What is pinned is the PROPERTY, not the wording: the two stderr lines must
-// differ BEYOND the echoed argument. So each case supplies the other's pattern,
-// and the assertion is on the two diagnostics with their own arguments
-// substituted out — which is what "template-identical apart from the name"
-// means, and the one check a wording change may not break. Asserting a literal
-// sentence here would pin prose the ticket deliberately left to the
-// implementer, and would go red on a rephrasing that fixed nothing and broke
-// nothing.
+// differ BEYOND the echoed argument. So the assertion is on each diagnostic
+// with its OWN argument substituted out for a fixed token — which is what
+// "template-identical apart from the name" means, and the one check a wording
+// change may not break. Asserting a literal sentence here would pin prose the
+// ticket deliberately left to the implementer, and would go red on a rephrasing
+// that fixed nothing and broke nothing.
 //
 // The contract the previous pin carried is kept rather than replaced: both
 // situations still exit 1 (never a silent pass) and the diagnostic still
@@ -448,10 +454,9 @@ func TestRunSource_residualNoMatchDiagnosticsAreDistinguishable(t *testing.T) {
 	cases := []struct {
 		name    string
 		pattern string
-		other   string
 	}{
-		{"an empty directory", emptyDir, nonexistent},
-		{"a nonexistent path", nonexistent, emptyDir},
+		{"an empty directory", emptyDir},
+		{"a nonexistent path", nonexistent},
 	}
 
 	templates := map[string]string{}
@@ -554,4 +559,98 @@ func errorsBlock(t *testing.T, document string) string {
 		t.Fatalf("unterminated errors array in document:\n%s", document)
 	}
 	return strings.TrimSpace(rest[:end])
+}
+
+// The two inputs that make the guard's DISCRIMINATOR load-bearing, pinned on
+// both renderers.
+//
+// The clause above fires on "the expansion read this argument as a directory to
+// descend" — `expandDirectoryArgument(pattern) != pattern` — and NOT on the
+// obvious-looking `pattern != "" && isDir(pattern)`. The tests above cannot
+// tell those two apart: an empty directory and a nonexistent path are treated
+// identically by both, so swapping one guard for the other leaves every other
+// test in this package green while the binary starts describing an
+// interpretation it did not use. Run and recorded rather than argued — that
+// swap is exactly the mutation this test exists to fail.
+//
+// The two inputs where they disagree are the two the shipped guard exempts:
+//
+//   - A directory whose NAME carries magic. `a*b` reaches the matcher as a
+//     PATTERN (the expansion pin above asserts that), so its empty result is
+//     not "a directory holding no files" — and under the isDir guard the
+//     diagnostic would confidently say it was, and would even quote the
+//     un-rewritten argument as "the descent".
+//   - The EMPTY pattern. os.Stat("") reads ".", so an isDir probe answers true
+//     for it and an empty argument would acquire a directory clause naming a
+//     descent that never happened.
+//
+// So what is pinned is the EXEMPTION: both keep today's generic bytes on
+// stderr, and neither acquires the clause in `errors[]`. The generic half is
+// asserted as an exact line rather than as an absence, because "does not
+// contain the clause" is also satisfied by a diagnostic that broke some other
+// way.
+//
+// A `*` is legal in a filename on Linux and refused on Windows, so a
+// filesystem that will not host the magic-named directory skips that case
+// alone — the empty pattern still asserts everywhere.
+func TestRunSource_noMatchExemptionsKeepTheGenericDiagnostic(t *testing.T) {
+	schema := repoSchema(t)
+
+	magicNamed := filepath.Join(t.TempDir(), "a*b")
+	magicNamedHosted := os.MkdirAll(filepath.Join(magicNamed, "nested"), 0o755) == nil
+
+	cases := []struct {
+		name    string
+		pattern string
+		skip    bool
+	}{
+		{
+			// A directory of this name EXISTS, so an isDir-based guard fires
+			// here; the shipped guard does not, because the tool read the
+			// argument as a pattern.
+			name:    "a directory whose name carries magic",
+			pattern: magicNamed,
+			skip:    !magicNamedHosted,
+		},
+		{
+			// os.Stat("") reads "." — which is a directory — so an isDir-based
+			// guard fires here too, naming a descent of the working directory
+			// that never happened.
+			name:    "the empty pattern",
+			pattern: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.skip {
+				t.Skipf("this filesystem will not host a directory named %q", "a*b")
+			}
+
+			code, stdout, stderr := captureRun(t, "--source", tc.pattern)
+			if code != 1 {
+				t.Errorf("run(--source %q) = %d, want 1", tc.pattern, code)
+			}
+			if stdout != "" {
+				t.Errorf("the diagnostic belongs on stderr alone; stdout = %q", stdout)
+			}
+			if want := "error: no file(s) match '" + tc.pattern + "'\n"; stderr != want {
+				t.Errorf("this situation must keep the generic diagnostic:\n got  %q\n want %q",
+					stderr, want)
+			}
+
+			document, jsonCode := runSourceJSON(t, []string{tc.pattern}, schema)
+			if jsonCode != 1 {
+				t.Errorf("--source --json %q exited %d, want 1; document:\n%s",
+					tc.pattern, jsonCode, document)
+			}
+			if !strings.Contains(document, `"kind": "`+KindNoMatch+`"`) {
+				t.Errorf("%q must still report as a no-match finding; document:\n%s", tc.pattern, document)
+			}
+			if got, want := errorsBlock(t, document), `"no file(s) match `+tc.pattern+`"`; got != want {
+				t.Errorf("this situation must keep the generic machine-readable message:\n got  %s\n want %s",
+					got, want)
+			}
+		})
+	}
 }
