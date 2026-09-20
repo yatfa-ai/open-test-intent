@@ -90,14 +90,34 @@ func (r *JSONReport) Add(finding JSONFinding) bool {
 // The message carries the pattern BARE, where the text path quotes it: inside a
 // JSON string a second layer of quoting is noise a consumer has to strip, and
 // `file` already carries the pattern verbatim.
+//
+// It carries the SAME discrimination the text path does — an argument read as a
+// directory to descend says so — through the same noMatchDetail, so the two
+// renderers cannot come to differ about which situation an argument was. The
+// distinguishing fact lands in `errors[]`, which is where a machine consumer
+// reads WHY a finding failed; `kind` stays KindNoMatch because what happened is
+// still that the argument matched no file, and a consumer branching on kind —
+// version_test.go's `--json` row among them — must keep working. A consumer
+// that needs the finer split reads the error string, which is a field, not
+// prose it has to parse an argument name back out of.
+//
+// identity is the JSON path's "quoting": it returns the pattern as-is, so the
+// clause reads `the descent emptydir/** found no file to read` rather than
+// carrying the text renderer's single quotes into a JSON string.
 func (r *JSONReport) NoMatch(pattern string) {
 	r.Add(JSONFinding{
 		File:   pattern,
 		OK:     false,
 		Kind:   KindNoMatch,
-		Errors: []string{"no file(s) match " + pattern},
+		Errors: []string{"no file(s) match " + pattern + noMatchDetail(pattern, identity)},
 	})
 }
+
+// identity renders a string as itself — the --json path's spelling of a value
+// the text path would quote. Named rather than inlined as a literal closure so
+// the call site reads as "this renderer does not quote" instead of as an
+// anonymous function whose body has to be read to learn that.
+func identity(s string) string { return s }
 
 // Emit prints the document and passes exitCode straight through.
 //

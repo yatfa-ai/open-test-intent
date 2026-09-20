@@ -108,7 +108,9 @@ files, same output, same exit code. It is sugar for the documented descent and i
 no selection rule of its own: hidden directories are still not entered, symlinked ones
 still are, and a file whose bytes will not read still fails loudly. The narrower
 `spec/**/*_spec.rb` form stays the right answer when you want an extension-scoped walk.
-A path that is not there, and a directory holding no files, still error.
+A path that is not there, and a directory holding no files, still error — with
+different diagnostics: a directory you named and that holds nothing says so, so an empty
+tree is not reported in the same words as a typo.
 
 Worked source fixtures exercising all three equivalent forms live in
 [`examples/sources/`](examples/sources).
@@ -177,7 +179,13 @@ Two things worth knowing:
 
 - **A pattern matching nothing is a `no-match` finding on stdout**, not only the stderr
   line the text mode prints. Without it, a stdout-only consumer would see a clean pass
-  list next to an unexplained non-zero exit.
+  list next to an unexplained non-zero exit. The situations `no-match` covers are told
+  apart in `errors[]`, not by a second `kind`: an argument read as a **directory to
+  descend** whose descent found no file says so, while a nonexistent path, the empty
+  pattern and a glob that matched only directories keep the plain
+  `no file(s) match <pattern>` message. So a consumer branching on `kind` is unaffected,
+  and one that needs "empty tree" versus "path is not there" reads a field rather than
+  parsing the argument name back out of prose.
 - **Exit codes are identical with and without the flag**, and the default (non-`--json`)
   output is unchanged — `--json` is a second renderer over the same checks, not a second
   code path. Self-test mode has no `--json` form: it is the in-repo fixture harness

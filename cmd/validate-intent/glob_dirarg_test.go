@@ -21,9 +21,15 @@ package main
 // not restating the rule.
 //
 // The arms that must KEEP today's bytes are pinned beside it, because the value
-// of a rewrite is entirely in what it does not touch: an empty directory and a
-// nonexistent path still error (the never-silent-pass contract), a FILE
-// argument is unchanged, and a pattern carrying magic is not rewritten at all.
+// of a rewrite is entirely in what it does not touch: a FILE argument is
+// unchanged, and a pattern carrying magic is not rewritten at all.
+//
+// The two shapes that still find nothing — an empty directory and a
+// nonexistent path — keep the never-silent-pass contract (both still exit 1),
+// and SPGD-1301 then split their DIAGNOSTIC, which the rewrite had deliberately
+// left collided: see the discrimination pins at the foot of this file. The
+// expansion layer is unchanged by that split, so the ExpandFiles cases below
+// still pin both arms as finding nothing.
 //
 // Both glob-expanding modes are driven, not one: the rewrite lives at the
 // ExpandFiles chokepoint precisely so `--source` and adopter `FILE...` cannot
@@ -408,38 +414,144 @@ func TestRunSource_bareDirectoryFailsLoudlyOnUnreadableBytes(t *testing.T) {
 // the diagnostic
 // --------------------------------------------------------------------------- //
 
-// The residual no-match diagnostics must keep today's bytes, because two of the
-// acceptance criteria are stated as byte-identity against them and because the
-// exit-code contract they carry is the one the rewrite rides above rather than
-// replaces.
+// The two residual no-match situations must be TOLD APART.
 //
-// Disambiguating the two — an empty directory versus a path that is not there —
-// is deliberately out of scope for this change, so what is pinned is that they
-// are both still produced, unchanged.
-func TestRunSource_residualNoMatchDiagnosticsAreUnchanged(t *testing.T) {
+// This is the other half of the defect the rewrite above was written for, and
+// the reason this file's opening paragraph can name the collision as the
+// founding bug. The rewrite fixed the tree that HAS files — `--source spec` now
+// descends it — and left the tree that has NONE producing the same bytes a
+// nonexistent path produces, so `--source emptydir` and `--source nope` were
+// still one sentence with a different name in it. A user could not tell a typo
+// from an empty tree, and a --json consumer could not branch on the situation
+// without parsing the argument name back out of prose.
+//
+// What is pinned is the PROPERTY, not the wording: the two stderr lines must
+// differ BEYOND the echoed argument. So each case supplies the other's pattern,
+// and the assertion is on the two diagnostics with their own arguments
+// substituted out — which is what "template-identical apart from the name"
+// means, and the one check a wording change may not break. Asserting a literal
+// sentence here would pin prose the ticket deliberately left to the
+// implementer, and would go red on a rephrasing that fixed nothing and broke
+// nothing.
+//
+// The contract the previous pin carried is kept rather than replaced: both
+// situations still exit 1 (never a silent pass) and the diagnostic still
+// belongs to stderr alone. The generic half is pinned positively too — a
+// nonexistent path keeps today's exact bytes — because "they differ" is also
+// satisfied by rewriting BOTH, and the whole value of this change is that only
+// the situation the expansion can name acquires a clause.
+func TestRunSource_residualNoMatchDiagnosticsAreDistinguishable(t *testing.T) {
 	root := dirArgTree(t)
+	emptyDir := filepath.Join(root, "emptydir")
+	nonexistent := filepath.Join(root, "nope")
 
 	cases := []struct {
 		name    string
 		pattern string
+		other   string
 	}{
-		{"an empty directory", filepath.Join(root, "emptydir")},
-		{"a nonexistent path", filepath.Join(root, "nope")},
+		{"an empty directory", emptyDir, nonexistent},
+		{"a nonexistent path", nonexistent, emptyDir},
 	}
 
+	templates := map[string]string{}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			code, stdout, stderr := captureRun(t, "--source", tc.pattern)
 			if code != 1 {
 				t.Errorf("run(--source %s) = %d, want 1", tc.pattern, code)
 			}
-			want := "error: no file(s) match " + Quote(tc.pattern) + "\n"
-			if stderr != want {
-				t.Errorf("stderr = %q, want %q", stderr, want)
-			}
 			if stdout != "" {
 				t.Errorf("the diagnostic belongs on stderr alone; stdout = %q", stdout)
 			}
+			if !strings.Contains(stderr, tc.pattern) {
+				t.Errorf("the diagnostic must still echo the argument it is about; stderr = %q", stderr)
+			}
+			// The TEMPLATE: this situation's diagnostic with its own argument
+			// replaced by a fixed token. Two situations whose templates match
+			// are the collision this test exists to refuse.
+			templates[tc.name] = strings.ReplaceAll(stderr, tc.pattern, "<ARG>")
 		})
 	}
+
+	if len(templates) != len(cases) {
+		t.Fatalf("a case did not record a template (%d of %d); the comparison below would be vacuous",
+			len(templates), len(cases))
+	}
+	if templates["an empty directory"] == templates["a nonexistent path"] {
+		t.Errorf("the two situations are still template-identical apart from the echoed argument: %q",
+			templates["an empty directory"])
+	}
+	// The generic half, positively: everything that is NOT a directory argument
+	// keeps today's bytes, so the pins elsewhere that assert them stay true and
+	// a user's grep still finds them.
+	if got, want := templates["a nonexistent path"], "error: no file(s) match '<ARG>'\n"; got != want {
+		t.Errorf("a nonexistent path must keep the generic diagnostic:\n got  %q\n want %q", got, want)
+	}
+}
+
+// The same discrimination on the MACHINE channel, which is the half a consumer
+// cannot work around.
+//
+// A human reading stderr can at least see the difference once the sentence
+// differs; a --json consumer branching on `kind` cannot, because both
+// situations are still — correctly — a no-match. So the distinguishing fact has
+// to be in the finding's own fields, and it is asserted here as a property of
+// `errors[]` rather than as a sentence: the two error lists must differ once
+// each finding's own argument is substituted out.
+//
+// The three pins this must not break are re-checked in place rather than
+// trusted: both findings still carry kind no-match (version_test.go's --json
+// row and intent_key_test.go's null-intent pin both depend on the finding
+// staying a no-match finding), and both runs still exit 1.
+func TestRunSourceJSON_residualNoMatchFindingsAreDistinguishable(t *testing.T) {
+	schema := repoSchema(t)
+	root := dirArgTree(t)
+	emptyDir := filepath.Join(root, "emptydir")
+	nonexistent := filepath.Join(root, "nope")
+
+	errorsFor := func(pattern string) string {
+		t.Helper()
+		document, code := runSourceJSON(t, []string{pattern}, schema)
+		if code != 1 {
+			t.Errorf("--source --json %s exited %d, want 1; document:\n%s", pattern, code, document)
+		}
+		if !strings.Contains(document, `"kind": "`+KindNoMatch+`"`) {
+			t.Errorf("%s must still report as a no-match finding; document:\n%s", pattern, document)
+		}
+		block := errorsBlock(t, document)
+		return strings.ReplaceAll(block, pattern, "<ARG>")
+	}
+
+	empty := errorsFor(emptyDir)
+	missing := errorsFor(nonexistent)
+
+	if empty == missing {
+		t.Errorf("the two no-match findings are indistinguishable from errors[] alone: %q", empty)
+	}
+	if !strings.Contains(missing, "no file(s) match <ARG>") {
+		t.Errorf("a nonexistent path must keep the generic machine-readable message, got %q", missing)
+	}
+}
+
+// errorsBlock returns the text of a one-finding document's `errors` array.
+//
+// Cut out of the raw document rather than parsed, because this package has no
+// JSON decoder of its own and the renderer's fixed key order is precisely what
+// makes the cut reliable. It fails loudly rather than returning "" on a shape
+// it does not recognise: an empty string compares equal to another empty string,
+// so a silent miss would make the caller's discrimination check pass vacuously.
+func errorsBlock(t *testing.T, document string) string {
+	t.Helper()
+	const open = `"errors": [`
+	start := strings.Index(document, open)
+	if start < 0 {
+		t.Fatalf("no errors array in document:\n%s", document)
+	}
+	rest := document[start+len(open):]
+	end := strings.Index(rest, "]")
+	if end < 0 {
+		t.Fatalf("unterminated errors array in document:\n%s", document)
+	}
+	return strings.TrimSpace(rest[:end])
 }
