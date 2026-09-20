@@ -44,8 +44,13 @@ import (
 // Every glob-expanding mode goes through here, so a pattern like `intents/*`
 // never hands a DIRECTORY to a reader — which would then report it as an
 // unreadable file rather than skipping it.
+//
+// That filter is also why a bare argument NAMING a directory is rewritten to
+// the documented descent first: see expandDirectoryArgument. `spec` expands
+// exactly as `spec/**` does, so the drop applies to the directories the walk
+// passes through rather than to the one the user asked about.
 func ExpandFiles(pattern string) []string {
-	matches := Glob(pattern)
+	matches := Glob(expandDirectoryArgument(pattern))
 	sort.Strings(matches)
 	files := make([]string, 0, len(matches))
 	for _, match := range matches {
@@ -54,6 +59,45 @@ func ExpandFiles(pattern string) []string {
 		}
 	}
 	return files
+}
+
+// expandDirectoryArgument rewrites a bare argument that NAMES AN EXISTING
+// DIRECTORY into the recursive descent the tool already documents: `spec`
+// becomes `spec/**`, so it expands byte-identically to the pattern a user would
+// otherwise have to type.
+//
+// It exists because of what happened without it. A magic-free pattern with a
+// non-empty basename resolves through lexists, so `spec` MATCHED — and then
+// ExpandFiles' isFile filter dropped the directory, runOverPatterns saw an
+// empty list, and the run died with `no file(s) match 'spec'`: byte-identical
+// to the diagnostic for a path that is not there at all. The one fact the user
+// needed — that they had named a directory full of test source files — existed
+// exactly at the point it was discarded.
+//
+// The rewrite INVENTS NO SELECTION SEMANTIC. It produces a pattern the matcher
+// below already implements, so every rule carries over verbatim rather than
+// being restated here: hidden directories are still not descended, symlinked
+// directories still are, a symlink loop still terminates the same way, and an
+// unreadable file on the walk still fails loudly. `spec` means `spec/**` and
+// nothing else.
+//
+// Three shapes are deliberately left alone, and each keeps its existing bytes:
+//
+//   - a pattern carrying glob magic — `spec/*` still matches directories that
+//     ExpandFiles then drops, which is a pinned rule, not an oversight;
+//   - a path that is not a directory — a FILE argument, and a nonexistent path,
+//     which must keep erroring;
+//   - the empty pattern, which os.Stat would read as "." and silently turn into
+//     a walk of the working directory.
+//
+// An EMPTY directory is rewritten like any other and still errors, because
+// `emptydir/**` matches no file either: the never-silent-pass contract in
+// runOverPatterns is preserved on every input where this applies.
+func expandDirectoryArgument(pattern string) string {
+	if pattern == "" || hasMagic(pattern) || !isDir(pattern) {
+		return pattern
+	}
+	return joinPath(pattern, "**")
 }
 
 // Glob returns every path matching pattern, unsorted and unfiltered.

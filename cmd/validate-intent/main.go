@@ -7,7 +7,8 @@
 //
 // The modes:
 //
-//	FILE...            adopter mode: validate FILE(s)/glob(s) as intent JSON
+//	FILE...            adopter mode: validate FILE(s)/glob(s)/directory(ies) as
+//	                   intent JSON
 //	--source / -s      in-source mode: validate @intent annotations inside
 //	                   test source files, reported per finding as file:line
 //	<no arguments>     self-test over the shipped fixture corpus
@@ -18,7 +19,8 @@
 //	--json             a machine-readable document instead of the human
 //	                   report, for the stdin, FILE... and --source modes
 //
-// Every glob-expanding mode accepts a recursive `**` component. See glob.go.
+// Every glob-expanding mode accepts a recursive `**` component, and a bare
+// argument naming an existing directory is descended as `DIR/**`. See glob.go.
 //
 // Exit codes: 0 clean, 1 a verdict of "invalid" (or a pattern that matched
 // nothing), 2 the run produced no verdict at all — a usage error, or a schema
@@ -53,10 +55,12 @@ import (
 // reports it for a given host.
 const usage = `usage: validate-intent                    # self-test the in-repo fixtures
        validate-intent -                  # validate one annotation JSON read from stdin
-       validate-intent FILE...            # validate FILE(s)/glob(s) as valid intent JSON
+       validate-intent FILE...            # validate FILE(s)/glob(s)/directory(ies) as valid
+                                          #   intent JSON. A directory is descended as DIR/**
        validate-intent --source FILE...   # validate @intent annotations inside test
                                           #   source files (.rb/.py/.js/...), reported
-                                          #   per finding as file:line. Alias: -s
+                                          #   per finding as file:line. A directory is
+                                          #   descended as DIR/**. Alias: -s
 
        --json   emit one machine-readable JSON document on stdout instead of the
                 human report — for the stdin, FILE... and --source modes only.
@@ -238,8 +242,12 @@ func runOverPatterns(patterns []string, checkOne func(string) bool, onNoMatch fu
 	for _, pattern := range patterns {
 		files := ExpandFiles(pattern)
 		if len(files) == 0 {
-			// Never a silent pass: a pattern that matches nothing (or only
-			// directories) is an error the caller must see.
+			// Never a silent pass: a pattern that matches no FILE is an error
+			// the caller must see. An argument naming a directory is descended
+			// rather than refused (ExpandFiles rewrites it to `DIR/**`), so
+			// what reaches here is a pattern that genuinely found nothing to
+			// read — a nonexistent path, an EMPTY directory, or a glob that
+			// matched only directories.
 			if onNoMatch == nil {
 				fmt.Fprintf(os.Stderr, "error: no file(s) match %s\n", Quote(pattern))
 			} else {

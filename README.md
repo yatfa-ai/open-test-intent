@@ -63,16 +63,19 @@ validate-intent
 echo '{ "entity": "Order", "action": "checkout", "behavior": "returns 402 on expired card", "layer": "request" }' \
   | validate-intent -
 
-# Validate your own annotation file(s) or glob — exits 0 if every file conforms,
-# non-zero with the specific violated rule otherwise.
+# Validate your own annotation file(s), glob, or a directory — exits 0 if every
+# file conforms, non-zero with the specific violated rule otherwise. A directory
+# is descended as `DIR/**`.
 validate-intent path/to/intent.json
 validate-intent 'specs/**/*.json'
+validate-intent specs
 
 # Validate @intent annotations *in place* inside test source files (--source,
 # or -s). Each finding is reported at its file:line — the location the other
 # modes can't give you. Exits 0 if every annotation found conforms.
 validate-intent --source spec/models/order_spec.rb
 validate-intent --source 'spec/**/*_spec.rb' 'tests/**/*.py'
+validate-intent --source spec
 
 # Any of the three above, as one JSON document on stdout instead of prose
 # (--json goes anywhere on the line). Same checks, same exit code.
@@ -98,6 +101,14 @@ treats unannotated tests as legitimate. But an `@intent:` token whose payload ca
 captured (unbalanced or missing braces, or spread across lines — annotations are
 single-line) **is** reported, so a typo'd annotation fails loudly instead of silently
 counting as "unannotated".
+
+An argument naming an **existing directory** is descended as `DIR/**`, so
+`validate-intent --source spec` is exactly `validate-intent --source 'spec/**'` — same
+files, same output, same exit code. It is sugar for the documented descent and invents
+no selection rule of its own: hidden directories are still not entered, symlinked ones
+still are, and a file whose bytes will not read still fails loudly. The narrower
+`spec/**/*_spec.rb` form stays the right answer when you want an extension-scoped walk.
+A path that is not there, and a directory holding no files, still error.
 
 Worked source fixtures exercising all three equivalent forms live in
 [`examples/sources/`](examples/sources).
@@ -199,8 +210,9 @@ at all. It is graded against `PROTOCOL.md`, `schemas/open-test-intent.v1.json` a
 corpus under `examples/` — those three are the source of truth, and the binary is held to them.
 
 **The mode matrix is complete:** adopter (`FILE...`), `-h`/`--help`, self-test, `--source`,
-recursive `**` globs, stdin (`-`), `--json` for all three input modes, plus `--version` and
-`--schema-source`. Packaging shipped with it: `scripts/build-release.sh` cross-compiles the four
+recursive `**` globs (a bare directory argument is descended as `DIR/**`), stdin (`-`), `--json`
+for all three input modes, plus `--version` and `--schema-source`. Packaging shipped with it:
+`scripts/build-release.sh` cross-compiles the four
 stamped artifacts and `scripts/install.sh` puts one on a host and checks it against the manifest
 before it lands, both described below and both calibrated under `tests/cross/`.
 
