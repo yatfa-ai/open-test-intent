@@ -112,6 +112,18 @@ A path that is not there, and a directory holding no files, still error — with
 different diagnostics: a directory you named and that holds nothing says so, so an empty
 tree is not reported in the same words as a typo.
 
+The descent does not enter **dependency or build directories**. `node_modules`, `.git`,
+`dist`, `.test-build`, `coverage`, `vendor`, `tmp` and `log` are neither read nor
+descended, so `--source .` reports on the code you wrote and not on your dependencies or
+your compiler's copy of it — and a malformed annotation in a package you cannot edit
+cannot fail your run. The name is matched as a whole path segment, so a directory of
+yours called `vendor_helpers` or `distribution` is still walked.
+
+Like the hidden-directory rule it sits beside, **naming one explicitly still reaches
+it**: `--source node_modules/some-pkg` descends that tree and
+`--source node_modules/some-pkg/index.js` reads that file, exactly as before. You can
+always ask for a fenced directory; you just never get one unasked.
+
 Worked source fixtures exercising all three equivalent forms live in
 [`examples/sources/`](examples/sources).
 

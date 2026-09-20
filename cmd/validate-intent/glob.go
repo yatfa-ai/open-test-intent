@@ -174,6 +174,71 @@ func isHidden(name string) bool {
 	return strings.HasPrefix(name, ".")
 }
 
+// skippedDirectories is the descent's dependency/build fence: directory names
+// the recursive walk neither yields nor enters.
+//
+// Every member is dependency, build-output, scratch or VCS material — code the
+// user did not write and cannot edit, whose annotations must never be read.
+// Reading them is not merely noisy: a compiler's copy of a source file carries
+// that file's docstring, so every finding about the user's own code is reported
+// a second time about the emitted duplicate; and a malformed `@intent:` inside a
+// third-party package moves the EXIT CODE, failing a run over a file the user
+// cannot edit. The `--source DIR` sugar is the direct-invocation surface — a CI
+// script, a developer, an agent — so nothing upstream is in a position to fence
+// it.
+//
+// The list is ported from this product's own two clients so the three
+// implementations agree, and it is their UNION rather than either alone:
+//
+//   - `specguard-ts` `src/lint/discover.ts` `SKIPPED_DIRECTORIES` is the
+//     founding list — node_modules, .git, dist, .test-build, coverage.
+//   - `specguard-rspec` `lib/specguard/rspec/file_selector.rb` widens it with
+//     the Ruby ecosystem's members — vendor (a bundled Rails tree puts every
+//     gem under vendor/bundle/, each shipping its own specs), tmp and log
+//     (Rails' scratch and log directories).
+//
+// This binary is language-agnostic and reads Ruby trees today, so it needs the
+// Ruby members too. `.git` is belt-and-braces beside the hidden rule directly
+// above — it is already unreachable — and is named anyway so the fence reads
+// complete beside its two twins.
+//
+// It is a NAME list and not `.gitignore` awareness, for the constraint the Ruby
+// twin measured and records (`file_selector.rb`): the walk must keep working
+// outside a git repository, so it has no git to ask. A name list is the answer
+// that survives there.
+var skippedDirectories = map[string]bool{
+	"node_modules": true,
+	".git":         true,
+	"dist":         true,
+	".test-build":  true,
+	"coverage":     true,
+	"vendor":       true,
+	"tmp":          true,
+	"log":          true,
+}
+
+// isFencedDirectory reports whether the descent must skip this entry.
+//
+// Two properties, both load-bearing and both pinned:
+//
+//   - The match is against a WHOLE component name, never a substring. A
+//     directory named `vendor_helpers` or `distribution` is project code and is
+//     still walked — the failure mode a strings.Contains spelling produces, and
+//     the one the Ruby twin calls out explicitly.
+//
+//   - Only a DIRECTORY is fenced, which is why this needs the path as well as
+//     the name. `log` and `tmp` are ordinary filenames, and a file the user
+//     wrote must not vanish from the walk because a build directory elsewhere
+//     shares its name. Both clients draw the same line — the TypeScript walk
+//     tests isDirectory() before consulting its set, the Ruby one drops the
+//     basename before testing segments.
+//
+// The set lookup comes first so the os.Stat is paid only for the rare entry
+// whose name is in the list, rather than once per entry on the whole walk.
+func isFencedDirectory(name, path string) bool {
+	return skippedDirectories[name] && isDir(path)
+}
+
 func globPath(pathname string, dirOnly bool) []string {
 	dirname, basename := splitPath(pathname)
 
@@ -249,6 +314,18 @@ func globRecursive(dir string, dirOnly bool) []string {
 //     cannot see `spec/.secret/f.json`. Naming the component literally still
 //     reaches it — that goes through globInDir, not here.
 //
+//   - The dependency/build fence applies the same way and in the same register:
+//     a fenced directory (see skippedDirectories) is neither yielded nor
+//     entered, and naming it literally still reaches it, through globInDir.
+//     `--source .` therefore skips `node_modules`, while
+//     `--source node_modules/pkg` still reads it — the user can always ask for
+//     a fenced tree, they just never get it unasked.
+//
+//     It lives HERE rather than at the `DIR` → `DIR/**` rewrite deliberately.
+//     Both spellings flow through this shared descent, so `spec` and `spec/**`
+//     stay the identical set the sugar promises; fencing at the rewrite would
+//     fence only the bare side and falsify that equivalence.
+//
 //   - listDir classifies with os.Stat, which FOLLOWS symlinks. fs.WalkDir does
 //     not, and a matcher built on it silently skips every test file under a
 //     symlinked directory while still reporting a confident clean pass.
@@ -263,12 +340,16 @@ func descendants(dir string, dirOnly bool) []string {
 		if isHidden(name) {
 			continue
 		}
-		out = append(out, name)
 
 		child := name
 		if dir != "" {
 			child = joinPath(dir, name)
 		}
+		if isFencedDirectory(name, child) {
+			continue
+		}
+		out = append(out, name)
+
 		for _, descendant := range descendants(child, dirOnly) {
 			out = append(out, joinPath(name, descendant))
 		}
