@@ -92,7 +92,8 @@ func (r *JSONReport) Add(finding JSONFinding) bool {
 // `file` already carries the pattern verbatim.
 //
 // It carries the SAME discrimination the text path does — an argument read as a
-// directory to descend says so — through the same noMatchDetail, so the two
+// directory to descend says so, and one whose descent the dependency/build
+// fence narrowed says THAT — through the same noMatchDetail, so the two
 // renderers cannot come to differ about which situation an argument was. The
 // distinguishing fact lands in `errors[]`, which is where a machine consumer
 // reads WHY a finding failed; `kind` stays KindNoMatch because what happened is
@@ -104,12 +105,12 @@ func (r *JSONReport) Add(finding JSONFinding) bool {
 // identity is the JSON path's "quoting": it returns the pattern as-is, so the
 // clause reads `the descent emptydir/** found no file to read` rather than
 // carrying the text renderer's single quotes into a JSON string.
-func (r *JSONReport) NoMatch(pattern string) {
+func (r *JSONReport) NoMatch(pattern string, fenced bool) {
 	r.Add(JSONFinding{
 		File:   pattern,
 		OK:     false,
 		Kind:   KindNoMatch,
-		Errors: []string{"no file(s) match " + pattern + noMatchDetail(pattern, identity)},
+		Errors: []string{"no file(s) match " + pattern + noMatchDetail(pattern, fenced, identity)},
 	})
 }
 

@@ -41,24 +41,64 @@ import (
 // ExpandFiles expands one pattern, sorts the matches, and drops anything that
 // is not a regular file.
 //
-// Every glob-expanding mode goes through here, so a pattern like `intents/*`
-// never hands a DIRECTORY to a reader — which would then report it as an
-// unreadable file rather than skipping it.
+// Every glob-expanding mode goes through this expansion, so a pattern like
+// `intents/*` never hands a DIRECTORY to a reader — which would then report it
+// as an unreadable file rather than skipping it. The CLI modes reach it through
+// expandFilesFenced below, which is this function's body plus one fact; this is
+// the spelling for a caller that does not need that fact.
 //
 // That filter is also why a bare argument NAMING a directory is rewritten to
 // the documented descent first: see expandDirectoryArgument. `spec` expands
 // exactly as `spec/**` does, so the drop applies to the directories the walk
 // passes through rather than to the one the user asked about.
 func ExpandFiles(pattern string) []string {
-	matches := Glob(expandDirectoryArgument(pattern))
+	files, _ := expandFilesFenced(pattern)
+	return files
+}
+
+// descentFence is the one fact the descent knows and the diagnostic cannot see:
+// whether the dependency/build fence actually refused something on THIS
+// expansion.
+//
+// It is a struct threaded by pointer rather than a package-level flag, and both
+// halves of that are load-bearing:
+//
+//   - PER EXPANSION. runOverPatterns calls the expansion once per pattern in a
+//     loop, so a fact that outlived one call would describe the previous
+//     pattern's tree while naming this one's. A value created at the entry
+//     point and dropped on return cannot leak that way.
+//   - NO GLOBAL. A package variable would make two concurrent expansions
+//     answer each other's question — and the walk is already reached from a
+//     goroutine (the symlink-loop case in glob_test.go), so the shape that
+//     cannot race is the one to start from rather than to retrofit.
+//
+// It records that the fence FIRED, never how much it removed. The prune
+// declines a DIRECTORY without entering it, so sizing the refusal would mean
+// walking the one tree this walk exists not to walk — the flag is set at the
+// prune itself, before the descent is declined.
+type descentFence struct {
+	pruned bool
+}
+
+// expandFilesFenced is ExpandFiles plus that fact.
+//
+// It is an unexported SIBLING rather than a second return value on ExpandFiles
+// because ExpandFiles and Glob are this package's two expansion entry points
+// and are called from every mode and from the fixture walk in selftest.go:
+// widening either signature would edit every one of those call sites to carry a
+// fact that only the no-match diagnostic reads. The three internal functions
+// below are the free seam, and this pair of wrappers is where the wider shape
+// stops.
+func expandFilesFenced(pattern string) (files []string, fenced bool) {
+	matches, fenced := globFenced(expandDirectoryArgument(pattern))
 	sort.Strings(matches)
-	files := make([]string, 0, len(matches))
+	files = make([]string, 0, len(matches))
 	for _, match := range matches {
 		if isFile(match) {
 			files = append(files, match)
 		}
 	}
-	return files
+	return files, fenced
 }
 
 // expandDirectoryArgument rewrites a bare argument that NAMES AN EXISTING
@@ -139,7 +179,16 @@ func readAsDirectoryArgument(pattern string) bool {
 
 // Glob returns every path matching pattern, unsorted and unfiltered.
 func Glob(pattern string) []string {
-	matches := globPath(pattern, false)
+	matches, _ := globFenced(pattern)
+	return matches
+}
+
+// globFenced is Glob plus the descent-fence fact — see descentFence. It is the
+// unexported sibling that owns the work; Glob is the exported spelling that
+// drops the second value, so the signature every caller depends on is unchanged.
+func globFenced(pattern string) (matches []string, fenced bool) {
+	fence := &descentFence{}
+	matches = globPath(pattern, false, fence)
 
 	// A pattern that STARTS with `**` reaches globRecursive with no directory
 	// to join onto, so its zero-segment match would surface as a literal "" —
@@ -150,7 +199,7 @@ func Glob(pattern string) []string {
 			matches = matches[1:]
 		}
 	}
-	return matches
+	return matches, fence.pruned
 }
 
 // isRecursiveComponent reports whether a path component is exactly `**`.
@@ -239,7 +288,7 @@ func isFencedDirectory(name, path string) bool {
 	return skippedDirectories[name] && isDir(path)
 }
 
-func globPath(pathname string, dirOnly bool) []string {
+func globPath(pathname string, dirOnly bool, fence *descentFence) []string {
 	dirname, basename := splitPath(pathname)
 
 	if !hasMagic(pathname) {
@@ -257,26 +306,26 @@ func globPath(pathname string, dirOnly bool) []string {
 	}
 
 	if dirname == "" {
-		return joinAll("", globComponent("", basename, dirOnly))
+		return joinAll("", globComponent("", basename, dirOnly, fence))
 	}
 
 	dirs := []string{dirname}
 	if dirname != pathname && hasMagic(dirname) {
-		dirs = globPath(dirname, true)
+		dirs = globPath(dirname, true, fence)
 	}
 
 	var out []string
 	for _, dir := range dirs {
-		out = append(out, joinAll(dir, globComponent(dir, basename, dirOnly))...)
+		out = append(out, joinAll(dir, globComponent(dir, basename, dirOnly, fence))...)
 	}
 	return out
 }
 
 // globComponent expands ONE pattern component inside dir, returning names
 // relative to dir.
-func globComponent(dir, basename string, dirOnly bool) []string {
+func globComponent(dir, basename string, dirOnly bool, fence *descentFence) []string {
 	if isRecursiveComponent(basename) {
-		return globRecursive(dir, dirOnly)
+		return globRecursive(dir, dirOnly, fence)
 	}
 	return globInDir(dir, basename, dirOnly)
 }
@@ -294,12 +343,12 @@ func globComponent(dir, basename string, dirOnly bool) []string {
 // pattern whose LAST component is the recursive one — a `nope/**/*.json` shape
 // answers empty either way, and ExpandFiles' isFile filter hides the difference
 // at the CLI. See the `nope/**` cases in glob_test.go.
-func globRecursive(dir string, dirOnly bool) []string {
+func globRecursive(dir string, dirOnly bool, fence *descentFence) []string {
 	matches := []string{}
 	if dir == "" || isDir(dir) {
 		matches = append(matches, "")
 	}
-	return append(matches, descendants(dir, dirOnly)...)
+	return append(matches, descendants(dir, dirOnly, fence)...)
 }
 
 // descendants lists every descendant of dir, named relative to dir.
@@ -334,7 +383,15 @@ func globRecursive(dir string, dirOnly bool) []string {
 //     when the OS refuses the too-deep path and the failed read contributes no
 //     names. Cutting the walk off earlier would be a silent divergence from the
 //     set of files the user can actually name.
-func descendants(dir string, dirOnly bool) []string {
+//
+// fence carries ONE fact back out, and it is the fact the caller's diagnostic
+// cannot otherwise have: that the dependency/build prune below actually fired.
+// It is recorded AT THE PRUNE, before the descent is declined, so learning it
+// costs no step into the tree the fence exists to stay out of — and the
+// recursion accumulates through the shared pointer, so a fenced directory at
+// any depth is seen by the entry point. It is a flag and not a tally: a count
+// would mean walking the refused tree to size it.
+func descendants(dir string, dirOnly bool, fence *descentFence) []string {
 	var out []string
 	for _, name := range listDir(dir, dirOnly) {
 		if isHidden(name) {
@@ -346,11 +403,12 @@ func descendants(dir string, dirOnly bool) []string {
 			child = joinPath(dir, name)
 		}
 		if isFencedDirectory(name, child) {
+			fence.pruned = true
 			continue
 		}
 		out = append(out, name)
 
-		for _, descendant := range descendants(child, dirOnly) {
+		for _, descendant := range descendants(child, dirOnly, fence) {
 			out = append(out, joinPath(name, descendant))
 		}
 	}
