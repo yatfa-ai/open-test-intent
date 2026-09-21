@@ -29,6 +29,7 @@ package main
 // from already live.
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -178,12 +179,26 @@ func TestRunSource_theFenceFactDoesNotLeakBetweenPatterns(t *testing.T) {
 // recorded AT THE PRUNE — before the descent is declined — and the evidence for
 // that is behavioural rather than a comment.
 //
-// Two trees, identical in the part the tool reads and differing only in what
-// sits behind the fence: one fenced directory holding a single file, one
-// holding a nested tree of them. If producing the fact required descending,
-// the deeper tree would answer differently. Both must report the fence fired
-// and select the IDENTICAL set — which is also the assertion that the fact did
-// not change WHICH files the walk selects.
+// TWO DIFFERENT PROPERTIES ARE PINNED HERE, and only the second one is about
+// where the fact comes from.
+//
+// The shallow/deep pair pins SELECTION-INVARIANCE: two trees identical in the
+// part the tool reads and differing only in what sits behind the fence must
+// report the fence fired and select the IDENTICAL set, so producing the fact
+// changed no file. That is worth pinning and it is NOT evidence about the
+// prune: an implementation that learns the fact by walking the refused tree
+// and discarding what it finds answers the same on both of these trees, since
+// both hold files behind the fence and neither descent reaches the selection.
+//
+// The EMPTY fenced directory is what discriminates the prune. There is nothing
+// behind that fence to find, so an implementation that looks inside to decide
+// has nothing to decide FROM and answers "not fenced" — while still answering
+// correctly on every other tree in this file. It is also the tree the feature's
+// own wording rests on: noMatchDetail says "no file to read OUTSIDE" rather
+// than the Ruby twin's "files found, all in" precisely BECAUSE a fenced
+// directory can be empty, and a cleaned `dist/` or a bare `node_modules/` is
+// the ordinary shape rather than a contrived one. Left uncovered, it is the
+// tree that puts the false sentence back.
 //
 // No count is taken and none is asserted, here or anywhere in this file: a
 // count of what a fence refused is exactly the figure that cannot be had
@@ -216,8 +231,20 @@ func TestExpandFiles_theFenceFactIsProducedAtThePruneNotByDescending(t *testing.
 		t.Errorf("the shallow tree's selection changed:\n got  %q\n want %q", got, want)
 	}
 	if got := relativise(t, deep, deepFiles); !reflect.DeepEqual(got, want) {
-		t.Errorf("a bigger tree BEHIND the fence changed the selection — the fact is being produced "+
-			"by descending:\n got  %q\n want %q", got, want)
+		t.Errorf("a bigger tree BEHIND the fence changed the selection:\n got  %q\n want %q",
+			got, want)
+	}
+
+	// An EMPTY fenced directory. Nothing behind the fence at all, so an
+	// implementation that learns the fact by LOOKING INSIDE answers "not
+	// fenced" here while answering correctly on every other tree.
+	empty := writeTree(t, map[string]string{"src/a.ts": passingAnnotation})
+	if err := os.MkdirAll(filepath.Join(empty, "dist"), 0o755); err != nil {
+		t.Fatalf("could not create the empty fenced directory: %v", err)
+	}
+	if _, emptyFenced := expandFilesFenced(empty); !emptyFenced {
+		t.Error("an EMPTY fenced directory must still report the fence: the prune declined it " +
+			"without entering it, so its contents cannot be what the fact is made of")
 	}
 }
 
