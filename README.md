@@ -110,7 +110,9 @@ still are, and a file whose bytes will not read still fails loudly. The narrower
 `spec/**/*_spec.rb` form stays the right answer when you want an extension-scoped walk.
 A path that is not there, and a directory holding no files, still error — with
 different diagnostics: a directory you named and that holds nothing says so, so an empty
-tree is not reported in the same words as a typo.
+tree is not reported in the same words as a typo. A directory the descent found nothing
+in *outside* the fenced trees described below says *that* instead, because the silence is
+the fence's and not the tree's.
 
 The descent does not enter **dependency or build directories**. `node_modules`, `.git`,
 `dist`, `.test-build`, `coverage`, `vendor`, `tmp` and `log` are neither read nor
@@ -123,6 +125,11 @@ Like the hidden-directory rule it sits beside, **naming one explicitly still rea
 it**: `--source node_modules/some-pkg` descends that tree and
 `--source node_modules/some-pkg/index.js` reads that file, exactly as before. You can
 always ask for a fenced directory; you just never get one unasked.
+
+The narrowing is never silent. A run that selected files **and** skipped a fenced
+directory says so on stderr before its report, so a successful run over a trimmed tree
+does not read like a run over a tree that never held one; a run that skipped nothing
+prints exactly as it did before the fence existed.
 
 Worked source fixtures exercising all three equivalent forms live in
 [`examples/sources/`](examples/sources).

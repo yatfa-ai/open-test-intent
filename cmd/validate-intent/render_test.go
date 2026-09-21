@@ -62,7 +62,7 @@ func TestJSONReportIsParseable(t *testing.T) {
 		File: `spec/"quoted".rb`, Line: 9, HasLine: true, OK: false, Kind: KindParse,
 		Errors: []string{`could not parse annotation: unpaired surrogate escape \uD800`},
 	})
-	report.NoMatch("spec/**/*.ts")
+	report.NoMatch("spec/**/*.ts", false)
 
 	out := captureStdout(t, func() { report.Emit(1) })
 

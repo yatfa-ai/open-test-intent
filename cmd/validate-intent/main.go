@@ -210,11 +210,33 @@ func schemaLoadError(source SchemaSource, err error) string {
 //
 // It returns "" for every situation that keeps the generic bytes — a
 // nonexistent path, the empty pattern, a magic glob that matched only
-// directories — and the discriminating clause for the one situation the
-// expansion can name: an argument it read as a DIRECTORY TO DESCEND, whose
-// descent found no file. That is the whole disambiguation, and the reason a
-// user can now tell "my argument is a typo" from "the tree I named holds
-// nothing".
+// directories — and a discriminating clause for the two the expansion can name:
+// an argument it read as a DIRECTORY TO DESCEND whose descent found no file,
+// and the same argument where the descent's dependency/build fence refused part
+// of the tree. That is the whole disambiguation, and the reason a user can now
+// tell "my argument is a typo" from "the tree I named holds nothing" from "the
+// part of the tree I named that this tool reads holds nothing".
+//
+// `fenced` is the descent's own report that the fence fired (see descentFence
+// in glob.go), not a re-derivation here. An arm that re-probed the tree from
+// this side would be a second opinion about a walk that has already happened,
+// and the two could disagree.
+//
+// The FENCED arm exists because its sentence was not merely unhelpful but
+// UNTRUE: an all-fenced directory printed the empty directory's words verbatim,
+// so the tool blamed the tree for a silence its own fence had produced. The
+// register is this product's own — `specguard-rspec`'s `all_fenced_reason`
+// says "…, all in dependency or build directories" for exactly this situation,
+// and the shared binary saying what its own client says is the point.
+//
+// It says "no file to read OUTSIDE" rather than the twin's "files found, all
+// in", and that is the one place the twin's sentence may not be copied. The
+// twin counts what its selector rejected, so it can assert that files existed;
+// this walk learns only that it PRUNED A DIRECTORY, and a fenced directory can
+// be empty — a cleaned `dist/`, a bare `node_modules/`. Asserting files it
+// never looked for would be a second confidently-wrong sentence in the place
+// the first one was removed from. What both spellings do carry is the fact that
+// matters: the silence is the fence's and not the tree's.
 //
 // `quote` is the CALLER'S renderer, not a formatting knob. The text path quotes
 // a path for a human and the --json path carries it bare — inside a JSON string
@@ -228,13 +250,19 @@ func schemaLoadError(source SchemaSource, err error) string {
 // It names the DESCENT rather than only the directory because that is the fact
 // the user cannot otherwise see: the tool did not refuse the argument, it
 // expanded it and walked it. A reader who is told the walk happened knows to
-// look at the tree rather than at their spelling.
-func noMatchDetail(pattern string, quote func(string) string) string {
+// look at the tree rather than at their spelling — EXCEPT under the fence,
+// where the tree is fine and that instruction would be the wrong one, which is
+// why the fenced arm names the fence instead.
+func noMatchDetail(pattern string, fenced bool, quote func(string) string) string {
 	if !readAsDirectoryArgument(pattern) {
 		return ""
 	}
-	return ": it is a directory, and the descent " +
+	detail := ": it is a directory, and the descent " +
 		quote(expandDirectoryArgument(pattern)) + " found no file to read"
+	if fenced {
+		detail += " outside dependency or build directories, which it does not enter"
+	}
+	return detail
 }
 
 // noMatchDiagnostic is the TEXT renderer's no-match line, including its
@@ -244,9 +272,35 @@ func noMatchDetail(pattern string, quote func(string) string) string {
 // still produces `error: no file(s) match 'X'` exactly as it did, so the pins
 // that assert those bytes stay green without being edited, and a user's grep
 // still finds them.
-func noMatchDiagnostic(pattern string) string {
+func noMatchDiagnostic(pattern string, fenced bool) string {
 	return "error: no file(s) match " + Quote(pattern) +
-		noMatchDetail(pattern, Quote) + "\n"
+		noMatchDetail(pattern, fenced, Quote) + "\n"
+}
+
+// fencedSelectionNote is the PARTIAL arm's disclosure: the run selected files
+// AND the dependency/build fence refused part of the tree, so the read set is
+// narrower than the argument names.
+//
+// It is gated on the fence having FIRED, which is this repo's spelling of the
+// count-gating the Ruby twin does (`selection_line`: the clause appears only
+// when `skipped.positive?`). A run whose fence removed nothing therefore prints
+// byte-identically to a run made before the fence existed — the narrowing must
+// never be silent, and the absence of a narrowing must never be noise.
+//
+// It carries no figure, and it names DIRECTORIES rather than files. The twin
+// prints a file count because its selector counts what it rejected; this walk
+// declines a directory at the prune and never enters it, so it knows only that
+// it pruned. Sizing the refusal would mean descending the tree the fence exists
+// to stay out of, and naming files it never looked for would be a confidently
+// wrong sentence inside a disclosure written to remove one.
+//
+// STDERR, on BOTH renderers, and written at one site so they cannot drift. The
+// report is the contract on stdout — the --json document above all, which a
+// consumer parses whole — and provenance about the selection is not a finding.
+// The twin makes the same split for the same reason, routing its selection line
+// to stderr under `--json`.
+func fencedSelectionNote() string {
+	return "note: skipping dependency or build directories\n"
 }
 
 // RunAdopter validates the given path(s)/glob(s) as valid intent JSON.
@@ -280,37 +334,57 @@ func RunAdopter(patterns []string, schema *Schema) int {
 // onNoMatch replaces the default stderr diagnostic when non-nil: --json routes
 // the no-match into the document as a finding on stdout, so a stdout-only
 // consumer is not left with a clean pass list and an unexplained non-zero exit.
-// Either way the no-match still drives the exit code.
-func runOverPatterns(patterns []string, checkOne func(string) bool, onNoMatch func(string)) int {
+// Either way the no-match still drives the exit code. It takes the descent's
+// fence report alongside the pattern so both renderers name the same situation
+// — see noMatchDetail.
+func runOverPatterns(patterns []string, checkOne func(string) bool, onNoMatch func(string, bool)) int {
 	exitCode := 0
 	for _, pattern := range patterns {
-		files := ExpandFiles(pattern)
+		files, fenced := expandFilesFenced(pattern)
 		if len(files) == 0 {
 			// Never a silent pass: a pattern that matches no FILE is an error
 			// the caller must see. An argument naming a directory is descended
-			// rather than refused (ExpandFiles rewrites it to `DIR/**`), so
-			// what reaches here is a pattern that genuinely found nothing to
-			// read — a nonexistent path, an EMPTY directory, or a glob that
+			// rather than refused (the expansion rewrites it to `DIR/**`), so
+			// what reaches here is a pattern that found nothing to READ — a
+			// nonexistent path, an EMPTY directory, a directory whose readable
+			// part the dependency/build fence left empty, or a glob that
 			// matched only directories.
 			//
-			// Two of those three are told apart here. `pattern` is the ORIGINAL
-			// argument — the `DIR/**` rewrite happens inside ExpandFiles and
-			// feeds the matcher only — so readAsDirectoryArgument can ask the
-			// expansion itself which reading it used, and an argument that WAS
-			// descended gets a diagnostic saying so. Without it, "that path is
-			// not there" and "the tree you named holds no files" arrive as the
-			// same sentence with a different name in it, and a user cannot tell
-			// a typo from an empty tree. The third situation — a magic glob
-			// that matched only directories — keeps the generic bytes: it is
-			// not a directory ARGUMENT, and describing it as one would name an
-			// interpretation the tool did not use.
+			// Three of those four are told apart here. `pattern` is the
+			// ORIGINAL argument — the `DIR/**` rewrite happens inside the
+			// expansion and feeds the matcher only — so readAsDirectoryArgument
+			// can ask the expansion itself which reading it used, and an
+			// argument that WAS descended gets a diagnostic saying so; `fenced`
+			// is the descent's own report of whether its fence fired, which
+			// splits the two descended situations. Without them, "that path is
+			// not there", "the tree you named holds no files" and "the part of
+			// the tree you named that this tool reads holds no files" arrive as
+			// the same sentence with a different name in it — and the last of
+			// those three is not merely unhelpful but FALSE, because this
+			// tool's own fence is what produced the silence it blames the tree
+			// for. The fourth situation — a magic glob that matched only
+			// directories — keeps the generic bytes: it is not a directory
+			// ARGUMENT, and describing it as one would name an interpretation
+			// the tool did not use.
 			if onNoMatch == nil {
-				fmt.Fprint(os.Stderr, noMatchDiagnostic(pattern))
+				fmt.Fprint(os.Stderr, noMatchDiagnostic(pattern, fenced))
 			} else {
-				onNoMatch(pattern)
+				onNoMatch(pattern, fenced)
 			}
 			exitCode = 1
 			continue
+		}
+		// The PARTIAL arm: files WERE selected and the fence refused part of the
+		// tree, so the read set is narrower than the argument names. The run
+		// succeeds, which is precisely why this has to be said — a successful
+		// run that silently skipped a directory is indistinguishable from one
+		// over a tree that never held it, and this product's own Ruby client
+		// already decided that question the same way (`selection_line`: the
+		// narrowing must never be silent). Gated on the fence having fired, so
+		// a run that fenced nothing prints byte-identically to before the fence
+		// existed.
+		if fenced {
+			fmt.Fprint(os.Stderr, fencedSelectionNote())
 		}
 		for _, path := range files {
 			if checkOne(path) {

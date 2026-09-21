@@ -421,7 +421,7 @@ func TestRunSource_bareDirectoryFailsLoudlyOnUnreadableBytes(t *testing.T) {
 // the diagnostic
 // --------------------------------------------------------------------------- //
 
-// The two residual no-match situations must be TOLD APART.
+// The three residual no-match situations must be TOLD APART.
 //
 // This is the other half of the defect the rewrite above was written for, and
 // the reason this file's opening paragraph can name the collision as the
@@ -432,24 +432,34 @@ func TestRunSource_bareDirectoryFailsLoudlyOnUnreadableBytes(t *testing.T) {
 // from an empty tree, and a --json consumer could not branch on the situation
 // without parsing the argument name back out of prose.
 //
-// What is pinned is the PROPERTY, not the wording: the two stderr lines must
-// differ BEYOND the echoed argument. So the assertion is on each diagnostic
+// The third case is the dependency/build fence's, and it is the sharpest of the
+// three because its sentence was not merely unhelpful but UNTRUE: a directory
+// whose readable part the fence emptied printed the empty directory's words
+// verbatim, so the tool blamed the tree for a silence its own walk had
+// produced. A user told "this tree holds nothing" looks at the tree, which is
+// exactly the wrong place — the tree is fine.
+//
+// What is pinned is the PROPERTY, not the wording: the stderr lines must differ
+// BEYOND the echoed argument, pairwise. So the assertion is on each diagnostic
 // with its OWN argument substituted out for a fixed token — which is what
 // "template-identical apart from the name" means, and the one check a wording
 // change may not break. Asserting a literal sentence here would pin prose the
 // ticket deliberately left to the implementer, and would go red on a rephrasing
-// that fixed nothing and broke nothing.
+// that fixed nothing and broke nothing. The fenced arm's CAUSE is asserted
+// separately below, because "differs from the other two" is also satisfied by a
+// clause that names the wrong reason.
 //
-// The contract the previous pin carried is kept rather than replaced: both
-// situations still exit 1 (never a silent pass) and the diagnostic still
+// The contract the previous pin carried is kept rather than replaced: every
+// situation still exits 1 (never a silent pass) and the diagnostic still
 // belongs to stderr alone. The generic half is pinned positively too — a
 // nonexistent path keeps today's exact bytes — because "they differ" is also
-// satisfied by rewriting BOTH, and the whole value of this change is that only
-// the situation the expansion can name acquires a clause.
+// satisfied by rewriting ALL THREE, and the whole value of this change is that
+// only the situations the expansion can name acquire a clause.
 func TestRunSource_residualNoMatchDiagnosticsAreDistinguishable(t *testing.T) {
 	root := dirArgTree(t)
 	emptyDir := filepath.Join(root, "emptydir")
 	nonexistent := filepath.Join(root, "nope")
+	allFenced := allFencedTree(t)
 
 	cases := []struct {
 		name    string
@@ -457,6 +467,7 @@ func TestRunSource_residualNoMatchDiagnosticsAreDistinguishable(t *testing.T) {
 	}{
 		{"an empty directory", emptyDir},
 		{"a nonexistent path", nonexistent},
+		{"an all-fenced directory", allFenced},
 	}
 
 	templates := map[string]string{}
@@ -483,9 +494,18 @@ func TestRunSource_residualNoMatchDiagnosticsAreDistinguishable(t *testing.T) {
 		t.Fatalf("a case did not record a template (%d of %d); the comparison below would be vacuous",
 			len(templates), len(cases))
 	}
-	if templates["an empty directory"] == templates["a nonexistent path"] {
-		t.Errorf("the two situations are still template-identical apart from the echoed argument: %q",
-			templates["an empty directory"])
+	// PAIRWISE, not "the new one differs from one of them": a fenced arm that
+	// accidentally reproduced the nonexistent path's generic bytes would still
+	// differ from the empty directory's.
+	for _, pair := range [][2]string{
+		{"an empty directory", "a nonexistent path"},
+		{"an empty directory", "an all-fenced directory"},
+		{"a nonexistent path", "an all-fenced directory"},
+	} {
+		if templates[pair[0]] == templates[pair[1]] {
+			t.Errorf("%q and %q are still template-identical apart from the echoed argument: %q",
+				pair[0], pair[1], templates[pair[0]])
+		}
 	}
 	// The generic half, positively: everything that is NOT a directory argument
 	// keeps today's bytes, so the pins elsewhere that assert them stay true and
@@ -493,27 +513,36 @@ func TestRunSource_residualNoMatchDiagnosticsAreDistinguishable(t *testing.T) {
 	if got, want := templates["a nonexistent path"], "error: no file(s) match '<ARG>'\n"; got != want {
 		t.Errorf("a nonexistent path must keep the generic diagnostic:\n got  %q\n want %q", got, want)
 	}
+	// The fenced arm must name its CAUSE, not merely be different. Asserted as
+	// the shared register both this product's clients already use for this
+	// situation rather than as the whole sentence, so a rephrasing that keeps
+	// naming the fence stays green.
+	if !strings.Contains(templates["an all-fenced directory"], "dependency or build directories") {
+		t.Errorf("an all-fenced directory must name the fence as the cause, got %q",
+			templates["an all-fenced directory"])
+	}
 }
 
 // The same discrimination on the MACHINE channel, which is the half a consumer
 // cannot work around.
 //
 // A human reading stderr can at least see the difference once the sentence
-// differs; a --json consumer branching on `kind` cannot, because both
+// differs; a --json consumer branching on `kind` cannot, because all three
 // situations are still — correctly — a no-match. So the distinguishing fact has
 // to be in the finding's own fields, and it is asserted here as a property of
-// `errors[]` rather than as a sentence: the two error lists must differ once
-// each finding's own argument is substituted out.
+// `errors[]` rather than as a sentence: the error lists must differ pairwise
+// once each finding's own argument is substituted out.
 //
 // The three pins this must not break are re-checked in place rather than
-// trusted: both findings still carry kind no-match (version_test.go's --json
+// trusted: every finding still carries kind no-match (version_test.go's --json
 // row and intent_key_test.go's null-intent pin both depend on the finding
-// staying a no-match finding), and both runs still exit 1.
+// staying a no-match finding), and every run still exits 1.
 func TestRunSourceJSON_residualNoMatchFindingsAreDistinguishable(t *testing.T) {
 	schema := repoSchema(t)
 	root := dirArgTree(t)
 	emptyDir := filepath.Join(root, "emptydir")
 	nonexistent := filepath.Join(root, "nope")
+	allFenced := allFencedTree(t)
 
 	errorsFor := func(pattern string) string {
 		t.Helper()
@@ -530,12 +559,42 @@ func TestRunSourceJSON_residualNoMatchFindingsAreDistinguishable(t *testing.T) {
 
 	empty := errorsFor(emptyDir)
 	missing := errorsFor(nonexistent)
+	fenced := errorsFor(allFenced)
 
 	if empty == missing {
-		t.Errorf("the two no-match findings are indistinguishable from errors[] alone: %q", empty)
+		t.Errorf("the empty and nonexistent no-match findings are indistinguishable from errors[] alone: %q",
+			empty)
+	}
+	if empty == fenced {
+		t.Errorf("the empty and all-fenced no-match findings are indistinguishable from errors[] alone: %q",
+			empty)
+	}
+	if missing == fenced {
+		t.Errorf("the nonexistent and all-fenced no-match findings are indistinguishable from errors[] alone: %q",
+			missing)
 	}
 	if !strings.Contains(missing, "no file(s) match <ARG>") {
 		t.Errorf("a nonexistent path must keep the generic machine-readable message, got %q", missing)
+	}
+	// The cause, not only the difference — the machine channel's half of the
+	// claim the text renderer's pin makes above.
+	if !strings.Contains(fenced, "dependency or build directories") {
+		t.Errorf("an all-fenced directory must name the fence in errors[], got %q", fenced)
+	}
+	// ONE sentence, two spellings: the JSON path rides the same noMatchDetail,
+	// so a second copy written into report.go would show up here as a fenced
+	// clause the text renderer does not have. Asserted by taking the text line
+	// apart at the two things the renderers legitimately differ by — the
+	// `error: ` prefix the diagnostic carries and the quoting the JSON path
+	// drops — rather than by comparing prose.
+	_, _, stderr := captureRun(t, "--source", allFenced)
+	textClause := strings.TrimSuffix(strings.TrimPrefix(
+		strings.ReplaceAll(strings.ReplaceAll(stderr, allFenced, "<ARG>"), "'", ""),
+		"error: "), "\n")
+	jsonClause := strings.Trim(fenced, `"`)
+	if textClause != jsonClause {
+		t.Errorf("the two renderers disagree about the fenced situation; a second copy of the "+
+			"sentence has been written:\n text %q\n json %q", textClause, jsonClause)
 	}
 }
 
