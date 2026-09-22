@@ -200,8 +200,9 @@ Two things worth knowing:
   line the text mode prints. Without it, a stdout-only consumer would see a clean pass
   list next to an unexplained non-zero exit. The situations `no-match` covers are told
   apart in `errors[]`, not by a second `kind`: an argument read as a **directory to
-  descend** whose descent found no file says so, while a nonexistent path, the empty
-  pattern and a glob that matched only directories keep the plain
+  descend** — typed as `DIR` or as the explicit `DIR/**` spelling alike — whose descent
+  found no file says so, while a nonexistent path, the empty pattern and a glob that is
+  not a descent and matched only directories keep the plain
   `no file(s) match <pattern>` message. So a consumer branching on `kind` is unaffected,
   and one that needs "empty tree" versus "path is not there" reads a field rather than
   parsing the argument name back out of prose.

@@ -713,3 +713,308 @@ func TestRunSource_noMatchExemptionsKeepTheGenericDiagnostic(t *testing.T) {
 		})
 	}
 }
+
+// The explicit descent spelling wears the SAME sentence the bare one does.
+//
+// This pin is the parity half of the discrimination above, and the defect it
+// holds shut is in the GATE, not in a missing pin: the expansion layer already
+// pinned the two spellings to the identical file set and the identical fence
+// fact (TestExpandFiles_bothSpellingsOfTheDescentProduceTheFence), but the
+// sentence layer gated every clause on readAsDirectoryArgument — the rewrite's
+// own shape test, which a magic-carrying pattern can never satisfy — so
+// `DIR/**` got the generic bytes on the very trees `DIR` got a clause for
+// (SPGD-1386). On an all-fenced tree the bare spelling said the tool's own
+// fence produced the silence and the explicit spelling said nothing at all;
+// on a genuinely-empty one the bare spelling said "the tree holds nothing" and
+// the explicit said "no match". The gate now reads the explicit spelling too,
+// through readAsExplicitDescent (glob.go).
+//
+// What is pinned is the PARITY: for each tree cell, the detail clause each
+// spelling prints — everything after that spelling's own echo of the argument
+// — must be identical. The echo is the one thing the two spellings legitimately
+// differ by, and substituting each echo out and comparing what remains is the
+// same method the residual pin above uses. The strip is asserted, not trusted:
+// a line that does not start with its own echo fails loudly rather than
+// comparing two empty remainders.
+//
+// Three cells, because parity must hold in BOTH directions of the clause: an
+// all-fenced tree (both wear the fence clause), a genuinely-empty one (both
+// wear the plain descent clause and neither accuses the fence), and a
+// nonexistent root (both keep the generic bytes — parity by mutual generic,
+// which is what keeps the widening from naming a descent that never happened).
+//
+// Both renderers, because noMatchDetail is written once and worn by both: a
+// fix that landed in one renderer's copy of the sentence would pass a
+// single-renderer parity check alone.
+func TestRunSource_bothDescentSpellingsWearTheSameDetailClause(t *testing.T) {
+	root := dirArgTree(t)
+
+	cells := []struct {
+		name          string
+		tree          string
+		wantFenceIn   bool // the fence clause must appear, under EITHER spelling
+		wantGenericIn bool // neither spelling may acquire a clause at all
+	}{
+		{"an all-fenced tree", allFencedTree(t), true, false},
+		{"a genuinely-empty tree", filepath.Join(root, "emptydir"), false, false},
+		{"a nonexistent root", filepath.Join(root, "nope"), false, true},
+	}
+
+	// detailAfter strips the generic prefix and the spelling's own echo, so the
+	// comparison below is clause against clause.
+	detailAfter := func(stderr, pattern string) string {
+		t.Helper()
+		echo := "error: no file(s) match '" + pattern + "'"
+		if !strings.HasPrefix(stderr, echo) {
+			t.Fatalf("the diagnostic must still echo the argument it is about:\n got  %q\n want prefix %q",
+				stderr, echo)
+		}
+		return strings.TrimPrefix(stderr, echo)
+	}
+
+	for _, cell := range cells {
+		t.Run(cell.name, func(t *testing.T) {
+			_, _, bareErr := captureRun(t, "--source", cell.tree)
+			_, _, explicitErr := captureRun(t, "--source", cell.tree+"/**")
+
+			bareDetail := detailAfter(bareErr, cell.tree)
+			explicitDetail := detailAfter(explicitErr, cell.tree+"/**")
+
+			if bareDetail != explicitDetail {
+				t.Errorf("the two descent spellings print different detail clauses for the same tree:\n"+
+					" bare:\n%q\n explicit:\n%q", bareDetail, explicitDetail)
+			}
+			switch {
+			case cell.wantFenceIn:
+				if !strings.Contains(explicitDetail, "dependency or build directories") {
+					t.Errorf("both spellings must wear the fence clause on an all-fenced tree: %q",
+						explicitDetail)
+				}
+			case cell.wantGenericIn:
+				if want := "\n"; bareDetail != want {
+					t.Errorf("a root that does not exist must keep the generic diagnostic under "+
+						"both spellings:\n got  %q\n want %q", bareDetail, want)
+				}
+			default:
+				// An existing, genuinely-empty tree: the clause must be the
+				// plain descent one. A fence accusation here would be the
+				// founding false sentence again, pointed at a tree the fence
+				// never touched.
+				if strings.Contains(bareDetail, "dependency or build directories") {
+					t.Errorf("an empty tree must not be described as fenced: %q", bareDetail)
+				}
+				if !strings.Contains(bareDetail, "found no file to read") {
+					t.Errorf("an empty tree must still be told apart from a typo: %q", bareDetail)
+				}
+			}
+		})
+	}
+}
+
+// The same parity on the machine channel.
+//
+// errors[] is where a --json consumer reads WHY a finding failed, so the two
+// spellings must put the same detail clause there once each finding's own
+// echo — the pattern, bare in JSON where the text path quotes it — is
+// stripped. Same three cells, same expectations, same reason for each, and
+// the same asserted strip: an errors[] entry that does not start with its own
+// pattern fails loudly rather than comparing two empty remainders.
+func TestRunSourceJSON_bothDescentSpellingsWearTheSameDetailClause(t *testing.T) {
+	schema := repoSchema(t)
+	root := dirArgTree(t)
+
+	cells := []struct {
+		name          string
+		tree          string
+		wantFenceIn   bool
+		wantGenericIn bool
+	}{
+		{"an all-fenced tree", allFencedTree(t), true, false},
+		{"a genuinely-empty tree", filepath.Join(root, "emptydir"), false, false},
+		{"a nonexistent root", filepath.Join(root, "nope"), false, true},
+	}
+
+	// entryFor returns the one-finding document's errors[] entry whole.
+	entryFor := func(pattern string) string {
+		t.Helper()
+		document, code := runSourceJSON(t, []string{pattern}, schema)
+		if code != 1 {
+			t.Errorf("--source --json %s exited %d, want 1; document:\n%s", pattern, code, document)
+		}
+		if !strings.Contains(document, `"kind": "`+KindNoMatch+`"`) {
+			t.Errorf("%s must still report as a no-match finding; document:\n%s", pattern, document)
+		}
+		return errorsBlock(t, document)
+	}
+
+	// detailAfter strips the entry's echo, so the comparison below is clause
+	// against clause.
+	detailAfter := func(entry, pattern string) string {
+		t.Helper()
+		echo := `"no file(s) match ` + pattern
+		if !strings.HasPrefix(entry, echo) {
+			t.Fatalf("the errors[] entry must still carry the argument it is about:\n got  %s\n want prefix %s",
+				entry, echo)
+		}
+		return strings.TrimPrefix(entry, echo)
+	}
+
+	for _, cell := range cells {
+		t.Run(cell.name, func(t *testing.T) {
+			bareDetail := detailAfter(entryFor(cell.tree), cell.tree)
+			explicitDetail := detailAfter(entryFor(cell.tree+"/**"), cell.tree+"/**")
+
+			if bareDetail != explicitDetail {
+				t.Errorf("the two descent spellings put different detail clauses in errors[] for the "+
+					"same tree:\n bare:\n%s\n explicit:\n%s", bareDetail, explicitDetail)
+			}
+			switch {
+			case cell.wantFenceIn:
+				if !strings.Contains(explicitDetail, "dependency or build directories") {
+					t.Errorf("both spellings must name the fence in errors[] on an all-fenced tree: %s",
+						explicitDetail)
+				}
+			case cell.wantGenericIn:
+				if want := `"`; bareDetail != want {
+					t.Errorf("a root that does not exist must keep the generic machine-readable "+
+						"message under both spellings:\n got  %s\n want %s", bareDetail, want)
+				}
+			default:
+				if strings.Contains(bareDetail, "dependency or build directories") {
+					t.Errorf("an empty tree must not be described as fenced: %s", bareDetail)
+				}
+				if !strings.Contains(bareDetail, "found no file to read") {
+					t.Errorf("an empty tree must still be told apart from a typo: %s", bareDetail)
+				}
+			}
+		})
+	}
+}
+
+// The corners the widened gate must NOT name, pinned on both renderers.
+//
+// Widening a no-match gate is a widening of a diagnostic, and the value of the
+// widening is in what it leaves alone. Three shapes keep the generic bytes,
+// and each is refused by a DIFFERENT term of readAsExplicitDescent (glob.go),
+// which is why the run-level pins below are paired with a table over the
+// predicate itself:
+//
+//   - a magic-named ROOT under the sugar (`a*b/**`): the expansion matched it
+//     as a PATTERN, so calling the run "a directory to descend" would name an
+//     interpretation the tool did not use — the exclusion
+//     readAsDirectoryArgument's docblock already pins for the bare spelling,
+//     now held on the explicit one too.
+//   - a pattern whose magic goes BEYOND the descent (`spec/**/*.json`): not
+//     the descent spelling at all, so the magic-glob-matched-only-directories
+//     carve-out (SPGD-1334's deliberate out-of-scope) stays exactly as wide as
+//     it was. version_test.go's `examples/**/*.json` row is the same guardian
+//     at whole-run grain; this is the same shape over a tree this file owns.
+//   - a root that does not exist (`nope/**`): the walk never happened, and a
+//     descent that did not happen must not be named.
+//
+// The two exemptions the test above pins — the empty pattern and a magic-named
+// BARE directory — do not end in `/**`, so the widened gate's suffix term
+// cannot reach them and their pin stays green unedited.
+func TestRunSource_explicitDescentExclusionsKeepTheGenericDiagnostic(t *testing.T) {
+	schema := repoSchema(t)
+	root := dirArgTree(t)
+	magicNamed := filepath.Join(t.TempDir(), "a*b")
+	magicNamedHosted := os.MkdirAll(filepath.Join(magicNamed, "nested"), 0o755) == nil
+
+	cases := []struct {
+		name    string
+		pattern string
+		skip    bool
+	}{
+		{
+			name:    "a magic-named root under the sugar",
+			pattern: magicNamed + "/**",
+			skip:    !magicNamedHosted,
+		},
+		{
+			name:    "a pattern whose magic goes beyond the descent",
+			pattern: filepath.Join(root, "spec") + "/**/*.json",
+		},
+		{
+			name:    "a root that does not exist",
+			pattern: filepath.Join(root, "nope") + "/**",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.skip {
+				t.Skipf("this filesystem will not host a directory named %q", "a*b")
+			}
+
+			code, stdout, stderr := captureRun(t, "--source", tc.pattern)
+			if code != 1 {
+				t.Errorf("run(--source %q) = %d, want 1", tc.pattern, code)
+			}
+			if stdout != "" {
+				t.Errorf("the diagnostic belongs on stderr alone; stdout = %q", stdout)
+			}
+			if want := "error: no file(s) match '" + tc.pattern + "'\n"; stderr != want {
+				t.Errorf("this shape must keep the generic diagnostic:\n got  %q\n want %q",
+					stderr, want)
+			}
+
+			document, jsonCode := runSourceJSON(t, []string{tc.pattern}, schema)
+			if jsonCode != 1 {
+				t.Errorf("--source --json %q exited %d, want 1; document:\n%s",
+					tc.pattern, jsonCode, document)
+			}
+			if !strings.Contains(document, `"kind": "`+KindNoMatch+`"`) {
+				t.Errorf("%q must still report as a no-match finding; document:\n%s", tc.pattern, document)
+			}
+			if got, want := errorsBlock(t, document), `"no file(s) match `+tc.pattern+`"`; got != want {
+				t.Errorf("this shape must keep the generic machine-readable message:\n got  %s\n want %s",
+					got, want)
+			}
+		})
+	}
+}
+
+// readAsExplicitDescent's own table, naming the term each row rides on.
+//
+// The run-level pins above drive whole runs; this one reads the predicate
+// directly so a mutation to any ONE term is named rather than inferred from a
+// diagnostic. The `/**` row is the empty-root term's: os.Stat("") reads "." —
+// which IS a directory — so a gate that forgot that term answers true for
+// `/**` and the diagnostic would offer to describe a descent of the filesystem
+// root. The bare-spelling row is the partition, not an overlap check: `spec`
+// belongs to readAsDirectoryArgument and must stay outside this predicate's
+// answer, or the two spellings would each acquire the other's clause.
+func TestReadAsExplicitDescent_acceptsOnlyTheExistingMagicFreeRootDescentSpelling(t *testing.T) {
+	root := dirArgTree(t)
+	spec := filepath.Join(root, "spec")
+	magicNamed := filepath.Join(t.TempDir(), "a*b")
+	magicNamedHosted := os.MkdirAll(filepath.Join(magicNamed, "nested"), 0o755) == nil
+
+	cases := []struct {
+		name    string
+		pattern string
+		want    bool
+		skip    bool
+	}{
+		{"the descent spelling of an existing directory", spec + "/**", true, false},
+		{"a root that does not exist", filepath.Join(root, "nope") + "/**", false, false},
+		{"magic beyond the descent", spec + "/**/*.json", false, false},
+		{"a magic pattern that is not the descent spelling", spec + "/*", false, false},
+		{"a magic-named root under the sugar", magicNamed + "/**", false, !magicNamedHosted},
+		{"/** — an empty root, which isDir would read as the working directory", "/**", false, false},
+		{"the bare spelling — the other descent predicate's answer", spec, false, false},
+		{"the empty pattern", "", false, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.skip {
+				t.Skipf("this filesystem will not host a directory named %q", "a*b")
+			}
+			if got := readAsExplicitDescent(tc.pattern); got != tc.want {
+				t.Errorf("readAsExplicitDescent(%q) = %v, want %v", tc.pattern, got, tc.want)
+			}
+		})
+	}
+}
