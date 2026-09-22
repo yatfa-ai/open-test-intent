@@ -301,6 +301,41 @@ func TestExpandFiles_bothSpellingsOfTheDescentProduceTheFence(t *testing.T) {
 	}
 }
 
+// The fence SENTENCE follows the sugar's other half too.
+//
+// The pin above settles that both spellings PRODUCE the fence fact; this one
+// settles that both spellings SAY it. They did not used to: the sentence layer
+// gated every clause on the bare spelling's rewrite — a test a magic-carrying
+// pattern can never satisfy — so an all-fenced tree got the fence clause
+// through `DIR` and the generic bytes through `DIR/**` (SPGD-1386). The same
+// silence was the tool's own doing in one breath and unexplained in the other,
+// and the sugar's advertised equivalence stopped holding for what the tool
+// SAYS while still holding for what it reads.
+//
+// The cause is asserted, not merely a difference from the generic line: the
+// generic bytes also differ from the bare spelling's, and difference was never
+// the claim. Both renderers, because noMatchDetail is worn by both.
+func TestRunSource_theAllFencedSentenceFollowsTheExplicitSpelling(t *testing.T) {
+	root := allFencedTree(t)
+	explicit := root + "/**"
+
+	_, _, stderr := captureRun(t, "--source", explicit)
+	if !strings.Contains(stderr, "dependency or build directories") {
+		t.Errorf("an all-fenced tree must name the fence through the explicit spelling too; "+
+			"stderr = %q", stderr)
+	}
+
+	schema := repoSchema(t)
+	document, code := runSourceJSON(t, []string{explicit}, schema)
+	if code != 1 {
+		t.Errorf("--source --json on an all-fenced tree exited %d, want 1; document:\n%s", code, document)
+	}
+	if !strings.Contains(errorsBlock(t, document), "dependency or build directories") {
+		t.Errorf("the fence cause must reach errors[] through the explicit spelling too; document:\n%s",
+			document)
+	}
+}
+
 // The fact accumulates from ANY DEPTH.
 //
 // `descendants` recurses, and the fact is produced inside that recursion, so a

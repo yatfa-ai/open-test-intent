@@ -209,18 +209,28 @@ func schemaLoadError(source SchemaSource, err error) string {
 // once and worn by both renderers.
 //
 // It returns "" for every situation that keeps the generic bytes — a
-// nonexistent path, the empty pattern, a magic glob that matched only
-// directories — and a discriminating clause for the two the expansion can name:
-// an argument it read as a DIRECTORY TO DESCEND whose descent found no file,
-// and the same argument where the descent's dependency/build fence refused part
-// of the tree. That is the whole disambiguation, and the reason a user can now
-// tell "my argument is a typo" from "the tree I named holds nothing" from "the
-// part of the tree I named that this tool reads holds nothing".
+// nonexistent path, the empty pattern, a magic glob that is not a descent and
+// matched only directories — and a discriminating clause for the two the
+// expansion can name, under EITHER descent spelling: an argument it read as a
+// DIRECTORY TO DESCEND whose descent found no file, and the same argument
+// where the descent's dependency/build fence refused part of the tree. That is
+// the whole disambiguation, and the reason a user can now tell "my argument is
+// a typo" from "the tree I named holds nothing" from "the part of the tree I
+// named that this tool reads holds nothing".
 //
-// `fenced` is the descent's own report that the fence fired (see descentFence
-// in glob.go), not a re-derivation here. An arm that re-probed the tree from
-// this side would be a second opinion about a walk that has already happened,
-// and the two could disagree.
+// The gate is the two descent predicates read together. readAsDirectoryArgument
+// covers the bare spelling, whose rewrite the expansion performs;
+// readAsExplicitDescent covers the `DIR/**` spelling, which the expansion takes
+// as a pattern and descends as-is. One fence fact feeds the clause for both —
+// the descent is shared, and the expansion pins the fact equal across the
+// spellings (see descentFence in glob.go) — so widening the gate alone made
+// both spellings wear the same sentence: the founding defect here was the
+// explicit spelling printing the generic bytes on a tree whose silence the
+// tool's own fence produced, while the bare spelling named the fence for the
+// same tree. `fenced` is the descent's own report that the fence fired, not a
+// re-derivation here. An arm that re-probed the tree from this side would be a
+// second opinion about a walk that has already happened, and the two could
+// disagree.
 //
 // The FENCED arm exists because its sentence was not merely unhelpful but
 // UNTRUE: an all-fenced directory printed the empty directory's words verbatim,
@@ -253,8 +263,14 @@ func schemaLoadError(source SchemaSource, err error) string {
 // look at the tree rather than at their spelling — EXCEPT under the fence,
 // where the tree is fine and that instruction would be the wrong one, which is
 // why the fenced arm names the fence instead.
+//
+// The clause needs no quoting logic of its own for the two spellings to agree:
+// it quotes expandDirectoryArgument(pattern), which returns the pattern
+// unchanged for the magic-carrying explicit spelling — the same `DIR/**` shape
+// the bare spelling's rewrite produces — so one expression quotes the descent
+// under either spelling.
 func noMatchDetail(pattern string, fenced bool, quote func(string) string) string {
-	if !readAsDirectoryArgument(pattern) {
+	if !readAsDirectoryArgument(pattern) && !readAsExplicitDescent(pattern) {
 		return ""
 	}
 	detail := ": it is a directory, and the descent " +
@@ -351,21 +367,24 @@ func runOverPatterns(patterns []string, checkOne func(string) bool, onNoMatch fu
 			// matched only directories.
 			//
 			// Three of those four are told apart here. `pattern` is the
-			// ORIGINAL argument — the `DIR/**` rewrite happens inside the
-			// expansion and feeds the matcher only — so readAsDirectoryArgument
-			// can ask the expansion itself which reading it used, and an
-			// argument that WAS descended gets a diagnostic saying so; `fenced`
-			// is the descent's own report of whether its fence fired, which
-			// splits the two descended situations. Without them, "that path is
-			// not there", "the tree you named holds no files" and "the part of
-			// the tree you named that this tool reads holds no files" arrive as
-			// the same sentence with a different name in it — and the last of
-			// those three is not merely unhelpful but FALSE, because this
-			// tool's own fence is what produced the silence it blames the tree
-			// for. The fourth situation — a magic glob that matched only
-			// directories — keeps the generic bytes: it is not a directory
-			// ARGUMENT, and describing it as one would name an interpretation
-			// the tool did not use.
+			// ORIGINAL argument — the descent spelling reaches the diagnostic
+			// exactly as the user typed it, whichever form that is — so the
+			// diagnostic can ask which reading the argument got:
+			// readAsDirectoryArgument for the bare spelling, whose rewrite the
+			// expansion performs, and readAsExplicitDescent for the `DIR/**`
+			// spelling, which the expansion descends as a pattern. An argument
+			// read as a descent under EITHER spelling gets a diagnostic saying
+			// so; `fenced` is the descent's own report of whether its fence
+			// fired, which splits the two descended situations. Without them,
+			// "that path is not there", "the tree you named holds no files" and
+			// "the part of the tree you named that this tool reads holds no
+			// files" arrive as the same sentence with a different name in it —
+			// and the last of those three is not merely unhelpful but FALSE,
+			// because this tool's own fence is what produced the silence it
+			// blames the tree for. The fourth situation — a magic glob that is
+			// not a descent spelling and matched only directories — keeps the
+			// generic bytes: it is not a directory ARGUMENT, and describing it
+			// as one would name an interpretation the tool did not use.
 			if onNoMatch == nil {
 				fmt.Fprint(os.Stderr, noMatchDiagnostic(pattern, fenced))
 			} else {

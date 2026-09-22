@@ -173,8 +173,66 @@ func expandDirectoryArgument(pattern string) string {
 //
 // So the diagnostic cannot disagree with the expansion about what the argument
 // meant: there is one decision, made once, read twice.
+//
+// That discipline has a boundary, and the EXPLICIT spelling sits outside it.
+// `DIR/**` carries magic, so expandDirectoryArgument hands it back untouched
+// and there is no rewrite to ask — yet the expansion still reads it as a
+// directory to descend, because the shared descent is exactly where the
+// pattern goes. readAsExplicitDescent below is that spelling's own shape test,
+// so the diagnostic's two predicates cover the two spellings the sugar
+// promises are the same argument.
 func readAsDirectoryArgument(pattern string) bool {
 	return expandDirectoryArgument(pattern) != pattern
+}
+
+// readAsExplicitDescent reports whether the argument is the descent's EXPLICIT
+// spelling — `DIR/**` — naming a directory the walk honestly entered: the root
+// (everything before the `/**` tail) exists as a directory and carries no
+// magic.
+//
+// It exists because the sentence layer lost a clause it already had. The fence
+// fact is produced for both spellings — the descent is shared, and
+// TestExpandFiles_bothSpellingsOfTheDescentProduceTheFence pins the fact equal
+// at the expansion layer — but the no-match gate asked only
+// readAsDirectoryArgument, whose rewrite never fires on a magic-carrying
+// pattern, so an all-fenced tree got the fence clause through `DIR` and the
+// generic bytes through `DIR/**` (SPGD-1386). On a tree whose every annotated
+// file sits under node_modules or dist, the bare form said the tool's own fence
+// produced the silence and the explicit form said nothing at all — blaming the
+// tree in one breath and going silent about the same silence in the other.
+// The fact was already in scope at both call sites; only the gate discarded it.
+//
+// Three terms, each excluding a shape the clause must NOT name:
+//
+//   - the `/**` TAIL. A pattern whose magic goes beyond the descent —
+//     `examples/**/*.json`, `spec/*` — keeps the generic bytes. Those are not
+//     descent arguments under either reading, and the
+//     magic-glob-matched-only-directories carve-out (SPGD-1334's deliberate
+//     out-of-scope) is not widened by this gate.
+//
+//   - the root EXISTS AS A DIRECTORY. `nope/**` walked nothing — globRecursive
+//     emits no zero-segment match for a missing root — and a descent that did
+//     not happen must not be named, the same discipline the fence arm was
+//     written for. The term is spelled isDir rather than a mere existence
+//     probe for the half a missing root cannot catch: a root that exists as a
+//     FILE (`spec.json/**`) is present, but calling it "a directory" is
+//     exactly the false sentence this gate keeps out of the diagnostic.
+//
+//   - the root carries NO MAGIC. `a*b/**` with a literal `a*b` directory is
+//     matched as a PATTERN — the reading readAsDirectoryArgument's docblock
+//     pins for the bare `a*b` — so calling that run "a directory" would name an
+//     interpretation the tool did not use.
+//
+// An empty root is refused before isDir probes it: os.Stat("") reads "." — the
+// hazard expandDirectoryArgument's first guard exists for on the bare side —
+// and `/**` walks the filesystem root, not the working directory that probe
+// would name.
+func readAsExplicitDescent(pattern string) bool {
+	if !strings.HasSuffix(pattern, "/**") {
+		return false
+	}
+	root := strings.TrimSuffix(pattern, "/**")
+	return root != "" && !hasMagic(root) && isDir(root)
 }
 
 // Glob returns every path matching pattern, unsorted and unfiltered.
