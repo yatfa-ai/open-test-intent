@@ -894,7 +894,7 @@ func TestRunSourceJSON_bothDescentSpellingsWearTheSameDetailClause(t *testing.T)
 // The corners the widened gate must NOT name, pinned on both renderers.
 //
 // Widening a no-match gate is a widening of a diagnostic, and the value of the
-// widening is in what it leaves alone. Three shapes keep the generic bytes,
+// widening is in what it leaves alone. Four shapes keep the generic bytes,
 // and each is refused by a DIFFERENT term of readAsExplicitDescent (glob.go),
 // which is why the run-level pins below are paired with a table over the
 // predicate itself:
@@ -911,6 +911,11 @@ func TestRunSourceJSON_bothDescentSpellingsWearTheSameDetailClause(t *testing.T)
 //     at whole-run grain; this is the same shape over a tree this file owns.
 //   - a root that does not exist (`nope/**`): the walk never happened, and a
 //     descent that did not happen must not be named.
+//   - a root that exists as a FILE (`spec/order_spec.rb/**`): the exists term
+//     asks for a DIRECTORY, not merely a present path — naming a file-root
+//     "a directory" is the same false sentence in another key. It shares the
+//     nonexistent-root's term but not its reach: `lexists` refuses the missing
+//     root too, so only this shape holds the term's DIRECTORY half.
 //
 // The two exemptions the test above pins — the empty pattern and a magic-named
 // BARE directory — do not end in `/**`, so the widened gate's suffix term
@@ -938,6 +943,10 @@ func TestRunSource_explicitDescentExclusionsKeepTheGenericDiagnostic(t *testing.
 		{
 			name:    "a root that does not exist",
 			pattern: filepath.Join(root, "nope") + "/**",
+		},
+		{
+			name:    "a root that is a FILE, not a directory",
+			pattern: filepath.Join(root, "spec", "order_spec.rb") + "/**",
 		},
 	}
 
@@ -984,7 +993,12 @@ func TestRunSource_explicitDescentExclusionsKeepTheGenericDiagnostic(t *testing.
 // `/**` and the diagnostic would offer to describe a descent of the filesystem
 // root. The bare-spelling row is the partition, not an overlap check: `spec`
 // belongs to readAsDirectoryArgument and must stay outside this predicate's
-// answer, or the two spellings would each acquire the other's clause.
+// answer, or the two spellings would each acquire the other's clause. The
+// file-root row is the DIRECTORY half of the exists term: a mere existence
+// probe (`lexists`) refuses a missing root too, so the `nope/**` row cannot
+// catch that mutation — the file-root row is the one a `isDir`→`lexists`
+// swap turns red, and it is what keeps the diagnostic from calling an
+// existing FILE "a directory".
 func TestReadAsExplicitDescent_acceptsOnlyTheExistingMagicFreeRootDescentSpelling(t *testing.T) {
 	root := dirArgTree(t)
 	spec := filepath.Join(root, "spec")
@@ -999,6 +1013,7 @@ func TestReadAsExplicitDescent_acceptsOnlyTheExistingMagicFreeRootDescentSpellin
 	}{
 		{"the descent spelling of an existing directory", spec + "/**", true, false},
 		{"a root that does not exist", filepath.Join(root, "nope") + "/**", false, false},
+		{"a root that is a FILE, not a directory", filepath.Join(root, "spec", "order_spec.rb") + "/**", false, false},
 		{"magic beyond the descent", spec + "/**/*.json", false, false},
 		{"a magic pattern that is not the descent spelling", spec + "/*", false, false},
 		{"a magic-named root under the sugar", magicNamed + "/**", false, !magicNamedHosted},

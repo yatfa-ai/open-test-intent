@@ -213,7 +213,10 @@ func readAsDirectoryArgument(pattern string) bool {
 //   - the root EXISTS AS A DIRECTORY. `nope/**` walked nothing — globRecursive
 //     emits no zero-segment match for a missing root — and a descent that did
 //     not happen must not be named, the same discipline the fence arm was
-//     written for.
+//     written for. The term is spelled isDir rather than a mere existence
+//     probe for the half a missing root cannot catch: a root that exists as a
+//     FILE (`spec.json/**`) is present, but calling it "a directory" is
+//     exactly the false sentence this gate keeps out of the diagnostic.
 //
 //   - the root carries NO MAGIC. `a*b/**` with a literal `a*b` directory is
 //     matched as a PATTERN — the reading readAsDirectoryArgument's docblock
