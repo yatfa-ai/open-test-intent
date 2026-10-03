@@ -66,11 +66,34 @@ type JSONFinding struct {
 // it was bad), but input that could not be read at all contributes no sites.
 // Summing `annotations` across modes is therefore meaningful rather than
 // mode-dependent.
+//
+// FilesRead names the files `Files` counts — `files_read` on the wire. It is
+// appended to at the SAME statement that increments Files (the first line of
+// each mode's checkOne), never reconstructed from Findings, and that is the
+// whole point: a file read successfully that carries no annotation produces no
+// finding, so a list derived from findings can never name it. It is also why a
+// no-match PATTERN cannot leak in — NoMatch calls Add and never touches Files
+// or this list — so len(FilesRead) == Files holds structurally, not by a check.
+//
+// An UNREADABLE file IS in the list. It was read-attempted, summary.files
+// counts it, and leaving it out would break the length invariant; a consumer
+// subtracting finding paths from this list needs to know that such a file also
+// carries a `kind: "read"` finding.
 type JSONReport struct {
 	Mode        string
 	Files       int
+	FilesRead   []string
 	Annotations int
 	Findings    []JSONFinding
+}
+
+// noteFileRead is the ONE place a file is counted as read: it advances Files
+// and records the path together, so the count and the list cannot drift apart.
+// Called first in each mode's checkOne, before the file is opened — which is
+// what puts an unreadable file in the list (see FilesRead).
+func (r *JSONReport) noteFileRead(path string) {
+	r.Files++
+	r.FilesRead = append(r.FilesRead, path)
 }
 
 // Add records one finding and returns true when it FAILED — the `check_one`
@@ -143,11 +166,34 @@ func (r *JSONReport) Emit(exitCode int) int {
 	fmt.Fprintf(&b, "    \"annotations\": %d,\n", r.Annotations)
 	fmt.Fprintf(&b, "    \"failed\": %d\n", failed)
 	b.WriteString("  },\n")
-	b.WriteString("  \"findings\": " + renderFindings(r.Findings) + "\n")
+	b.WriteString("  \"findings\": " + renderFindings(r.Findings) + ",\n")
+	b.WriteString("  \"" + filesReadKey + "\": " + renderFilesRead(r.FilesRead) + "\n")
 	b.WriteString("}")
 
 	fmt.Println(b.String())
 	return exitCode
+}
+
+// filesReadKey is the wire name of the list of files the run read. It is a
+// contract: the README table and RunSourceJSON's docstring name it, and a test
+// pins the literal. The name says what was READ, not what passed — a name
+// suggesting a verdict would invite the misreading the bare-file asymmetry
+// guards against.
+const filesReadKey = "files_read"
+
+// renderFilesRead writes the files_read array, two-space indented to match
+// renderFindings. Paths go through EncodeJSONPath for the reason `file` does:
+// they are operating-system bytes a consumer compares on, so the encoding has
+// to be injective. Empty is `[]`, never null and never a bare `[\n]`.
+func renderFilesRead(paths []string) string {
+	if len(paths) == 0 {
+		return "[]"
+	}
+	parts := make([]string, 0, len(paths))
+	for _, p := range paths {
+		parts = append(parts, "    "+EncodeJSONPath(p))
+	}
+	return "[\n" + strings.Join(parts, ",\n") + "\n  ]"
 }
 
 // renderFindings writes the findings array, two-space indented.
@@ -312,7 +358,7 @@ func RunAdopterJSON(patterns []string, schema *Schema) int {
 	report := &JSONReport{Mode: "adopter"}
 
 	checkOne := func(path string) bool {
-		report.Files++
+		report.noteFileRead(path)
 		valid, errs, parseError, kind, instance := CheckFile(path, schema)
 		if parseError != "" {
 			if kind != KindRead {
@@ -344,12 +390,20 @@ func RunAdopterJSON(patterns []string, schema *Schema) int {
 // A file carrying NO annotations contributes to summary.files and no findings.
 // Text mode's `----` line is the absence of anything to report, not a result,
 // and emitting it as a finding would inflate the annotation count with rows a
-// consumer then has to filter back out. That asymmetry is deliberate.
+// consumer then has to filter back out. That asymmetry is deliberate, and it is
+// preserved: findings[] is unchanged and no counter moves.
+//
+// What the document ALSO carries is `files_read`, a separate top-level key
+// naming every file summary.files counts — which is the only way a consumer can
+// name a bare file, since neither its path nor (for a directory argument) the
+// caller's own arguments say which files the run found. It lists the files the
+// run READ, not the files that passed: an unreadable file is in it too, and
+// also carries a `kind: "read"` finding. A no-match pattern is not in it.
 func RunSourceJSON(patterns []string, schema *Schema) int {
 	report := &JSONReport{Mode: "source"}
 
 	checkOne := func(path string) bool {
-		report.Files++
+		report.noteFileRead(path)
 		findings, readError := CheckSourceFile(path, schema)
 		if readError != "" {
 			// A file that could not be read contributes NO annotation sites —

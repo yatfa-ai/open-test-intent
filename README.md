@@ -155,7 +155,8 @@ $ validate-intent --json --source spec/models/order_spec.rb
       "errors": ["<root>: additional property 'entiity' is not allowed"] },
     { "file": "spec/models/order_spec.rb", "line": 31, "ok": false, "kind": "extraction",
       "errors": ["unterminated object literal (an annotation must fit on one line)"] }
-  ]
+  ],
+  "files_read": ["spec/models/order_spec.rb"]
 }
 ```
 
@@ -194,8 +195,22 @@ never has to know which mode produced the finding. `parse` and `read` are worth
 telling apart because they route differently — `parse` is the author's file to fix, `read`
 is the checkout or the encoding.
 
-Two things worth knowing:
+Three things worth knowing:
 
+- **`files_read` names every file the run read** — the files `summary.files` counts, in the
+  order the run read them (the same order `findings` use), in every mode. It answers
+  *"which files did you look at?"*, which `findings` cannot: a source file that was read
+  successfully and carries no `@intent` annotation produces **no finding** (a bare file is
+  not a result, and emitting one would inflate `summary.annotations`), so without this key
+  it was counted in `summary.files` and named nowhere — the text report prints it as
+  `----  path — no @intent annotations`. You cannot recover the paths by subtraction
+  either: `--source spec/support` is one argument that expands to many files, and neither
+  the caller's argument nor the document names them. The name says *read*, not *passed*:
+  an **unreadable** file is in the list too (it was read-attempted and `summary.files`
+  counts it, so `len(files_read) == summary.files` always holds) and also carries its
+  `kind: "read"` finding — a consumer subtracting finding paths to find the bare files must
+  subtract those. A `no-match` pattern is not a file and never appears. Stdin reads no
+  file, so there `files` is `0` and `files_read` is `[]`.
 - **A pattern matching nothing is a `no-match` finding on stdout**, not only the stderr
   line the text mode prints. Without it, a stdout-only consumer would see a clean pass
   list next to an unexplained non-zero exit. The situations `no-match` covers are told

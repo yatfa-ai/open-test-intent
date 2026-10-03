@@ -341,8 +341,18 @@ func TestRunSourceJSON_derivesFilesAndAnnotationSites(t *testing.T) {
 	// Text mode's `----` line is the absence of a result; emitting it as a
 	// finding would hand consumers a row to filter back out (RunSourceJSON,
 	// report.go).
-	if strings.Contains(out, plain) {
+	//
+	// Scoped to the findings array: the file IS named, once, in the separate
+	// top-level `files_read` list (files_read_test.go), which follows findings.
+	findingsPart, filesReadPart, found := strings.Cut(out, `"files_read"`)
+	if !found {
+		t.Fatalf("document carries no files_read key:\n%s", out)
+	}
+	if strings.Contains(findingsPart, plain) {
 		t.Errorf("the file with no annotations must not appear in findings:\n%s", out)
+	}
+	if !strings.Contains(filesReadPart, plain) {
+		t.Errorf("the file with no annotations must be named in files_read:\n%s", out)
 	}
 
 	// Re-run without the unreadable file. `files` drops by one and `failed` by
