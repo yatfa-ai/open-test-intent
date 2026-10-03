@@ -73,6 +73,49 @@ func main() {
 	os.Exit(run(os.Args[1:]))
 }
 
+// The spellings of this binary's own mode selectors. Named constants (beside
+// schemaSourceFlag in schemasource.go) because run() reads them in two places —
+// the mode dispatch and misplacedModeSelector — and those must agree.
+const (
+	sourceFlag      = "--source"
+	sourceShortFlag = "-s"
+	stdinMarker     = "-"
+)
+
+// misplacedModeSelector reports whether any argument AFTER the first is one of
+// this binary's own mode selectors, and returns the offending token.
+//
+// WHY. The mode selectors are read at positional[0] only; every later argument
+// is a file pattern. So `--source A --source B` globbed the second `--source` as
+// a filename, matched nothing, and reported exit 1 — the code the contract
+// reserves for a verdict of "invalid" — over two clean trees: a content failure
+// for a usage mistake (the "false red" version.go describes), and under --json a
+// phantom findings[] row whose `file` is a flag name.
+//
+// THE SET IS CLOSED AND KEYED ON THE RAW TOKEN. Exactly the three spellings that
+// can reach the positional loop, compared with == against the argv token as
+// typed. It is deliberately not a prefix rule: a real file named `-dash_spec.rb`
+// validates today, and `./--source` (a file literally so named, qualified) is
+// not an exact match and keeps validating. Only a bare `--source`, `-s` or `-`
+// in a pattern position is refused, and those were already broken (exit 1, a
+// false no-match).
+//
+// The five spellings stripped upstream in run() (--json, --version, --help, -h,
+// --schema-source) are NOT in the set: each short-circuits before any
+// positional is read, so listing them would be dead code.
+//
+// The wider unknown-flag class (--verbose, --sourc, -x, a bare --) is NOT
+// covered; it needs its own predicate and is a separate ticket.
+func misplacedModeSelector(positional []string) (string, bool) {
+	for _, arg := range positional[1:] {
+		switch arg {
+		case sourceFlag, sourceShortFlag, stdinMarker:
+			return arg, true
+		}
+	}
+	return "", false
+}
+
 func run(argv []string) int {
 	// --help is checked first among the arguments, so it wins over everything
 	// else on the command line.
@@ -131,8 +174,22 @@ func run(argv []string) int {
 		positional = append(positional, arg)
 	}
 
-	isStdin := len(positional) > 0 && positional[0] == "-"
-	isSource := len(positional) > 0 && (positional[0] == "-s" || positional[0] == "--source")
+	isStdin := len(positional) > 0 && positional[0] == stdinMarker
+	isSource := len(positional) > 0 && (positional[0] == sourceShortFlag || positional[0] == sourceFlag)
+
+	// A mode selector in a pattern position is a usage error, refused before any
+	// filesystem access. Stdin mode reads no patterns, so it is exempt: its extra
+	// arguments are ignored today and stay so.
+	if len(positional) > 1 && !isStdin {
+		if tok, bad := misplacedModeSelector(positional); bad {
+			fmt.Fprintf(os.Stderr,
+				"error: '%s' is a flag of this command, not a file pattern: write it once, "+
+					"as the first argument, and list every path after it "+
+					"(a file literally named that is written ./%s)\n", tok, tok)
+			os.Stderr.WriteString(usage)
+			return 2
+		}
+	}
 
 	schema, schemaSource, err := LoadSchema()
 	if err != nil {

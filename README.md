@@ -76,6 +76,11 @@ validate-intent specs
 validate-intent --source spec/models/order_spec.rb
 validate-intent --source 'spec/**/*_spec.rb' 'tests/**/*.py'
 validate-intent --source spec
+#
+# The paths after --source are plain arguments: write the flag ONCE, first, and
+# list every path after it. `--source A --source B` is a usage error (exit 2,
+# usage on stderr, nothing on stdout), not a pattern that matches nothing; a file
+# really named `--source` is written ./--source.
 
 # Any of the three above, as one JSON document on stdout instead of prose
 # (--json goes anywhere on the line). Same checks, same exit code.
