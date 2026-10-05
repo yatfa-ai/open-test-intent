@@ -37,6 +37,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 // usage is printed by --help and by every refusal that cannot name a better
@@ -105,11 +106,47 @@ const (
 // positional is read, so listing them would be dead code.
 //
 // The wider unknown-flag class (--verbose, --sourc, -x, a bare --) is NOT
-// covered; it needs its own predicate and is a separate ticket.
+// covered here; unknownFlagInPatterns below owns it, with its own predicate.
 func misplacedModeSelector(positional []string) (string, bool) {
 	for _, arg := range positional[1:] {
 		switch arg {
 		case sourceFlag, sourceShortFlag, stdinMarker:
+			return arg, true
+		}
+	}
+	return "", false
+}
+
+// unknownFlagInPatterns returns the first token in a pattern list that is
+// refused as an unknown flag (SPGD-1576).
+//
+// WHY. Any dash-prefixed token that is not one of the binary's flags used to be
+// globbed as a filename, matched nothing, and answered exit 1 — the code for "an
+// annotation is invalid" — with a phantom no-match naming the flag (and, under
+// --json, a full document carrying a findings[] row whose `file` is a flag).
+// `--sourc A` additionally fell through to adopter mode and FAILed the valid
+// file as JSON. An unknown flag is a usage error, exit 2.
+//
+// THE PREDICATE IS EXISTENCE-KEYED, NOT A PREFIX RULE. A token is refused iff
+// ALL of: it starts with '-'; it carries no glob magic (a wildcard means the
+// user wrote a file pattern, and content semantics stay); and it resolves to
+// nothing on disk (lexists — symlink-aware, no-follow, the expansion's own
+// probe). So `-dash_spec.rb`, `./-dash_spec.rb`, `--weird_spec.rb`, a file
+// literally named `--source` (as ./--source), a `-*_spec.rb` glob over real
+// files and a dash-named directory all keep validating.
+//
+// SETTLED DECISION (SPGD-1576 decision 3): a NONEXISTENT dash-prefixed literal
+// filename (`--source -missing_spec.rb`) is refused with exit 2, where it used to
+// exit 1. The binary cannot tell a typo'd flag from a typo'd dash-named file;
+// the flag reading is the likelier one; both codes fail CI, so only the
+// diagnostic improves. That is deliberate, not a regression.
+//
+// The three owned spellings ('-', '--source', '-s') are unreachable here: the
+// mode dispatch consumes them at position 0 and misplacedModeSelector refuses
+// them everywhere after, before this runs. They need no special-casing.
+func unknownFlagInPatterns(patterns []string) (string, bool) {
+	for _, arg := range patterns {
+		if strings.HasPrefix(arg, "-") && !hasMagic(arg) && !lexists(arg) {
 			return arg, true
 		}
 	}
@@ -186,6 +223,27 @@ func run(argv []string) int {
 				"error: '%s' is a flag of this command, not a file pattern: write it once, "+
 					"as the first argument, and list every path after it "+
 					"(a file literally named that is written ./%s)\n", tok, tok)
+			os.Stderr.WriteString(usage)
+			return 2
+		}
+	}
+
+	// An unknown flag in a pattern position is a usage error too (SPGD-1576),
+	// refused before LoadSchema and before any dispatch so stdout stays empty:
+	// no PASS lines, no --json document. The zone is the pattern list of the
+	// mode: --source scans positional[1:]; adopter mode scans every positional
+	// (`--sourc A` and `-x file` sit at position 0 there). Stdin mode reads no
+	// patterns and is exempt, exactly as above.
+	if !isStdin {
+		zone := positional
+		if isSource {
+			zone = positional[1:]
+		}
+		if tok, bad := unknownFlagInPatterns(zone); bad {
+			fmt.Fprintf(os.Stderr,
+				"error: '%s' is not a flag of this command and no file or directory with that name exists "+
+					"(the flags are --source/-s, --json, --version, --schema-source, --help/-h; "+
+					"a file literally named that is written ./%s)\n", tok, tok)
 			os.Stderr.WriteString(usage)
 			return 2
 		}

@@ -81,6 +81,11 @@ validate-intent --source spec
 # list every path after it. `--source A --source B` is a usage error (exit 2,
 # usage on stderr, nothing on stdout), not a pattern that matches nothing; a file
 # really named `--source` is written ./--source.
+#
+# An unknown flag (`--verbose`, `--sourc`, `-x`) is refused the same way — exit 2,
+# usage on stderr, nothing on stdout — rather than reported as a file that matched
+# nothing. A real file whose name begins with a dash still works; write ./name to
+# be unambiguous.
 
 # Any of the three above, as one JSON document on stdout instead of prose
 # (--json goes anywhere on the line). Same checks, same exit code.

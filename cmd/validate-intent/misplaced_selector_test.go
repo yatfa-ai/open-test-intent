@@ -131,7 +131,8 @@ func TestMisplacedModeSelectorIsAClosedSet(t *testing.T) {
 		}
 	}
 	// Not in the set: dash-led names, qualified spellings, and the unknown-flag
-	// class (a separate ticket), none of which this gate may claim.
+	// class (unknownFlagInPatterns, unknown_flag_test.go), none of which this
+	// gate may claim.
 	for _, ok := range []string{
 		"./--source", "-dash_spec.rb", "--sourc", "--verbose", "-x", "--", "a.json", "",
 	} {
